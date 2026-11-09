@@ -22,19 +22,38 @@ services:
       start_period: 5s
 
   worker:
+    image: agent-worker:local
     build:
       context: .
       dockerfile: Dockerfile
     environment:
       REDIS_URL: redis://redis:6379/0
+      QUEUE: simple-q
       RUST_LOG: info
       RUST_BACKTRACE: "1"
-      BOARD_ADDR: "0.0.0.0:8080"
     depends_on:
       redis:
         condition: service_healthy
     init: true
     stop_grace_period: 5m
+
+  admin:
+    image: agent-worker:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["admin"]
+    restart: unless-stopped
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      QUEUE: simple-q
+      BOARD_ADDR: "0.0.0.0:8080"
+      RUST_LOG: info
+      RUST_BACKTRACE: "1"
+    depends_on:
+      redis:
+        condition: service_healthy
+    init: true
     ports:
       - "127.0.0.1:8080:8080"
 

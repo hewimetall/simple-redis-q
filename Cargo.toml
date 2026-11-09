@@ -7,7 +7,7 @@ edition = "2024"
 actix-web = "4.19.0"
 anyhow = "1.0.104"
 apalis = "1.0.0"
-apalis-board = { version = "1.0.0", features = ["actix"] }
+apalis-board = { version = "1.0.0", features = ["actix","ui"] }
 apalis-redis = "1.0.0"
 clap = { version = "4.6.7", features = ["derive"] }
 pyo3 = "0.30.1"

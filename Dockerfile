@@ -32,7 +32,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       --locked \
       --bindings bin \
       --compatibility linux \
-      --out /wheels
+      --out /wheels \
+      -v
 
 FROM python:3.12-slim-bookworm AS runtime
 
