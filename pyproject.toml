@@ -1,0 +1,20 @@
+[project]
+name = "simple-q"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[dependency-groups]
+dev = [
+    "maturin>=1.16.0",
+]
+
+[tool.maturin]
+bindings = "bin"
+python-source = "python"
+python-packages = ["simple_q"]
+module-name = "simple_q"
