@@ -1,3 +1,5 @@
+//! Server side. Metric files for one worker slot, on the local disk.
+
 use std::fs;
 use std::path::Path;
 
@@ -52,10 +54,7 @@ mod tests {
 
     #[test]
     fn a_thousand_slot_recycles_do_not_grow_the_directory() {
-        let dir = std::env::temp_dir().join(format!(
-            "simple-q-slot-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("simple-q-slot-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("counter_3.db"), b"keep").unwrap();

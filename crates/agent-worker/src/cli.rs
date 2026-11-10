@@ -13,7 +13,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Generate Python type stubs for the embedded Rust module.
+    /// Print where the checked-in Python stubs live. This does not generate them.
     Stubs,
 
     /// Execute one controller task directly, without Redis.

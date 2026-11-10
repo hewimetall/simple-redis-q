@@ -1,3 +1,11 @@
+"""Registry is the user-side entry and the dispatch decision.
+
+Actors and `on_send` are how application code drives a task. `dispatch` is the
+business step: resolve the lock key, run the handler, then retry or bury it.
+Redis and the in-memory queue are behind that step. They are not part of the
+decision.
+"""
+
 from __future__ import annotations
 
 import asyncio

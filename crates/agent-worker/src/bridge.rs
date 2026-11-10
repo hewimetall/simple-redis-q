@@ -1,3 +1,9 @@
+//! Adapter from the worker to the Python registry.
+//!
+//! The worker calls into Python by function name (`tracked`, `shutdown`,
+//! `note_retry`, `note_dead`). The job still crosses this boundary as JSON.
+//! That is the current seam, not a second model of the message.
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;

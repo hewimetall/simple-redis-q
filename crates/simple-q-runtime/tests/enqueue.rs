@@ -1,9 +1,9 @@
 use std::process::Command;
 use std::time::Duration;
 
+use simple_q_runtime::MESSAGE_VERSION;
 use simple_q_runtime::job::{Job, new_message_id};
 use simple_q_runtime::redis_api;
-use simple_q_runtime::MESSAGE_VERSION;
 
 fn redis(args: &[&str]) -> String {
     let output = Command::new("redis-cli")
@@ -20,7 +20,12 @@ async fn a_delayed_message_stays_on_its_own_queue() {
     if redis_api::install(url).await.is_err() {
         return;
     }
-    for key in ["qtest:scheduled", "qtest:data", "quota:scheduled", "quota:data"] {
+    for key in [
+        "qtest:scheduled",
+        "qtest:data",
+        "quota:scheduled",
+        "quota:data",
+    ] {
         let _ = redis(&["DEL", key]);
     }
     let message_id = new_message_id();
@@ -49,7 +54,9 @@ async fn a_delayed_message_stays_on_its_own_queue() {
     let stored = redis(&["HVALS", "qtest:data"]);
     assert!(stored.contains(&message_id), "{stored}");
     assert_eq!(
-        redis_api::incr_delivery(&message_id, 0).await.expect("delivery"),
+        redis_api::incr_delivery(&message_id, 0)
+            .await
+            .expect("delivery"),
         1
     );
     assert_eq!(redis(&["GET", &format!("delivery:{message_id}:0")]), "1");

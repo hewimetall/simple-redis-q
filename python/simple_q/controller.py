@@ -1,3 +1,9 @@
+"""Controller facade. It registers a method and sends a message.
+
+The dispatch decision lives on `Registry`. This module does not talk to Redis
+except to enqueue.
+"""
+
 from __future__ import annotations
 
 import logging

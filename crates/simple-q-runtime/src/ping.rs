@@ -1,3 +1,7 @@
+//! Business rule: how long a silent interpreter may stay silent.
+//!
+//! No Redis and no Python. The child supplies the ping result and the clock.
+
 use std::time::{Duration, Instant};
 
 /// Kill the child only after the loop has stayed silent for the whole budget.

@@ -1,3 +1,9 @@
+//! User side for producers. The importable module.
+//!
+//! `configure` is what opens Redis. Importing the module does not.
+//! The worker binary does not call these functions. It links the same crate
+//! and calls `redis_api` itself.
+
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 

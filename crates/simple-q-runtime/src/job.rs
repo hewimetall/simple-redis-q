@@ -1,3 +1,5 @@
+//! The message. No Redis and no Python. Producers and workers share this shape.
+
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
@@ -42,7 +44,8 @@ impl Job {
         if value.get("version").is_none() {
             bail!("message is missing version");
         }
-        let job: Self = serde_json::from_value(value).context("message does not match version 1")?;
+        let job: Self =
+            serde_json::from_value(value).context("message does not match version 1")?;
         job.validate()?;
         Ok(job)
     }
@@ -113,7 +116,12 @@ mod tests {
     fn a_missing_or_foreign_version_is_rejected() {
         let mut missing = sample();
         missing.as_object_mut().unwrap().remove("version");
-        assert!(Job::parse(missing).unwrap_err().to_string().contains("version"));
+        assert!(
+            Job::parse(missing)
+                .unwrap_err()
+                .to_string()
+                .contains("version")
+        );
 
         let mut foreign = sample();
         foreign["version"] = json!(2);

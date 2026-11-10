@@ -94,7 +94,7 @@ pub fn lock_redis_key(lock_key: &str) -> Result<String> {
     Ok(format!("{LOCK_PREFIX}{lock_key}"))
 }
 
-pub fn validate_lock_key(lock_key: &str) -> Result<()> {
+pub(crate) fn validate_lock_key(lock_key: &str) -> Result<()> {
     let canonical = !lock_key.is_empty()
         && !lock_key.starts_with(LOCK_PREFIX)
         && lock_key

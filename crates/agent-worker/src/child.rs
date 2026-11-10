@@ -1,3 +1,9 @@
+//! One child process: interpreter, Redis workers, and the silence watch.
+//!
+//! Order is fixed. Import the application and read its tracing config before
+//! the subscriber exists, then start workers. On a normal return, flush the
+//! exporter and only then call `shutdown` in Python. Exit 2 does not flush.
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
