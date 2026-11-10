@@ -12,6 +12,8 @@ ENV/
 # Python: build / packaging
 build/
 dist/
+*.so
+*.pyd
 *.egg-info/
 .eggs/
 *.egg

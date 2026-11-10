@@ -14,10 +14,9 @@ use tokio::signal::unix::{SignalKind, signal};
 
 use simple_q_runtime::cleanup::sweep_queue;
 use simple_q_runtime::lock;
-use simple_q_runtime::names::{self, ping_budget};
+use simple_q_runtime::names;
 use simple_q_runtime::ping::PingWatch;
 use simple_q_runtime::python::adopt_runtime;
-use simple_q_runtime::redis_api;
 use simple_q_runtime::registry;
 
 use crate::bridge;
@@ -29,6 +28,7 @@ const PING_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub fn run_child(
     app: String,
+    factory: bool,
     queues: Vec<String>,
     concurrency: usize,
     max_tasks: u64,
@@ -40,7 +40,7 @@ pub fn run_child(
         .map_err(|_| anyhow::anyhow!("Tokio runtime was already installed"))?;
 
     adopt_runtime(runtime);
-    let tracing = match bridge::start(&app) {
+    let tracing = match bridge::start(&app, factory) {
         Ok(tracing) => tracing,
         Err(error) => {
             if crate::telemetry::is_config_error(&error) {
@@ -55,7 +55,7 @@ pub fn run_child(
         std::process::exit(3);
     }
     runtime.block_on(async move {
-        redis_api::install_from_env().await?;
+        let (conn, config) = bridge::connect_client().await?;
         bridge::call_hook("startup").await?;
 
         let shared = Shared {
@@ -65,12 +65,16 @@ pub fn run_child(
             pool: WorkerPool::default(),
             max_tasks,
             worker_names: Arc::new(Mutex::new(Vec::new())),
+            redis: conn,
+            config: config.clone(),
         };
 
         let terminate = signal(SignalKind::terminate())?;
         let user = signal(SignalKind::user_defined1())?;
-        let lifecycle = lifecycle(shared.clone(), terminate, user);
+        let lifecycle = lifecycle(shared.clone(), terminate, user, config.ping_budget());
         let sweep_queues = queues.clone();
+        let sweep_redis = shared.redis.clone();
+        let sweep_config = config.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(60));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -82,10 +86,11 @@ pub fn run_child(
                     .unwrap_or(0);
                 for queue in &sweep_queues {
                     if let Err(error) = sweep_queue(
+                        &mut sweep_redis.clone(),
                         queue,
                         now,
-                        names::done_ttl_secs(),
-                        names::dead_ttl_secs(),
+                        sweep_config.done_ttl_secs,
+                        sweep_config.dead_ttl_secs,
                         names::SWEEP_BATCH,
                     )
                     .await
@@ -130,8 +135,9 @@ async fn lifecycle(
     shared: Shared,
     mut terminate: tokio::signal::unix::Signal,
     mut user: tokio::signal::unix::Signal,
+    ping_budget: std::time::Duration,
 ) -> Result<i32> {
-    let mut watch = PingWatch::new(ping_budget());
+    let mut watch = PingWatch::new(ping_budget);
     let mut next_ping = tokio::time::Instant::now();
 
     loop {

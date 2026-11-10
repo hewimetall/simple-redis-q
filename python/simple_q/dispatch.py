@@ -1,9 +1,7 @@
-"""Registry is the user-side entry and the dispatch decision.
+"""Actor declarations and the worker-side dispatch decision.
 
-Actors and `on_send` are how application code drives a task. `dispatch` is the
-business step: resolve the lock key, run the handler, then retry or bury it.
-Redis and the in-memory queue are behind that step. They are not part of the
-decision.
+``@actor`` returns a declaration. It is not bound to an ``App`` or a connection.
+``App`` holds the actor list, the worker-side hooks, and one client.
 """
 
 from __future__ import annotations
@@ -12,12 +10,24 @@ import asyncio
 import inspect
 import logging
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from simple_q.backoff import compute_backoff
 from simple_q.message import CurrentMessage, bind_message, reset_message
 from simple_q.metrics import finish_attempt, reject, start_attempt
-from simple_q.tracing import Tracing
+
+
+def validate_queue(queue: str) -> str:
+    if (
+        not isinstance(queue, str)
+        or not queue
+        or any(
+            not (("a" <= character <= "z") or ("0" <= character <= "9")) for character in queue
+        )
+    ):
+        raise ValueError(f"queue {queue!r} must be a lowercase ascii word such as 'default'")
+    return queue
 
 
 def _delivery_count(message: dict) -> int:
@@ -33,29 +43,6 @@ def _exception_text(caught: BaseException) -> str:
     return f"{type(caught).__name__}: {caught}"
 
 
-def _hook_accepts_error(hook) -> bool:
-    """Whether the dead-letter hook can take an ``error`` keyword.
-
-    ``inspect.signature`` follows ``functools.wraps`` via ``__wrapped__``.
-    A preserved five-argument hook stays on the original call. ``**kwargs``
-    or a parameter named ``error`` receives ``error=``.
-    """
-
-    try:
-        signature = inspect.signature(hook, follow_wrapped=True)
-    except (TypeError, ValueError):
-        return False
-    for parameter in signature.parameters.values():
-        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
-            return True
-        if parameter.name == "error" and parameter.kind in (
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            inspect.Parameter.KEYWORD_ONLY,
-        ):
-            return True
-    return False
-
-
 log = logging.getLogger("simple_q")
 
 DEFAULT_TIME_LIMIT_MS = 1_800_000
@@ -65,82 +52,66 @@ DEFAULT_MAX_DELIVERIES = 5
 MESSAGE_VERSION = 1
 
 
+@dataclass(frozen=True)
+class DeadLetter:
+    actor_name: str
+    kwargs: dict
+    reason: str
+    message_id: str
+    retries: int
+    deliveries: int
+    error: str | None
+
+
+@dataclass(frozen=True)
 class Actor:
-    def __init__(
-        self,
-        function,
-        *,
-        name: str,
-        queue: str,
-        max_retries: int,
-        time_limit: int,
-        min_backoff: int,
-        max_backoff: int,
-        lock_key: str | None,
-        lock_ttl: int,
-        skip_on_lock: bool,
-        max_deliveries: int,
-        registry: Registry | None = None,
-    ):
-        self.function = function
-        self.name = name
-        self.queue = queue
-        self.max_retries = max_retries
-        self.time_limit = time_limit
-        self.min_backoff = min_backoff
-        self.max_backoff = max_backoff
-        self.lock_key = lock_key
-        self.lock_ttl = lock_ttl
-        self.skip_on_lock = skip_on_lock
-        self.max_deliveries = max_deliveries
-        self.registry = registry
+    function: Any
+    name: str
+    queue: str
+    max_retries: int
+    time_limit: int
+    min_backoff: int
+    max_backoff: int
+    lock_key: str | None
+    lock_ttl: int
+    skip_on_lock: bool
+    max_deliveries: int
 
-    async def send(self, **kwargs) -> str:
-        message_id = await self.send_with_options(kwargs=kwargs)
-        if message_id is None:
-            raise RuntimeError("send did not enqueue a message")
-        return message_id
 
-    async def send_with_options(
-        self,
-        *,
-        kwargs: dict | None = None,
-        delay: int | None = None,
-        headers: dict | None = None,
-        unique_key: str | None = None,
-    ) -> str | None:
-        kwargs = dict(kwargs or {})
-        headers = dict(headers or {})
-        if self.registry is not None:
-            headers = self.registry.apply_on_send(self.name, kwargs, headers)
-        payload = build_message(
-            actor_name=self.name,
-            queue=self.queue,
-            kwargs=kwargs,
-            headers=headers,
-            max_retries=self.max_retries,
-            time_limit_ms=self.time_limit,
-            min_backoff_ms=self.min_backoff,
-            max_backoff_ms=self.max_backoff,
-            max_deliveries=self.max_deliveries,
-            lock_key=self.lock_key,
-            lock_ttl=self.lock_ttl,
-            skip_on_lock=self.skip_on_lock,
-            unique_key=unique_key,
+def actor(
+    fn=None,
+    *,
+    name: str | None = None,
+    queue: str = "default",
+    max_retries: int = 0,
+    time_limit: int = DEFAULT_TIME_LIMIT_MS,
+    min_backoff: int = DEFAULT_MIN_BACKOFF_MS,
+    max_backoff: int = DEFAULT_MAX_BACKOFF_MS,
+    lock_key: str | None = None,
+    lock_ttl: int = 30,
+    skip_on_lock: bool = False,
+    max_deliveries: int = DEFAULT_MAX_DELIVERIES,
+):
+    validate_queue(queue)
+
+    def decorate(function):
+        return Actor(
+            function,
+            name=name or function.__name__,
+            queue=queue,
+            max_retries=max_retries,
+            time_limit=time_limit,
+            min_backoff=min_backoff,
+            max_backoff=max_backoff,
+            lock_key=lock_key,
+            lock_ttl=lock_ttl,
+            skip_on_lock=skip_on_lock,
+            max_deliveries=max_deliveries,
         )
-        from simple_q.memory import enabled, push
 
-        if enabled():
-            if not push(payload):
-                return None
-            return payload["message_id"]
-        from simple_q_runtime import enqueue, is_configured
-
-        if not is_configured():
-            raise RuntimeError("call simple_q.configure(redis_url=...) before send")
-        import json
-
-        return await enqueue(json.dumps(payload), delay)
+    if fn is not None:
+        return decorate(fn)
+    return decorate
 
 
 def build_message(
@@ -161,6 +132,7 @@ def build_message(
     skip_on_lock: bool = False,
     unique_key: str | None = None,
 ) -> dict:
+    validate_queue(queue)
     if not isinstance(kwargs, dict):
         raise TypeError("kwargs must be a dict")
     if any(not isinstance(key, str) or not isinstance(value, str) for key, value in headers.items()):
@@ -191,58 +163,35 @@ def build_message(
     return message
 
 
-class Registry:
-    """Actor registry loaded by ``--app module:attribute``.
+class App:
+    """Actor list, worker-side hooks, and one client.
 
-    ``tracing=None`` is the default. The child then does not install an
-    OpenTelemetry layer and does not call into Python to export spans.
+    ``tracing=None`` leaves the OpenTelemetry layer uninstalled.
+    A repeated actor name fails at construction.
     """
 
-    def __init__(self, tracing: Tracing | None = None):
+    def __init__(
+        self,
+        *,
+        client,
+        actors,
+        on_start=None,
+        on_stop=None,
+        on_dead=None,
+        around_dispatch=None,
+        tracing=None,
+    ):
+        self.client = client
         self.tracing = tracing
         self.actors: dict[str, Actor] = {}
-        self._on_start = []
-        self._on_stop = []
-        self._on_dead = []
-        self._on_send = []
-        self._around_dispatch = []
-
-    def actor(
-        self,
-        fn=None,
-        *,
-        name: str | None = None,
-        queue: str = "default",
-        max_retries: int = 0,
-        time_limit: int = DEFAULT_TIME_LIMIT_MS,
-        min_backoff: int = DEFAULT_MIN_BACKOFF_MS,
-        max_backoff: int = DEFAULT_MAX_BACKOFF_MS,
-        lock_key: str | None = None,
-        lock_ttl: int = 30,
-        skip_on_lock: bool = False,
-        max_deliveries: int = DEFAULT_MAX_DELIVERIES,
-    ):
-        def decorate(function):
-            actor = Actor(
-                function,
-                name=name or function.__name__,
-                queue=queue,
-                max_retries=max_retries,
-                time_limit=time_limit,
-                min_backoff=min_backoff,
-                max_backoff=max_backoff,
-                lock_key=lock_key,
-                lock_ttl=lock_ttl,
-                skip_on_lock=skip_on_lock,
-                max_deliveries=max_deliveries,
-                registry=self,
-            )
-            self.actors[actor.name] = actor
-            return actor
-
-        if fn is not None:
-            return decorate(fn)
-        return decorate
+        for declared in actors:
+            if declared.name in self.actors:
+                raise ValueError(f"actor {declared.name!r} is already registered")
+            self.actors[declared.name] = declared
+        self._on_start = list(on_start or [])
+        self._on_stop = list(on_stop or [])
+        self._on_dead = list(on_dead or [])
+        self._around_dispatch = list(around_dispatch or [])
 
     def on_start(self, fn):
         self._on_start.append(fn)
@@ -256,17 +205,6 @@ class Registry:
         self._on_dead.append(fn)
         return fn
 
-    def on_send(self, fn):
-        """Adjust headers before enqueue, on the caller's task.
-
-        The hook is synchronous and runs before the Rust boundary, so a
-        ``contextvars.ContextVar`` set by the caller is visible here.
-        Return the headers mapping to store on the message.
-        """
-
-        self._on_send.append(fn)
-        return fn
-
     def around_dispatch(self, fn):
         """Wrap handler execution, including retry and dead decisions.
 
@@ -277,38 +215,21 @@ class Registry:
         self._around_dispatch.append(fn)
         return fn
 
-    def apply_on_send(self, actor_name: str, kwargs: dict, headers: dict) -> dict:
-        current = dict(headers)
-        for hook in self._on_send:
-            updated = hook(actor_name, kwargs, current)
-            if updated is None:
-                continue
-            if not isinstance(updated, dict):
-                raise TypeError("on_send hook must return a headers dict")
-            current = dict(updated)
-        if any(not isinstance(key, str) or not isinstance(value, str) for key, value in current.items()):
-            raise TypeError("headers must be dict[str, str]")
-        return current
-
     async def startup(self) -> None:
         await self._run_hooks(self._on_start, "start")
 
     async def shutdown(self) -> None:
         await self._run_hooks(self._on_stop, "stop")
 
-    async def execute(self, task_name: str, payload: dict):
-        actor = self.actors[task_name]
-        return await actor.function(**(payload or {}))
-
     async def dispatch(self, message: dict) -> dict:
         actor_name = str(message.get("actor_name") or "")
-        actor = self.actors.get(actor_name)
-        queue = message.get("queue") or (actor.queue if actor is not None else "default")
+        declared = self.actors.get(actor_name)
+        queue = message.get("queue") or (declared.queue if declared is not None else "default")
         kwargs = message.get("kwargs") if isinstance(message.get("kwargs"), dict) else {}
         current = CurrentMessage(
             message_id=str(message.get("message_id") or ""),
             retries=int(message.get("retries") or 0),
-            max_retries=int(message.get("max_retries", actor.max_retries if actor else 0)),
+            max_retries=int(message.get("max_retries", declared.max_retries if declared else 0)),
             queue_name=str(queue),
             actor_name=actor_name,
             kwargs=dict(kwargs),
@@ -322,7 +243,7 @@ class Registry:
         try:
 
             async def call_next():
-                return await self._dispatch_bound(message, actor, current)
+                return await self._dispatch_bound(message, declared, current)
 
             return await self._run_around(message, call_next)
         finally:
@@ -335,13 +256,14 @@ class Registry:
         reason: str,
         message_id: str,
         retries: int,
+        deliveries: int = 0,
         *,
         error: str | None = None,
     ) -> None:
-        """Record a dead-letter from the worker when Python dispatch did not run.
+        """Record a dead-letter when Python dispatch did not run.
 
-        ``error`` is ``"{type}: {message}"`` when a handler exception buried
-        the message, and ``None`` for poison, invalid, and unknown actors.
+        ``error`` is ``"{type}: {message}"`` for retries and timeout, and
+        ``None`` for poison, invalid, and unknown actors.
         """
 
         await self._dead(
@@ -350,34 +272,36 @@ class Registry:
             reason,
             str(message_id),
             int(retries),
+            int(deliveries),
             error=error,
         )
 
-    async def _dispatch_bound(self, message: dict, actor: Actor | None, current: CurrentMessage) -> dict:
+    async def _dispatch_bound(self, message: dict, declared: Actor | None, current: CurrentMessage) -> dict:
         actor_name = current.actor_name
-        if actor is None:
+        if declared is None:
             await self._dead(
                 actor_name,
                 current.kwargs,
                 "unknown_actor",
                 current.message_id,
                 current.retries,
+                current.deliveries,
                 error=None,
             )
             return {"outcome": "dead", "reason": "unknown_actor"}
 
         queue = current.queue_name
         message_id = current.message_id
-        # The worker buries poison before it calls dispatch. This branch is
-        # the in-memory queue and a direct dispatch, which never reach that check.
+        # Poison is `deliveries > max_deliveries`. The attempt at the limit still runs.
         deliveries = int(message.get("deliveries") or 1)
-        if deliveries > int(message.get("max_deliveries") or actor.max_deliveries):
+        if deliveries > int(message.get("max_deliveries") or declared.max_deliveries):
             await self._dead(
                 actor_name,
                 current.kwargs,
                 "poison",
                 message_id,
                 current.retries,
+                deliveries,
                 error=None,
             )
             reject(queue, actor_name)
@@ -389,18 +313,18 @@ class Registry:
         error = None
         rejected = False
         try:
-            lock_key = resolve_lock_key(message.get("lock_key") or actor.lock_key, current.kwargs)
+            lock_key = resolve_lock_key(message.get("lock_key") or declared.lock_key, current.kwargs)
             if lock_key:
-                from simple_q_runtime import acquire_lock
-
-                owner = await acquire_lock(lock_key, int(message.get("lock_ttl") or actor.lock_ttl))
+                owner = await self.client.acquire_lock(
+                    lock_key, int(message.get("lock_ttl") or declared.lock_ttl)
+                )
                 if owner is None:
-                    if message.get("skip_on_lock", actor.skip_on_lock):
+                    if message.get("skip_on_lock", declared.skip_on_lock):
                         return {"outcome": "skipped"}
                     raise RuntimeError(f"lock busy: {lock_key}")
             try:
-                timeout = int(message.get("time_limit_ms") or actor.time_limit) / 1000
-                result = await asyncio.wait_for(actor.function(**current.kwargs), timeout)
+                timeout = int(message.get("time_limit_ms") or declared.time_limit) / 1000
+                result = await asyncio.wait_for(declared.function(**current.kwargs), timeout)
             except (TimeoutError, asyncio.TimeoutError) as caught:
                 error = caught
                 if current.retries >= current.max_retries:
@@ -411,10 +335,11 @@ class Registry:
                         "timeout",
                         message_id,
                         current.retries,
+                        current.deliveries,
                         error=_exception_text(caught),
                     )
                     return {"outcome": "dead", "reason": "timeout"}
-                return await self._retry(message, actor, current)
+                return await self._retry(message, declared, current)
             except Exception as caught:
                 error = caught
                 if current.retries >= current.max_retries:
@@ -425,15 +350,16 @@ class Registry:
                         "retries",
                         message_id,
                         current.retries,
+                        current.deliveries,
                         error=_exception_text(caught),
                     )
                     return {"outcome": "dead", "reason": "retries"}
-                return await self._retry(message, actor, current)
+                return await self._retry(message, declared, current)
             else:
                 return {"outcome": "ok", "result": result}
         finally:
             if owner is not None and lock_key is not None:
-                await _release(lock_key, owner)
+                await _release(self.client, lock_key, owner)
             finish_attempt(
                 message_id,
                 queue,
@@ -448,11 +374,11 @@ class Registry:
             chain = _bind_around(hook, message, chain)
         return await chain()
 
-    async def _retry(self, message: dict, actor: Actor, current: CurrentMessage) -> dict:
+    async def _retry(self, message: dict, declared: Actor, current: CurrentMessage) -> dict:
         delay_ms = compute_backoff(
             current.retries,
-            min_backoff=int(message.get("min_backoff_ms") or actor.min_backoff),
-            max_backoff=int(message.get("max_backoff_ms") or actor.max_backoff),
+            min_backoff=int(message.get("min_backoff_ms") or declared.min_backoff),
+            max_backoff=int(message.get("max_backoff_ms") or declared.max_backoff),
         )
         return {"outcome": "retry", "delay_ms": delay_ms}
 
@@ -463,15 +389,22 @@ class Registry:
         reason: str,
         message_id: str,
         retries: int,
+        deliveries: int,
         *,
         error: str | None = None,
     ) -> None:
+        letter = DeadLetter(
+            actor_name=actor_name,
+            kwargs=dict(kwargs),
+            reason=reason,
+            message_id=message_id,
+            retries=retries,
+            deliveries=deliveries,
+            error=error,
+        )
         for hook in self._on_dead:
             try:
-                if _hook_accepts_error(hook):
-                    result = hook(actor_name, kwargs, reason, message_id, retries, error=error)
-                else:
-                    result = hook(actor_name, kwargs, reason, message_id, retries)
+                result = hook(letter)
                 if inspect.isawaitable(result):
                     await result
             except Exception:
@@ -487,11 +420,9 @@ class Registry:
                 log.exception("%s hook failed", label)
 
 
-async def _release(lock_key: str, owner: str) -> None:
+async def _release(client, lock_key: str, owner: str) -> None:
     try:
-        from simple_q_runtime import release_lock
-
-        await release_lock(lock_key, owner)
+        await client.release_lock(lock_key, owner)
     except Exception:
         log.warning("lock release failed for %s; the task result stands", lock_key, exc_info=True)
 
@@ -508,7 +439,11 @@ class _FormatKwargs(dict):
 
 
 def resolve_lock_key(template: str | None, kwargs: dict) -> str | None:
-    """Fill ``{field}`` placeholders in a lock key from the message kwargs."""
+    """Fill ``{field}`` placeholders in a lock key from the message kwargs.
+
+    A resolved key is ASCII letters, digits, and ``:._-``, without a ``lock:`` prefix.
+    ``cache:calc:{project_name}`` is the template shape.
+    """
 
     if not template:
         return None
@@ -540,9 +475,3 @@ def _bind_around(hook, message: dict, inner):
         return result
 
     return wrapped
-
-
-def configure(redis_url: str) -> None:
-    from simple_q_runtime import install
-
-    install(redis_url)

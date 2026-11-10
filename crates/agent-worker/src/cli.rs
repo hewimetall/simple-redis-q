@@ -13,16 +13,17 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Print where the checked-in Python stubs live. This does not generate them.
-    Stubs,
-
-    /// Execute one controller task directly, without Redis.
+    /// Execute one actor directly, without Redis.
     Execute {
         /// Python application in module:attribute format.
-        #[arg(long, default_value = "simple_q.app:app")]
+        #[arg(long)]
         app: String,
 
-        /// Task name passed to the controller.
+        /// Call the attribute. It must return an App.
+        #[arg(long)]
+        factory: bool,
+
+        /// Actor name on the App.
         #[arg(long, default_value = "demo")]
         task: String,
 
@@ -39,7 +40,7 @@ pub enum Command {
 
     /// Enqueue one JSON payload. Fails immediately when Redis is unavailable.
     Enqueue {
-        /// Queue name. A lowercase word such as `default` or `quota`.
+        /// Queue name. A lowercase word such as `default`.
         #[arg(long)]
         queue: String,
 
@@ -70,9 +71,13 @@ pub enum Command {
 
     /// Run queue workers. Without `--child` this process only supervises children.
     Worker {
-        /// Python registry in module:attribute format.
-        #[arg(long, default_value = "simple_q.app:app")]
+        /// Python App in module:attribute format.
+        #[arg(long)]
         app: String,
+
+        /// Call the attribute. It must return an App.
+        #[arg(long)]
+        factory: bool,
 
         /// Queues assigned to this process, comma-separated.
         #[arg(long, value_delimiter = ',', default_value = "default")]
@@ -92,15 +97,13 @@ pub enum Command {
 
         /// Soft RSS limit for one child, such as `512K`, `1500M`, or `1G`.
         /// `K`, `M`, and `G` are powers of 1024. A bare number is bytes.
-        /// When this flag is omitted, `SIMPLE_Q_CHILD_MEMORY_SOFT` is used.
-        /// The flag wins when both are set.
+        /// Overrides the soft byte limit on the App config.
         #[arg(long)]
         child_memory_soft: Option<String>,
 
         /// Hard RSS limit for one child, such as `512K`, `1500M`, or `1G`.
         /// `K`, `M`, and `G` are powers of 1024. A bare number is bytes.
-        /// When this flag is omitted, `SIMPLE_Q_CHILD_MEMORY_HARD` is used.
-        /// The flag wins when both are set.
+        /// Overrides the hard byte limit on the App config.
         #[arg(long)]
         child_memory_hard: Option<String>,
 

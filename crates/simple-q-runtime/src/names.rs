@@ -1,6 +1,6 @@
 //! Names shared by producers and workers.
 //!
-//! Product queues are the single lowercase words `default` and `quota`.
+//! A queue is one non-empty word of lowercase ASCII letters and digits.
 
 use std::time::Duration;
 
@@ -9,7 +9,8 @@ use anyhow::{Result, bail};
 pub const LOCK_PREFIX: &str = "lock:";
 pub const MESSAGE_VERSION: u32 = 1;
 pub const DEFAULT_QUEUE: &str = "default";
-pub const QUOTA_QUEUE: &str = "quota";
+/// First field of a worker name. The queue is the second field.
+pub const WORKER_NAME_PREFIX: &str = "agent-worker";
 pub const HEARTBEAT_INTERVAL_SECS: u64 = 15;
 pub const MISSED_HEARTBEATS: usize = 4;
 pub const DEFAULT_TIME_LIMIT_MS: u64 = 30 * 60 * 1000;
@@ -22,73 +23,8 @@ pub const DEFAULT_DEAD_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 pub const DEFAULT_MAX_DELIVERIES: u32 = 5;
 pub const SWEEP_BATCH: usize = 100;
 
-pub fn orphan_window_secs() -> u64 {
-    heartbeat_interval_secs() * missed_heartbeats() as u64
-}
-
-pub fn heartbeat_interval_secs() -> u64 {
-    std::env::var("SIMPLE_Q_HEARTBEAT_SECS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(HEARTBEAT_INTERVAL_SECS)
-}
-
-pub fn missed_heartbeats() -> usize {
-    std::env::var("SIMPLE_Q_MISSED_HEARTBEATS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(MISSED_HEARTBEATS)
-}
-
 pub fn default_ping_budget() -> Duration {
     Duration::from_secs(DEFAULT_TIME_LIMIT_MS / 1000 + PING_MARGIN_SECS)
-}
-
-pub fn ping_budget() -> Duration {
-    match std::env::var("SIMPLE_Q_PING_BUDGET_SECS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-    {
-        Some(secs) => Duration::from_secs(secs),
-        None => default_ping_budget(),
-    }
-}
-
-pub fn done_ttl_secs() -> u64 {
-    std::env::var("SIMPLE_Q_DONE_TTL_SECS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(DEFAULT_DONE_TTL_SECS)
-}
-
-pub fn dead_ttl_secs() -> u64 {
-    std::env::var("SIMPLE_Q_DEAD_TTL_SECS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(DEFAULT_DEAD_TTL_SECS)
-}
-
-/// How long a first send may hold `unique_key`.
-///
-/// Zero is not a TTL. The idempotency script treats the string `"0"` as
-/// present and `EXPIRE 0` deletes the key immediately.
-pub fn unique_ttl_secs() -> u64 {
-    std::env::var("SIMPLE_Q_UNIQUE_TTL_SECS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_UNIQUE_TTL_SECS)
-}
-
-pub fn max_deliveries() -> u32 {
-    std::env::var("SIMPLE_Q_MAX_DELIVERIES")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_MAX_DELIVERIES)
 }
 
 pub fn validate_queue(queue: &str) -> Result<()> {
@@ -97,7 +33,7 @@ pub fn validate_queue(queue: &str) -> Result<()> {
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
     {
-        bail!("queue `{queue}` must be a lowercase ascii word such as `default` or `quota`");
+        bail!("queue `{queue}` must be a lowercase ascii word such as `default`");
     }
     Ok(())
 }
@@ -126,13 +62,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn product_queue_names_are_default_and_quota() {
+    fn a_queue_name_is_one_lowercase_word() {
         assert!(validate_queue(DEFAULT_QUEUE).is_ok());
-        assert!(validate_queue(QUOTA_QUEUE).is_ok());
+        assert!(validate_queue("holdq").is_ok());
         assert!(validate_queue("fan-out").is_err());
         assert!(validate_queue("fan_out").is_err());
         assert!(validate_queue("simple-q").is_err());
         assert!(validate_queue("").is_err());
+        let error = validate_queue("Bad").unwrap_err().to_string();
+        assert!(error.contains("default"), "{error}");
     }
 
     #[test]
@@ -167,8 +105,9 @@ mod tests {
 
     #[test]
     fn unique_keys_keep_a_positive_ttl() {
+        // Zero is not a TTL. The idempotency script treats the string `"0"` as
+        // present and `EXPIRE 0` deletes the key immediately.
         assert_eq!(DEFAULT_UNIQUE_TTL_SECS, 86_400);
         assert!(DEFAULT_UNIQUE_TTL_SECS > 0);
-        assert!(unique_ttl_secs() > 0);
     }
 }

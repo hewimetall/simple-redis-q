@@ -3,8 +3,10 @@ use std::time::Duration;
 
 use simple_q_runtime::MESSAGE_VERSION;
 use simple_q_runtime::cleanup::{delete_worker_metadata, sweep_queue};
+use simple_q_runtime::config::Config;
 use simple_q_runtime::job::{Job, new_message_id};
 use simple_q_runtime::redis_api;
+use simple_q_runtime::redis_api::ConnectionManager;
 
 fn redis(args: &[&str]) -> String {
     let output = Command::new("redis-cli")
@@ -75,8 +77,8 @@ fn del_queue(queue: &str) {
 #[test]
 fn idempotency_keys_live_beside_the_queue() {
     assert_eq!(
-        redis_api::idempotency_redis_key("default", "recalc:proj-42"),
-        "default:idempotency:recalc:proj-42"
+        redis_api::idempotency_redis_key("default", "recalc:42"),
+        "default:idempotency:recalc:42"
     );
     let first = job("default", "m-1", 0, Some("recalc:proj-42"));
     let retry = job("default", "m-1", 1, Some("recalc:proj-42"));
@@ -89,24 +91,24 @@ fn idempotency_keys_live_beside_the_queue() {
 
 #[tokio::test]
 async fn redis_enqueue_on_database_15() {
-    // One runtime owns the connection. A second `tokio::test` would reuse the
-    // process-wide client after its driver task had already stopped.
-    let url = "redis://127.0.0.1:6379/15".to_owned();
-    if redis_api::install(url).await.is_err() {
+    let url = "redis://127.0.0.1:6379/15";
+    let Ok(mut conn) = redis_api::connect(url).await else {
         return;
-    }
-    a_delayed_message_stays_on_its_own_queue().await;
-    sweep_removes_worker_metadata_absent_from_the_workers_set().await;
-    a_unique_key_is_held_until_a_terminal_delete().await;
-    a_delayed_unique_task_is_placed_when_it_is_scheduled().await;
+    };
+    let settings = Config::defaults();
+    a_delayed_message_stays_on_its_own_queue(&mut conn, &settings).await;
+    sweep_removes_worker_metadata_absent_from_the_workers_set(&mut conn).await;
+    a_unique_key_is_held_until_a_terminal_delete(&mut conn, &settings).await;
+    a_delayed_unique_task_is_placed_when_it_is_scheduled(&mut conn, &settings).await;
+    a_retry_waiting_past_the_unique_ttl_still_holds_the_key(&mut conn).await;
 }
 
-async fn a_delayed_message_stays_on_its_own_queue() {
+async fn a_delayed_message_stays_on_its_own_queue(conn: &mut ConnectionManager, settings: &Config) {
     for key in [
         "qtest:scheduled",
         "qtest:data",
-        "quota:scheduled",
-        "quota:data",
+        "otherq:scheduled",
+        "otherq:data",
     ] {
         let _ = redis(&["DEL", key]);
     }
@@ -129,16 +131,16 @@ async fn a_delayed_message_stays_on_its_own_queue() {
         skip_on_lock: false,
         unique_key: None,
     };
-    redis_api::enqueue_job(job, Some(Duration::from_secs(30)))
+    redis_api::enqueue_job(conn, settings, job, Some(Duration::from_secs(30)))
         .await
         .expect("enqueue")
         .expect("queued");
     assert_eq!(redis(&["ZCARD", "qtest:scheduled"]), "1");
-    assert_eq!(redis(&["ZCARD", "quota:scheduled"]), "0");
+    assert_eq!(redis(&["ZCARD", "otherq:scheduled"]), "0");
     let stored = redis(&["HVALS", "qtest:data"]);
     assert!(stored.contains(&message_id), "{stored}");
     assert_eq!(
-        redis_api::incr_delivery(&message_id, 0)
+        redis_api::incr_delivery(conn, &message_id, 0)
             .await
             .expect("delivery"),
         1
@@ -147,13 +149,15 @@ async fn a_delayed_message_stays_on_its_own_queue() {
     assert_eq!(redis(&["GET", &key]), "1");
     let ttl = redis(&["TTL", &key]);
     assert!(ttl.parse::<i64>().expect("ttl") > 0, "{ttl}");
-    redis_api::release_delivery(&message_id, 0)
+    redis_api::release_delivery(conn, &message_id, 0)
         .await
         .expect("release");
     assert_eq!(redis(&["GET", &key]), "");
 }
 
-async fn sweep_removes_worker_metadata_absent_from_the_workers_set() {
+async fn sweep_removes_worker_metadata_absent_from_the_workers_set(
+    conn: &mut ConnectionManager,
+) {
     let queue = "wmeta745b";
     let workers = format!("{queue}:workers");
     let gone_name = "agent-worker.wmeta745b.host.1.gone0001";
@@ -191,7 +195,7 @@ async fn sweep_removes_worker_metadata_absent_from_the_workers_set() {
         "exit",
     ]);
 
-    sweep_queue(queue, 0, 0, 0, 10).await.expect("sweep");
+    sweep_queue(conn, queue, 0, 0, 0, 10).await.expect("sweep");
 
     assert_eq!(
         redis(&["EXISTS", &gone_key]),
@@ -202,7 +206,7 @@ async fn sweep_removes_worker_metadata_absent_from_the_workers_set() {
     assert_eq!(redis(&["ZSCORE", &workers, live_name]), "1");
     assert_eq!(redis(&["EXISTS", &format!("{queue}:data")]), "0");
 
-    delete_worker_metadata(queue, exit_name)
+    delete_worker_metadata(conn, queue, exit_name)
         .await
         .expect("delete metadata");
     assert_eq!(redis(&["EXISTS", &exit_key]), "0");
@@ -212,14 +216,17 @@ async fn sweep_removes_worker_metadata_absent_from_the_workers_set() {
     }
 }
 
-async fn a_unique_key_is_held_until_a_terminal_delete() {
+async fn a_unique_key_is_held_until_a_terminal_delete(
+    conn: &mut ConnectionManager,
+    settings: &Config,
+) {
     let queue = "uniq";
     let unique = "recalc:proj-42";
     del_queue(queue);
     let idem = redis_api::idempotency_redis_key(queue, unique);
 
     let first_id = new_message_id();
-    let queued = redis_api::enqueue_job(job(queue, &first_id, 0, Some(unique)), None)
+    let queued = redis_api::enqueue_job(conn, settings, job(queue, &first_id, 0, Some(unique)), None)
         .await
         .expect("enqueue");
     assert_eq!(queued.as_deref(), Some(first_id.as_str()));
@@ -232,7 +239,8 @@ async fn a_unique_key_is_held_until_a_terminal_delete() {
     assert!(stored.contains(&first_id), "{stored}");
     assert!(stored.contains(unique), "{stored}");
 
-    let duplicate = redis_api::enqueue_job(job(queue, &new_message_id(), 0, Some(unique)), None)
+    let duplicate =
+        redis_api::enqueue_job(conn, settings, job(queue, &new_message_id(), 0, Some(unique)), None)
         .await
         .expect("duplicate");
     assert_eq!(duplicate, None);
@@ -243,7 +251,8 @@ async fn a_unique_key_is_held_until_a_terminal_delete() {
     );
     assert_eq!(redis(&["GET", &idem]), held);
 
-    let retry = redis_api::enqueue_job(job(queue, &first_id, 1, Some(unique)), None)
+    let retry =
+        redis_api::enqueue_job(conn, settings, job(queue, &first_id, 1, Some(unique)), None)
         .await
         .expect("retry");
     assert_eq!(retry.as_deref(), Some(first_id.as_str()));
@@ -254,13 +263,14 @@ async fn a_unique_key_is_held_until_a_terminal_delete() {
         "a retry must leave the held key in place"
     );
 
-    redis_api::release_idempotency(queue, unique)
+    redis_api::release_idempotency(conn, queue, unique)
         .await
         .expect("release");
     assert_eq!(redis(&["GET", &idem]), "");
 
     let again_id = new_message_id();
-    let again = redis_api::enqueue_job(job(queue, &again_id, 0, Some(unique)), None)
+    let again =
+        redis_api::enqueue_job(conn, settings, job(queue, &again_id, 0, Some(unique)), None)
         .await
         .expect("reenqueue");
     assert_eq!(again.as_deref(), Some(again_id.as_str()));
@@ -269,13 +279,18 @@ async fn a_unique_key_is_held_until_a_terminal_delete() {
     del_queue(queue);
 }
 
-async fn a_delayed_unique_task_is_placed_when_it_is_scheduled() {
+async fn a_delayed_unique_task_is_placed_when_it_is_scheduled(
+    conn: &mut ConnectionManager,
+    settings: &Config,
+) {
     let queue = "uniqd";
     let unique = "recalc:proj-42";
     del_queue(queue);
     let idem = redis_api::idempotency_redis_key(queue, unique);
     let message_id = new_message_id();
     let queued = redis_api::enqueue_job(
+        conn,
+        settings,
         job(queue, &message_id, 0, Some(unique)),
         Some(Duration::from_secs(30)),
     )
@@ -288,6 +303,8 @@ async fn a_delayed_unique_task_is_placed_when_it_is_scheduled() {
     assert!(ttl > 0, "{ttl}");
 
     let duplicate = redis_api::enqueue_job(
+        conn,
+        settings,
         job(queue, &new_message_id(), 0, Some(unique)),
         Some(Duration::from_secs(30)),
     )
@@ -296,5 +313,63 @@ async fn a_delayed_unique_task_is_placed_when_it_is_scheduled() {
     assert_eq!(duplicate, None);
     assert_eq!(redis(&["ZCARD", &format!("{queue}:scheduled")]), "1");
     assert_eq!(hlen(queue), 1);
+    del_queue(queue);
+}
+
+async fn a_retry_waiting_past_the_unique_ttl_still_holds_the_key(conn: &mut ConnectionManager) {
+    let settings = Config::defaults().with_unique_ttl(2).expect("ttl");
+    let queue = "uniqwait";
+    let unique = "recalc:42";
+    del_queue(queue);
+    let idem = redis_api::idempotency_redis_key(queue, unique);
+    let message_id = new_message_id();
+    let queued = redis_api::enqueue_job(
+        conn,
+        &settings,
+        job(queue, &message_id, 0, Some(unique)),
+        None,
+    )
+    .await
+    .expect("enqueue");
+    assert_eq!(queued.as_deref(), Some(message_id.as_str()));
+
+    let delay = Duration::from_secs(5);
+    let retry = redis_api::enqueue_job(
+        conn,
+        &settings,
+        job(queue, &message_id, 1, Some(unique)),
+        Some(delay),
+    )
+    .await
+    .expect("retry");
+    assert_eq!(retry.as_deref(), Some(message_id.as_str()));
+    let ttl: i64 = redis(&["TTL", &idem]).parse().expect("ttl");
+    assert!(
+        ttl >= 6,
+        "delay plus unique ttl should outlive the base ttl, got {ttl}"
+    );
+
+    let second = redis_api::enqueue_job(
+        conn,
+        &settings,
+        job(queue, &new_message_id(), 0, Some(unique)),
+        None,
+    )
+    .await
+    .expect("second");
+    assert_eq!(second, None);
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let ttl_after: i64 = redis(&["TTL", &idem]).parse().expect("ttl");
+    assert!(ttl_after > 0, "{ttl_after}");
+    let third = redis_api::enqueue_job(
+        conn,
+        &settings,
+        job(queue, &new_message_id(), 0, Some(unique)),
+        None,
+    )
+    .await
+    .expect("third");
+    assert_eq!(third, None);
     del_queue(queue);
 }

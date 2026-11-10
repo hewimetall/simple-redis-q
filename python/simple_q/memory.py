@@ -1,79 +1,138 @@
-"""In-memory stand-in for Redis enqueue.
+"""In-memory client with the same awaitable interface as ``Client``.
 
-``enable_memory`` makes ``Actor.send`` append messages to a process-local
-queue. ``drain`` runs those messages through ``Registry.dispatch`` until the
-queue is empty, including messages sent while a handler is running.
-
-A ``unique_key`` is held while its message is queued or being drained.
-A second send of that key returns no message id until ``drain`` finishes it.
-This mode does not open Redis.
+``drain`` runs queued messages through ``App.dispatch``, including messages
+sent by a handler. A ``unique_key`` stays held until a terminal outcome.
+This client does not open Redis.
 """
 
 from __future__ import annotations
 
-_ENABLED = False
-_QUEUES: dict[str, list[dict]] = {}
-_HELD: set[tuple[str, str]] = set()
+from simple_q.dispatch import build_message
 
 
-def enable_memory() -> None:
-    global _ENABLED
-    _ENABLED = True
-    _QUEUES.clear()
-    _HELD.clear()
+class MemoryClient:
+    def __init__(self, config=None):
+        self.config = config
+        self._queues: dict[str, list[dict]] = {}
+        self._held: set[tuple[str, str]] = set()
+        self._on_send = []
+        self._locks: dict[str, str] = {}
+        self._closed = False
 
+    def on_send(self, fn):
+        self._on_send.append(fn)
+        return fn
 
-def disable_memory() -> None:
-    global _ENABLED
-    _ENABLED = False
-    _QUEUES.clear()
-    _HELD.clear()
+    def _apply_on_send(self, actor_name: str, kwargs: dict, headers: dict) -> dict:
+        current = dict(headers)
+        for hook in self._on_send:
+            updated = hook(actor_name, kwargs, current)
+            if updated is None:
+                continue
+            if not isinstance(updated, dict):
+                raise TypeError("on_send hook must return a headers dict")
+            current = dict(updated)
+        if any(not isinstance(key, str) or not isinstance(value, str) for key, value in current.items()):
+            raise TypeError("headers must be dict[str, str]")
+        return current
 
+    async def send(self, actor, **kwargs) -> str:
+        message_id = await self.send_with_options(actor, kwargs=kwargs)
+        if message_id is None:
+            raise RuntimeError("send did not enqueue a message")
+        return message_id
 
-def enabled() -> bool:
-    return _ENABLED
+    async def send_with_options(
+        self,
+        actor,
+        *,
+        kwargs: dict | None = None,
+        delay: int | None = None,
+        headers: dict | None = None,
+        unique_key: str | None = None,
+    ) -> str | None:
+        if self._closed:
+            raise RuntimeError("client is closed")
+        kwargs = dict(kwargs or {})
+        headers = self._apply_on_send(actor.name, kwargs, dict(headers or {}))
+        payload = build_message(
+            actor_name=actor.name,
+            queue=actor.queue,
+            kwargs=kwargs,
+            headers=headers,
+            max_retries=actor.max_retries,
+            time_limit_ms=actor.time_limit,
+            min_backoff_ms=actor.min_backoff,
+            max_backoff_ms=actor.max_backoff,
+            max_deliveries=actor.max_deliveries,
+            lock_key=actor.lock_key,
+            lock_ttl=actor.lock_ttl,
+            skip_on_lock=actor.skip_on_lock,
+            unique_key=unique_key,
+        )
+        if delay:
+            payload["delay_ms"] = int(delay)
+        if not self._push(payload):
+            return None
+        return payload["message_id"]
 
+    async def worker_alive(self, name: str) -> bool:
+        return True
 
-def depth(queue: str) -> int:
-    return len(_QUEUES.get(str(queue), ()))
+    async def close(self) -> None:
+        self._closed = True
 
+    async def acquire_lock(self, key: str, ttl: int) -> str | None:
+        if key in self._locks:
+            return None
+        self._locks[key] = "memory"
+        return "memory"
 
-def _token(message: dict) -> tuple[str, str] | None:
-    key = message.get("unique_key")
-    if not isinstance(key, str) or not key:
+    async def release_lock(self, key: str, owner: str) -> bool:
+        if self._locks.get(key) != owner:
+            return False
+        del self._locks[key]
+        return True
+
+    async def drain(self, app) -> None:
+        while True:
+            message = self._pop()
+            if message is None:
+                return
+            try:
+                result = await app.dispatch(message)
+            except Exception:
+                self._release_unique(message)
+                raise
+            outcome = result.get("outcome") if isinstance(result, dict) else None
+            if outcome != "retry":
+                self._release_unique(message)
+
+    def depth(self, queue: str) -> int:
+        return len(self._queues.get(str(queue), ()))
+
+    def _token(self, message: dict) -> tuple[str, str] | None:
+        key = message.get("unique_key")
+        if not isinstance(key, str) or not key:
+            return None
+        return (str(message.get("queue")), key)
+
+    def _push(self, message: dict) -> bool:
+        token = self._token(message)
+        if token is not None and token in self._held:
+            return False
+        if token is not None:
+            self._held.add(token)
+        self._queues.setdefault(str(message["queue"]), []).append(message)
+        return True
+
+    def _pop(self) -> dict | None:
+        for pending in self._queues.values():
+            if pending:
+                return pending.pop(0)
         return None
-    return (str(message.get("queue")), key)
 
-
-def push(message: dict) -> bool:
-    token = _token(message)
-    if token is not None and token in _HELD:
-        return False
-    if token is not None:
-        _HELD.add(token)
-    _QUEUES.setdefault(str(message["queue"]), []).append(message)
-    return True
-
-
-def pop(queue: str) -> dict | None:
-    pending = _QUEUES.get(queue)
-    if not pending:
-        return None
-    return pending.pop(0)
-
-
-def _release(message: dict) -> None:
-    token = _token(message)
-    if token is not None:
-        _HELD.discard(token)
-
-
-async def drain(queue: str, registry) -> None:
-    while True:
-        message = pop(queue)
-        if message is None:
-            return
-        try:
-            await registry.dispatch(message)
-        finally:
-            _release(message)
+    def _release_unique(self, message: dict) -> None:
+        token = self._token(message)
+        if token is not None:
+            self._held.discard(token)

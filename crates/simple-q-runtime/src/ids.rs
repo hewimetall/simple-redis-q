@@ -13,7 +13,8 @@ pub fn lock_owner() -> String {
 
 pub fn worker_name(queue: &str) -> String {
     format!(
-        "agent-worker.{queue}.{}.{}.{}",
+        "{}.{queue}.{}.{}.{}",
+        crate::names::WORKER_NAME_PREFIX,
         hostname(),
         process::id(),
         &Uuid::new_v4().simple().to_string()[..8]
@@ -64,7 +65,8 @@ mod tests {
         let second = worker_name(queue);
         assert_ne!(first, second);
         assert!(first.starts_with(&format!(
-            "agent-worker.{queue}.{}.{}",
+            "{}.{queue}.{}.{}",
+            crate::names::WORKER_NAME_PREFIX,
             hostname(),
             process::id()
         )));

@@ -2,11 +2,11 @@
 
 Rust supervisor and embedded CPython 3.12 runtime for registered Python async tasks.
 
-The binary is `agent-worker`. The importable Python package is `simple_q`. The Rust module, embedded in the worker and also built as a wheel, is `simple_q_runtime`.
+The binary is `agent-worker`. The importable Python package is `simple_q`. The Rust extension is `simple_q._runtime`, embedded in the worker and also built into the wheel.
 
-Importing `simple_q` does not open Redis. Call `simple_q.configure(redis_url=...)` after the process is the one that will send, including after a gunicorn fork. `send` before that call fails.
+Importing `simple_q`, or a module that only decorates actors, does not construct an `App` and does not open Redis. `Client` opens its own connection on the first send. `Config.from_env()` is the only reader of `SIMPLE_Q_*`.
 
-Product queues are `default` and `quota`. The decision for replacing Dramatiq is recorded in [docs/adr/0001-minimal-rust-runtime-instead-of-dramatiq.md](docs/adr/0001-minimal-rust-runtime-instead-of-dramatiq.md).
+A queue name is one non-empty word of lowercase ASCII letters and digits, such as `default`. The decision for replacing Dramatiq is recorded in [docs/adr/0001-minimal-rust-runtime-instead-of-dramatiq.md](docs/adr/0001-minimal-rust-runtime-instead-of-dramatiq.md).
 
 Metrics keep the Dramatiq names and the accounting of the fixed Prometheus middleware: canonical `queue_name`, both gauges in `livesum`, and a retry counted once when it is enqueued with a delay. Redis-scheduled retries are not in-process memory, so they do not move `dramatiq_delayed_messages_inprogress`. The scrape listens on `DRAMATIQ_PROM_HOST`:`DRAMATIQ_PROM_PORT` (default `0.0.0.0:9191`) and any path. `DRAMATIQ_PROM_DB` is the multiprocess directory. The supervisor wipes `*.db` once; each child writes files under `SIMPLE_Q_SLOT`. The same directory holds `simple_q_child_memory.prom` with `simple_q_child_memory_drains_total` and `simple_q_child_memory_kills_total`. The scrape adds those samples. A missing file is zero.
 
@@ -16,21 +16,32 @@ Redis in compose has no password and is published on `127.0.0.1:6379`. Anyone wh
 
 ## Tracing
 
-The child does not open an OTLP connection. Pass `Tracing` to `Registry` and Rust spans are handed to that Python exporter on a dedicated thread. `tracing=None` is the default: no OpenTelemetry layer is installed, and Python is not called to export spans.
+The child does not open an OTLP connection. Pass `Tracing` to `App` and Rust spans are handed to that Python exporter on a dedicated thread. `tracing=None` is the default: no OpenTelemetry layer is installed, and Python is not called to export spans.
 
 ```python
+import os
+
 from opentelemetry.sdk.resources import Resource
 
-from simple_q import Registry, Tracing
+from simple_q import App, Client, Config, Tracing, actor
 
-app = Registry(
-    tracing=Tracing(
-        exporter=exporter,  # export(spans) and shutdown()
-        resource=Resource.create({"service.name": "agent-worker"}),
-        targets={"agent_worker": "info", "simple_q_runtime": "info", "apalis": "debug"},
+@actor(queue="default", max_retries=3)
+async def recalc(project_id: str) -> None:
+    return None
+
+def create_app() -> App:
+    return App(
+        client=Client(os.environ["REDIS_URL"], config=Config.from_env()),
+        actors=[recalc],
+        tracing=Tracing(
+            exporter=exporter,  # export(spans) and shutdown()
+            resource=Resource.create({"service.name": "agent-worker"}),
+            targets={"agent_worker": "info", "simple_q_runtime": "info", "apalis": "debug"},
+        ),
     )
-)
 ```
+
+Start the worker with `agent-worker worker --app module:create_app --factory`. `--app` is required.
 
 `RUST_LOG` filters the text log. `targets` filters the OpenTelemetry layer, so `RUST_LOG=warn` still exports the process span. Omitting `targets` uses `agent_worker=info`, `simple_q_runtime=info`, and `apalis=debug`. An empty map is rejected at child startup.
 

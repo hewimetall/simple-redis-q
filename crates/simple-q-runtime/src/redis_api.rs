@@ -1,81 +1,59 @@
-//! Server side. The only module that opens a Redis connection.
+//! Server side. Opens Redis connections that callers pass in.
 //!
-//! `install` runs when a producer calls `configure` or a worker starts.
-//! Importing the Python module does not call it.
+//! Importing the Python module does not call `connect`.
 
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use apalis::prelude::{TaskBuilder, TaskSink};
-use apalis_redis::{Config, RedisStorage, connect, queries};
-use redis::aio::ConnectionManager;
+use apalis_redis::{Config as QueueConfig, RedisStorage, connect as connect_redis, queries};
+pub use redis::aio::ConnectionManager;
 
+use crate::config::Config;
 use crate::job::Job;
-use crate::names::{self, orphan_window_secs, validate_queue};
+use crate::names::{self, WORKER_NAME_PREFIX, validate_queue};
 
-static CONNECTION: OnceLock<ConnectionManager> = OnceLock::new();
-
-pub fn is_configured() -> bool {
-    CONNECTION.get().is_some()
+pub async fn connect(url: &str) -> Result<ConnectionManager> {
+    connect_redis(url.to_owned())
+        .await
+        .context("failed to connect to Redis")
 }
 
-pub async fn install(url: String) -> Result<()> {
-    if CONNECTION.get().is_some() {
-        return Ok(());
-    }
-    let connection = connect(url).await.context("failed to connect to Redis")?;
-    // Two callers can pass the check above together. The loser drops its
-    // connection; the installed one is the one every later call uses.
-    let _ = CONNECTION.set(connection);
-    Ok(())
-}
-
-pub async fn install_from_env() -> Result<()> {
-    let url = std::env::var("REDIS_URL").context("REDIS_URL is required")?;
-    install(url).await
-}
-
-pub fn connection() -> Result<ConnectionManager> {
-    CONNECTION.get().cloned().context(
-        "Redis connection is not installed; call simple_q.configure(redis_url=...) before send",
-    )
-}
-
-pub fn queue_config(queue: &str) -> Result<Config> {
+pub fn queue_config(queue: &str, settings: &Config) -> Result<QueueConfig> {
     validate_queue(queue)?;
     // apalis 1.0.0 uses this flag as the ack switch. Turning it off leaves the
     // message inflight. Finished payloads are removed by the sweeper instead.
-    let config = Config::default()
+    let config = QueueConfig::default()
         .queue(queue)
         .batch_size(1)
         .lock_tasks(true)
-        .heartbeat_interval(Duration::from_secs(names::heartbeat_interval_secs()))
-        .missed_heartbeats(names::missed_heartbeats())
+        .heartbeat_interval(Duration::from_secs(settings.heartbeat_secs))
+        .missed_heartbeats(settings.missed_heartbeats as usize)
         .emit_events(false)
         .persist_results(true);
-    debug_assert_eq!(config.orphaned_duration().as_secs(), orphan_window_secs());
+    debug_assert_eq!(
+        config.orphaned_duration().as_secs(),
+        settings.orphan_window_secs()
+    );
     Ok(config)
 }
 
 /// Queue encoded in a worker name.
 ///
-/// Names are `agent-worker.{queue}.{hostname}.{pid}.{suffix}`. The queue is
-/// one lowercase word, so it is the second field even when the hostname
-/// contains dots. Anything else is not a worker name.
-fn queue_of_worker_name(name: &str) -> Option<&str> {
-    if !name.starts_with("agent-worker.") {
-        return None;
-    }
+/// Names are `{prefix}.{queue}.{hostname}.{pid}.{suffix}`. The prefix is
+/// [`WORKER_NAME_PREFIX`]. The queue is one lowercase word, so it is the
+/// second field even when the hostname contains dots.
+pub fn queue_of_worker_name(name: &str) -> Option<&str> {
     let mut fields = name.split('.');
-    if fields.next() != Some("agent-worker") {
+    if fields.next() != Some(WORKER_NAME_PREFIX) {
         return None;
     }
     let queue = fields.next()?;
     if fields.next().is_none() || fields.next().is_none() || fields.next().is_none() {
         return None;
     }
-    names::validate_queue(queue).ok()?;
+    validate_queue(queue).ok()?;
     Some(queue)
 }
 
@@ -83,7 +61,7 @@ fn queue_of_worker_name(name: &str) -> Option<&str> {
 ///
 /// `score` is unix seconds from `ZSCORE`, or missing when the member is absent.
 /// Alive means the score is present and `score >= now_secs - window_secs`.
-fn heartbeat_is_fresh(score: Option<f64>, now_secs: u64, window_secs: u64) -> bool {
+pub fn heartbeat_is_fresh(score: Option<f64>, now_secs: u64, window_secs: u64) -> bool {
     let Some(score) = score else {
         return false;
     };
@@ -92,30 +70,35 @@ fn heartbeat_is_fresh(score: Option<f64>, now_secs: u64, window_secs: u64) -> bo
 
 /// Whether `name` still has a fresh entry in `{queue}:workers`.
 ///
-/// The clock is Redis `TIME`, so the caller's clock does not matter. The
-/// window is `heartbeat_interval_secs * missed_heartbeats`. An unparseable
-/// name, a missing score, or a connection that was never installed is not alive.
-pub async fn worker_alive(name: &str) -> Result<bool> {
+/// The clock is Redis `TIME`. The window is this config's
+/// `heartbeat_secs * missed_heartbeats`. An unparseable name or a missing
+/// connection is not alive. Neither case is logged.
+pub async fn worker_alive(
+    conn: Option<&mut ConnectionManager>,
+    settings: &Config,
+    name: &str,
+) -> Result<bool> {
     let Some(queue) = queue_of_worker_name(name) else {
         return Ok(false);
     };
-    if !is_configured() {
+    let Some(conn) = conn else {
         return Ok(false);
-    }
-    let mut connection = connection()?;
+    };
     let score: Option<f64> = redis::cmd("ZSCORE")
         .arg(format!("{queue}:workers"))
         .arg(name)
-        .query_async(&mut connection)
+        .query_async(conn)
         .await
         .context("failed to read a worker heartbeat")?;
     let (now_secs, _micros): (u64, u64) = redis::cmd("TIME")
-        .query_async(&mut connection)
+        .query_async(conn)
         .await
         .context("failed to read Redis time")?;
-    let window_secs =
-        names::heartbeat_interval_secs().saturating_mul(names::missed_heartbeats() as u64);
-    Ok(heartbeat_is_fresh(score, now_secs, window_secs))
+    Ok(heartbeat_is_fresh(
+        score,
+        now_secs,
+        settings.orphan_window_secs(),
+    ))
 }
 
 /// Redis string written by the apalis-redis idempotency script.
@@ -132,27 +115,75 @@ pub fn claims_idempotency(job: &Job) -> bool {
     job.retries == 0 && job.unique_key.as_deref().is_some_and(|key| !key.is_empty())
 }
 
+/// TTL written on a delayed retry: `delay + unique_ttl`.
+///
+/// The TTL stays a backstop. It must not expire while the retry is waiting.
+/// Zero is not a TTL. The idempotency script treats the string `"0"` as
+/// present and `EXPIRE 0` deletes the key immediately.
+pub fn delayed_retry_ttl_secs(delay: Duration, unique_ttl_secs: u64) -> u64 {
+    let delay_secs = delay.as_secs() + u64::from(delay.subsec_nanos() > 0);
+    delay_secs.saturating_add(unique_ttl_secs).max(1)
+}
+
 /// Enqueue `job`.
 ///
 /// `None` means a `unique_key` was already held, so nothing was queued.
 /// Sends without a key, and retries, always return the message id.
-pub async fn enqueue_job(job: Job, delay: Option<Duration>) -> Result<Option<String>> {
+pub async fn enqueue_job(
+    conn: &mut ConnectionManager,
+    settings: &Config,
+    job: Job,
+    delay: Option<Duration>,
+) -> Result<Option<String>> {
     job.validate()?;
+    extend_idempotency_for_delay(conn, settings, &job, delay).await?;
     if claims_idempotency(&job) {
-        enqueue_unique(job, delay).await
+        enqueue_unique(conn, settings, job, delay).await
     } else {
-        enqueue_plain(job, delay).await.map(Some)
+        enqueue_plain(conn, settings, job, delay).await.map(Some)
     }
 }
 
-async fn enqueue_plain(job: Job, delay: Option<Duration>) -> Result<String> {
+async fn extend_idempotency_for_delay(
+    conn: &mut ConnectionManager,
+    settings: &Config,
+    job: &Job,
+    delay: Option<Duration>,
+) -> Result<()> {
+    if job.retries == 0 {
+        return Ok(());
+    }
+    let Some(unique_key) = job.unique_key.as_deref().filter(|key| !key.is_empty()) else {
+        return Ok(());
+    };
+    let Some(delay) = delay.filter(|delay| !delay.is_zero()) else {
+        return Ok(());
+    };
+    let ttl = delayed_retry_ttl_secs(delay, settings.unique_ttl_secs);
+    let key = idempotency_redis_key(&job.queue, unique_key);
+    let _: i64 = redis::cmd("EXPIRE")
+        .arg(&key)
+        .arg(ttl)
+        .query_async(conn)
+        .await
+        .context("failed to extend an idempotency key")?;
+    Ok(())
+}
+
+async fn enqueue_plain(
+    conn: &mut ConnectionManager,
+    settings: &Config,
+    job: Job,
+    delay: Option<Duration>,
+) -> Result<String> {
     let message_id = job.message_id.clone();
     let queue = job.queue.clone();
     let mut builder = TaskBuilder::new(job).max_attempts(1);
     if let Some(delay) = delay.filter(|delay| !delay.is_zero()) {
         builder = builder.run_after(delay);
     }
-    let mut storage = RedisStorage::<Job>::new(connection()?).with_config(queue_config(&queue)?);
+    let mut storage =
+        RedisStorage::<Job>::new(conn.clone()).with_config(queue_config(&queue, settings)?);
     storage
         .push_task(builder.build())
         .await
@@ -160,7 +191,12 @@ async fn enqueue_plain(job: Job, delay: Option<Duration>) -> Result<String> {
     Ok(message_id)
 }
 
-async fn enqueue_unique(job: Job, delay: Option<Duration>) -> Result<Option<String>> {
+async fn enqueue_unique(
+    conn: &mut ConnectionManager,
+    settings: &Config,
+    job: Job,
+    delay: Option<Duration>,
+) -> Result<Option<String>> {
     let message_id = job.message_id.clone();
     let queue = job.queue.clone();
     let unique_key = job
@@ -182,12 +218,11 @@ async fn enqueue_unique(job: Job, delay: Option<Duration>) -> Result<Option<Stri
     }
     // A missing TTL is passed to Lua as 0. The script treats the string "0"
     // as present and EXPIRE 0 deletes the key, so the TTL is always positive.
-    let config =
-        queue_config(&queue)?.idempotency_ttl(Some(Duration::from_secs(names::unique_ttl_secs())));
-    let (enqueued, scheduled) =
-        queries::push_tasks(&mut connection()?, &config, &[builder.build()])
-            .await
-            .map_err(|error| anyhow::anyhow!("enqueue failed: {error}"))?;
+    let config = queue_config(&queue, settings)?
+        .idempotency_ttl(Some(Duration::from_secs(settings.unique_ttl_secs)));
+    let (enqueued, scheduled) = queries::push_tasks(conn, &config, &[builder.build()])
+        .await
+        .map_err(|error| anyhow::anyhow!("enqueue failed: {error}"))?;
     if enqueued == 0 && scheduled == 0 {
         return Ok(None);
     }
@@ -195,14 +230,18 @@ async fn enqueue_unique(job: Job, delay: Option<Duration>) -> Result<Option<Stri
 }
 
 /// Drop `{queue}:idempotency:{unique_key}` after a terminal outcome.
-pub async fn release_idempotency(queue: &str, unique_key: &str) -> Result<()> {
+pub async fn release_idempotency(
+    conn: &mut ConnectionManager,
+    queue: &str,
+    unique_key: &str,
+) -> Result<()> {
     if unique_key.is_empty() {
         return Ok(());
     }
     let key = idempotency_redis_key(queue, unique_key);
     let _: i64 = redis::cmd("DEL")
         .arg(&key)
-        .query_async(&mut connection()?)
+        .query_async(conn)
         .await
         .context("failed to drop an idempotency key")?;
     Ok(())
@@ -212,8 +251,7 @@ pub fn delivery_key(message_id: &str, retries: u32) -> String {
     format!("delivery:{message_id}:{retries}")
 }
 
-/// `INCR` and `EXPIRE` in one script. A crash between two commands used to
-/// leave the key with no TTL.
+/// `INCR` and `EXPIRE` run in one script, so the key always receives a TTL.
 const INCR_EXPIRE: &str = r#"
 local n = redis.call('INCR', KEYS[1])
 redis.call('EXPIRE', KEYS[1], ARGV[1])
@@ -230,23 +268,31 @@ fn delivery_counter() -> &'static redis::Script {
 /// The TTL is only the crash backstop. A finished ack deletes the key.
 /// Poison and dead keep it, so a later delivery of the same attempt still
 /// sees a count above `max_deliveries`.
-pub async fn incr_delivery(message_id: &str, retries: u32) -> Result<u64> {
+pub async fn incr_delivery(
+    conn: &mut ConnectionManager,
+    message_id: &str,
+    retries: u32,
+) -> Result<u64> {
     let key = delivery_key(message_id, retries);
     let value: i64 = delivery_counter()
         .key(&key)
         .arg(names::DEFAULT_DEAD_TTL_SECS)
-        .invoke_async(&mut connection()?)
+        .invoke_async(conn)
         .await
         .context("failed to count a delivery")?;
     Ok(value as u64)
 }
 
 /// Drop the delivery key once this attempt is acked.
-pub async fn release_delivery(message_id: &str, retries: u32) -> Result<()> {
+pub async fn release_delivery(
+    conn: &mut ConnectionManager,
+    message_id: &str,
+    retries: u32,
+) -> Result<()> {
     let key = delivery_key(message_id, retries);
     let _: i64 = redis::cmd("DEL")
         .arg(&key)
-        .query_async(&mut connection()?)
+        .query_async(conn)
         .await
         .context("failed to drop a delivery key")?;
     Ok(())
@@ -255,12 +301,6 @@ pub async fn release_delivery(message_id: &str, retries: u32) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_fresh_process_has_no_redis_connection() {
-        assert!(!is_configured());
-        assert!(connection().is_err());
-    }
 
     #[test]
     fn a_score_inside_the_window_is_alive_and_an_older_or_missing_score_is_not() {
@@ -287,8 +327,8 @@ mod tests {
             Some("default")
         );
         assert_eq!(
-            queue_of_worker_name("agent-worker.quota.host.example.com.7.abcd1234"),
-            Some("quota")
+            queue_of_worker_name("agent-worker.holdq.host.example.com.7.abcd1234"),
+            Some("holdq")
         );
         assert_eq!(queue_of_worker_name("agent-worker.default.host.7"), None);
         assert_eq!(queue_of_worker_name("worker.default.host.7.abcd1234"), None);
@@ -314,6 +354,14 @@ mod tests {
         assert_eq!(INCR_EXPIRE.matches("redis.call").count(), 2);
     }
 
+    #[test]
+    fn a_delayed_retry_holds_the_key_for_the_wait_plus_the_backstop() {
+        let ttl = delayed_retry_ttl_secs(Duration::from_secs(5), 2);
+        assert_eq!(ttl, 7);
+        assert!(ttl > 2);
+        assert!(delayed_retry_ttl_secs(Duration::from_millis(1), 2) >= 3);
+    }
+
     fn sample(retries: u32, unique_key: Option<&str>) -> Job {
         Job {
             version: crate::MESSAGE_VERSION,
@@ -337,21 +385,22 @@ mod tests {
 
     #[test]
     fn the_idempotency_key_matches_the_apalis_set_and_a_retry_does_not_claim_it() {
-        let config = queue_config("default").unwrap();
+        let settings = Config::defaults();
+        let config = queue_config("default", &settings).unwrap();
         assert_eq!(
-            idempotency_redis_key("default", "recalc:proj-42"),
-            format!("{}:recalc:proj-42", config.idempotency_key_set())
+            idempotency_redis_key("default", "recalc:42"),
+            format!("{}:recalc:42", config.idempotency_key_set())
         );
         assert!(config.idempotency_ttl.is_none());
         let ttl = config
-            .idempotency_ttl(Some(Duration::from_secs(names::unique_ttl_secs())))
+            .idempotency_ttl(Some(Duration::from_secs(settings.unique_ttl_secs)))
             .idempotency_ttl
             .expect("ttl")
             .as_secs();
         assert!(ttl > 0);
 
-        assert!(claims_idempotency(&sample(0, Some("recalc:proj-42"))));
-        assert!(!claims_idempotency(&sample(1, Some("recalc:proj-42"))));
+        assert!(claims_idempotency(&sample(0, Some("recalc:42"))));
+        assert!(!claims_idempotency(&sample(1, Some("recalc:42"))));
         assert!(!claims_idempotency(&sample(0, None)));
         assert!(!claims_idempotency(&sample(0, Some(""))));
     }

@@ -11,9 +11,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use redis::Script;
 
+use redis::aio::ConnectionManager;
+
 use crate::ids::lock_owner;
 use crate::names::lock_redis_key;
-use crate::redis_api::connection;
 
 static GUARDS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
 static LOOP_HEALTHY: AtomicBool = AtomicBool::new(true);
@@ -45,7 +46,11 @@ pub fn loop_healthy() -> bool {
     LOOP_HEALTHY.load(Ordering::SeqCst)
 }
 
-pub async fn acquire(lock_key: String, ttl_seconds: u64) -> Result<Option<String>> {
+pub async fn acquire(
+    mut conn: ConnectionManager,
+    lock_key: String,
+    ttl_seconds: u64,
+) -> Result<Option<String>> {
     if ttl_seconds == 0 {
         anyhow::bail!("lock_ttl must be greater than zero");
     }
@@ -60,7 +65,7 @@ pub async fn acquire(lock_key: String, ttl_seconds: u64) -> Result<Option<String
         .arg("NX")
         .arg("PX")
         .arg(ttl_ms)
-        .query_async(&mut connection()?)
+        .query_async(&mut conn)
         .await
         .context("failed to acquire task lock")?;
 
@@ -76,6 +81,7 @@ pub async fn acquire(lock_key: String, ttl_seconds: u64) -> Result<Option<String
 
     let renew_key = redis_key.clone();
     let renew_owner = owner.clone();
+    let renew_conn = conn.clone();
     tokio::spawn(async move {
         let period = Duration::from_millis((ttl_ms / 3).max(200));
         while alive.load(Ordering::SeqCst) {
@@ -83,7 +89,7 @@ pub async fn acquire(lock_key: String, ttl_seconds: u64) -> Result<Option<String
             if !alive.load(Ordering::SeqCst) || !loop_healthy() {
                 break;
             }
-            match renew(&renew_key, &renew_owner, ttl_ms).await {
+            match renew(renew_conn.clone(), &renew_key, &renew_owner, ttl_ms).await {
                 Ok(true) => {}
                 Ok(false) => break,
                 Err(_) => break,
@@ -94,7 +100,11 @@ pub async fn acquire(lock_key: String, ttl_seconds: u64) -> Result<Option<String
     Ok(Some(owner))
 }
 
-pub async fn release(lock_key: String, owner: String) -> Result<bool> {
+pub async fn release(
+    mut conn: ConnectionManager,
+    lock_key: String,
+    owner: String,
+) -> Result<bool> {
     if let Some(flag) = guards().lock().expect("lock guards").remove(&owner) {
         flag.store(false, Ordering::SeqCst);
     }
@@ -102,18 +112,18 @@ pub async fn release(lock_key: String, owner: String) -> Result<bool> {
     let released: i32 = Script::new(RELEASE)
         .key(redis_key)
         .arg(owner)
-        .invoke_async(&mut connection()?)
+        .invoke_async(&mut conn)
         .await
         .context("failed to release task lock")?;
     Ok(released == 1)
 }
 
-async fn renew(redis_key: &str, owner: &str, ttl_ms: u64) -> Result<bool> {
+async fn renew(mut conn: ConnectionManager, redis_key: &str, owner: &str, ttl_ms: u64) -> Result<bool> {
     let renewed: i32 = Script::new(RENEW)
         .key(redis_key)
         .arg(owner)
         .arg(ttl_ms)
-        .invoke_async(&mut connection()?)
+        .invoke_async(&mut conn)
         .await
         .context("failed to renew task lock")?;
     Ok(renewed == 1)

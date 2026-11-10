@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import time
@@ -17,7 +18,15 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-BINARY = Path(os.environ.get("AGENT_WORKER_BIN", ROOT / "target" / "release" / "agent-worker"))
+def _default_binary() -> Path:
+    debug = ROOT / "target" / "debug" / "agent-worker"
+    release = ROOT / "target" / "release" / "agent-worker"
+    if debug.is_file():
+        return debug
+    return release
+
+
+BINARY = Path(os.environ["AGENT_WORKER_BIN"]) if os.environ.get("AGENT_WORKER_BIN") else _default_binary()
 HEARTBEAT_SECS = 5
 MISSED_HEARTBEATS = 2
 ORPHAN_SECS = HEARTBEAT_SECS * MISSED_HEARTBEATS
@@ -61,12 +70,28 @@ def _flush(url: str, queue: str) -> None:
         subprocess.run(["redis-cli", "-u", url, "DEL", key], check=False, capture_output=True)
 
 
+def _worker_python() -> str:
+    root = Path("/tmp/simple-q-worker-py")
+    package = root / "simple_q"
+    if package.exists():
+        shutil.rmtree(package)
+    root.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        ROOT / "python" / "simple_q",
+        package,
+        ignore=shutil.ignore_patterns("*.so", "*.pyd", "__pycache__"),
+    )
+    return str(root)
+
+
 def _worker_env(url: str, extra: dict[str, str]) -> dict[str, str]:
     env = os.environ.copy()
     env.update(
         {
             "REDIS_URL": url,
-            "PYTHONPATH": str(ROOT / "python"),
+            "PYTHONPATH": os.pathsep.join(
+                [_worker_python(), str(ROOT / "python" / "tests")]
+            ),
             "SIMPLE_Q_HEARTBEAT_SECS": str(HEARTBEAT_SECS),
             "SIMPLE_Q_MISSED_HEARTBEATS": str(MISSED_HEARTBEATS),
             "SIMPLE_Q_MAX_DELIVERIES": extra.get("SIMPLE_Q_MAX_DELIVERIES", "5"),
@@ -83,7 +108,8 @@ def _start_worker(url: str, queue: str, extra: dict[str, str]) -> subprocess.Pop
             str(BINARY),
             "worker",
             "--app",
-            "integration_app:app",
+            "integration_app:create_app",
+            "--factory",
             "--queues",
             queue,
             "--processes",
@@ -270,6 +296,7 @@ def test_sigkill_redelivers_and_then_poison_calls_on_dead(label, url, tmp_path):
         assert rows[0]["actor_name"] == "die"
         assert rows[0]["reason"] == "poison"
         assert rows[0]["retries"] == 0
+        assert rows[0]["error"] is None
         assert rows[0]["message_id"]
         message_id = rows[0]["message_id"]
         deliveries = subprocess.run(

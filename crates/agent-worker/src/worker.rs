@@ -15,15 +15,17 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use apalis::prelude::*;
 use apalis_redis::RedisStorage;
+use simple_q_runtime::redis_api::ConnectionManager;
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::bridge;
 use crate::telemetry;
 use simple_q_runtime::cleanup::delete_worker_metadata;
+use simple_q_runtime::config::Config;
 use simple_q_runtime::ids::worker_name;
 use simple_q_runtime::job::{Decision, Job, decide};
-use simple_q_runtime::redis_api::{self, connection, queue_config};
+use simple_q_runtime::redis_api::{self, queue_config};
 use simple_q_runtime::registry;
 
 #[derive(Clone)]
@@ -35,6 +37,8 @@ pub struct Shared {
     pub max_tasks: u64,
     /// `(queue, worker_name)` for each name passed to `WorkerBuilder::new`.
     pub worker_names: Arc<Mutex<Vec<(String, String)>>>,
+    pub redis: ConnectionManager,
+    pub config: Config,
 }
 
 impl Shared {
@@ -49,7 +53,8 @@ impl Shared {
     pub async fn delete_worker_metadata(&self) {
         let noted = self.worker_names.lock().expect("worker names").clone();
         for (queue, name) in noted {
-            if let Err(error) = delete_worker_metadata(&queue, &name).await {
+            let mut conn = self.redis.clone();
+            if let Err(error) = delete_worker_metadata(&mut conn, &queue, &name).await {
                 tracing::warn!(
                     %error,
                     %queue,
@@ -101,7 +106,8 @@ pub async fn run(queues: Vec<String>, concurrency: usize, shared: Shared) -> Res
     let mut monitor = Monitor::new();
 
     for queue in queues {
-        let backend = RedisStorage::<Job>::new(connection()?).with_config(queue_config(&queue)?);
+        let backend = RedisStorage::<Job>::new(shared.redis.clone())
+            .with_config(queue_config(&queue, &shared.config)?);
         let state = QueueState {
             shared: shared.clone(),
         };
@@ -174,7 +180,7 @@ async fn handle_job(
             error = %error,
             "rejected an invalid message"
         );
-        if let Err(hook_error) = bridge::note_dead(&job, "invalid", None).await {
+        if let Err(hook_error) = bridge::note_dead(&job, "invalid", 0, None).await {
             tracing::warn!(
                 message_id = %job.message_id,
                 actor_name = %job.actor_name,
@@ -182,7 +188,7 @@ async fn handle_job(
                 "dead-letter hook failed for an invalid message"
             );
         }
-        release_unique_key(&job).await;
+        release_unique_key(&state.shared.redis, &job).await;
         return Err(Box::new(AbortError::new(error)));
     }
 
@@ -193,7 +199,8 @@ async fn handle_job(
     }
 
     let task_id = task.task_id().to_owned();
-    let deliveries = match redis_api::incr_delivery(&job.message_id, job.retries).await {
+    let mut conn = state.shared.redis.clone();
+    let deliveries = match redis_api::incr_delivery(&mut conn, &job.message_id, job.retries).await {
         Ok(value) => value,
         Err(error) => {
             tracing::error!(
@@ -217,7 +224,7 @@ async fn handle_job(
             max_deliveries = job.max_deliveries,
             "burying a poison message before the handler"
         );
-        if let Err(hook_error) = bridge::note_dead(&job, "poison", None).await {
+        if let Err(hook_error) = bridge::note_dead(&job, "poison", deliveries, None).await {
             tracing::warn!(
                 message_id = %job.message_id,
                 actor_name = %job.actor_name,
@@ -227,7 +234,7 @@ async fn handle_job(
         }
         bridge::note_reject(&job.queue, &job.actor_name);
         note_finished(&state);
-        release_unique_key(&job).await;
+        release_unique_key(&state.shared.redis, &job).await;
         return Err(Box::new(AbortError::new(anyhow::anyhow!("dead: poison"))));
     }
     tracing::info!(
@@ -245,7 +252,7 @@ async fn handle_job(
     let value = match result {
         Ok(value) => value,
         Err(error) => {
-            release_unique_key(&job).await;
+            release_unique_key(&state.shared.redis, &job).await;
             return Err(Box::new(AbortError::new(error)));
         }
     };
@@ -257,8 +264,13 @@ async fn handle_job(
                 .unwrap_or(0);
             let mut next = job.clone();
             next.retries = next.retries.saturating_add(1);
-            if let Err(error) =
-                redis_api::enqueue_job(next, Some(std::time::Duration::from_millis(delay_ms))).await
+            if let Err(error) = redis_api::enqueue_job(
+                &mut state.shared.redis.clone(),
+                &state.shared.config,
+                next,
+                Some(std::time::Duration::from_millis(delay_ms)),
+            )
+            .await
             {
                 tracing::error!(
                     message_id = %job.message_id,
@@ -271,11 +283,11 @@ async fn handle_job(
                 std::process::exit(2);
             }
             bridge::note_retry(&job.queue, &job.actor_name);
-            release_acked(&job).await;
+            release_acked(&state.shared.redis, &job).await;
             Ok(value)
         }
         Some("dead") => {
-            release_unique_key(&job).await;
+            release_unique_key(&state.shared.redis, &job).await;
             Err(Box::new(AbortError::new(anyhow::anyhow!(
                 "dead: {}",
                 value
@@ -285,18 +297,20 @@ async fn handle_job(
             ))))
         }
         _ => {
-            release_acked(&job).await;
-            release_unique_key(&job).await;
+            release_acked(&state.shared.redis, &job).await;
+            release_unique_key(&state.shared.redis, &job).await;
             Ok(value)
         }
     }
 }
 
-async fn release_unique_key(job: &Job) {
+async fn release_unique_key(redis: &ConnectionManager, job: &Job) {
     let Some(unique_key) = job.unique_key.as_deref().filter(|key| !key.is_empty()) else {
         return;
     };
-    if let Err(error) = redis_api::release_idempotency(&job.queue, unique_key).await {
+    if let Err(error) =
+        redis_api::release_idempotency(&mut redis.clone(), &job.queue, unique_key).await
+    {
         tracing::warn!(
             message_id = %job.message_id,
             queue_name = %job.queue,
@@ -306,8 +320,10 @@ async fn release_unique_key(job: &Job) {
     }
 }
 
-async fn release_acked(job: &Job) {
-    if let Err(error) = redis_api::release_delivery(&job.message_id, job.retries).await {
+async fn release_acked(redis: &ConnectionManager, job: &Job) {
+    if let Err(error) =
+        redis_api::release_delivery(&mut redis.clone(), &job.message_id, job.retries).await
+    {
         tracing::warn!(
             message_id = %job.message_id,
             retries = job.retries,

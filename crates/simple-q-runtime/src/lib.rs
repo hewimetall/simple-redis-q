@@ -1,22 +1,12 @@
 //! Library shared by the worker binary and the importable Python module.
 //!
-//! Importing the Python module does not start Tokio, spawn threads, or open Redis.
-//! `install` does that, and only when a producer calls `configure`.
-//!
-//! One crate, three sides. Dependencies point at the business types.
-//! A further crate would only rename these modules; the binary is already the other adapter.
-//!
-//! Business logic does not open Redis and does not talk to Python: `job`, `names`.
-//! `ids` is the same layer except `hostname`, which reads the environment.
-//! `ping` is the silence rule for the interpreter. It has no Redis either.
-//!
-//! Server side, driven by that logic: `redis_api`, `lock`, `cleanup`, `slots`.
-//!
-//! User side, which drives the library: `python` (the importable module) and
-//! `registry` (executions of this process). The worker binary is the other
-//! user-side adapter.
+//! Business types are `job`, `names`, `config`, and `ping`.
+//! `ids` reads `HOSTNAME` or `/etc/hostname` for the worker name.
+//! Server side is `redis_api`, `lock`, `cleanup`, and `slots`.
+//! User side is `python` (the importable module) and `registry` (in-process executions).
 
 // Business logic.
+pub mod config;
 pub mod ids;
 pub mod job;
 pub mod names;
