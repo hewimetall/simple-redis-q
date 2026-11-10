@@ -59,6 +59,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       QUEUE: control
       BOARD_ADDR: "0.0.0.0:8080"
+      BOARD_TOKEN: ${BOARD_TOKEN:?set BOARD_TOKEN to at least 16 letters or digits before starting the board}
       RUST_LOG: info
       RUST_BACKTRACE: "1"
     depends_on:

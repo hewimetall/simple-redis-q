@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from simple_q_runtime import (
     Controller as RuntimeController,
     acquire_lock,
@@ -61,8 +63,21 @@ class Task:
                 await getattr(controller, self.next_hook)(self.name, payload, result)
             return result
         finally:
-            if owner is not None and self.lock_key is not None:
-                await release_lock(self.lock_key, owner)
+            await self._release(owner)
+
+    async def _release(self, owner: str | None) -> None:
+        if owner is None or self.lock_key is None:
+            return
+        try:
+            await release_lock(self.lock_key, owner)
+        except Exception:
+            # The handler outcome is already decided. Renewal has stopped once
+            # release runs, and the Redis key still expires by its TTL.
+            logging.getLogger(__name__).warning(
+                "lock release failed for %s; the task result stands and the key expires by ttl",
+                self.lock_key,
+                exc_info=True,
+            )
 
     async def _run_err(self, controller, payload: dict, error: Exception) -> None:
         if self.err_hook is None:

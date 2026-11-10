@@ -31,7 +31,7 @@ pub enum Command {
         task_id: String,
     },
 
-    /// Serve the Apalis board admin UI over the Redis backend.
+    /// Serve the Apalis board. Loopback by default; other addresses require BOARD_TOKEN.
     Admin,
 
     /// Enqueue one JSON payload. Fails immediately when Redis is unavailable.
