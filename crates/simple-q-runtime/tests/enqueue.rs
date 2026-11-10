@@ -2,6 +2,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use simple_q_runtime::MESSAGE_VERSION;
+use simple_q_runtime::cleanup::{delete_worker_metadata, sweep_queue};
 use simple_q_runtime::job::{Job, new_message_id};
 use simple_q_runtime::redis_api;
 
@@ -67,4 +68,68 @@ async fn a_delayed_message_stays_on_its_own_queue() {
         .await
         .expect("release");
     assert_eq!(redis(&["GET", &key]), "");
+}
+
+#[tokio::test]
+async fn sweep_removes_worker_metadata_absent_from_the_workers_set() {
+    let url = "redis://127.0.0.1:6379/15".to_owned();
+    if redis_api::install(url).await.is_err() && !redis_api::is_configured() {
+        return;
+    }
+    let queue = "wmeta745b";
+    let workers = format!("{queue}:workers");
+    let gone_name = "agent-worker.wmeta745b.host.1.gone0001";
+    let live_name = "agent-worker.wmeta745b.host.1.live0001";
+    let gone_key = format!("{queue}:workers:metadata:{gone_name}");
+    let live_key = format!("{queue}:workers:metadata:{live_name}");
+    let exit_name = "agent-worker.wmeta745b.host.1.exit0001";
+    let exit_key = format!("{queue}:workers:metadata:{exit_name}");
+    for key in [&workers, &gone_key, &live_key, &exit_key] {
+        let _ = redis(&["DEL", key]);
+    }
+    let _ = redis(&[
+        "HSET",
+        &gone_key,
+        "backend_name",
+        "redis",
+        "service",
+        "gone",
+    ]);
+    let _ = redis(&[
+        "HSET",
+        &live_key,
+        "backend_name",
+        "redis",
+        "service",
+        "live",
+    ]);
+    let _ = redis(&["ZADD", &workers, "1", live_name]);
+    let _ = redis(&[
+        "HSET",
+        &exit_key,
+        "backend_name",
+        "redis",
+        "service",
+        "exit",
+    ]);
+
+    sweep_queue(queue, 0, 0, 0, 10).await.expect("sweep");
+
+    assert_eq!(
+        redis(&["EXISTS", &gone_key]),
+        "0",
+        "absent member is removed"
+    );
+    assert_eq!(redis(&["EXISTS", &live_key]), "1", "present member is kept");
+    assert_eq!(redis(&["ZSCORE", &workers, live_name]), "1");
+    assert_eq!(redis(&["EXISTS", &format!("{queue}:data")]), "0");
+
+    delete_worker_metadata(queue, exit_name)
+        .await
+        .expect("delete metadata");
+    assert_eq!(redis(&["EXISTS", &exit_key]), "0");
+
+    for key in [&workers, &gone_key, &live_key, &exit_key] {
+        let _ = redis(&["DEL", key]);
+    }
 }

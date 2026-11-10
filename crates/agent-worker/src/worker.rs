@@ -18,6 +18,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::bridge;
 use crate::telemetry;
+use simple_q_runtime::cleanup::delete_worker_metadata;
 use simple_q_runtime::ids::worker_name;
 use simple_q_runtime::job::{Decision, Job, decide};
 use simple_q_runtime::redis_api::{self, connection, queue_config};
@@ -30,6 +31,32 @@ pub struct Shared {
     pub shutdown: Arc<AtomicBool>,
     pub pool: WorkerPool,
     pub max_tasks: u64,
+    /// `(queue, worker_name)` for each name passed to `WorkerBuilder::new`.
+    pub worker_names: Arc<Mutex<Vec<(String, String)>>>,
+}
+
+impl Shared {
+    fn note_worker(&self, queue: &str, worker_name: &str) {
+        self.worker_names
+            .lock()
+            .expect("worker names")
+            .push((queue.to_owned(), worker_name.to_owned()));
+    }
+
+    /// Delete each metadata hash from an orderly exit. A failed delete is logged.
+    pub async fn delete_worker_metadata(&self) {
+        let noted = self.worker_names.lock().expect("worker names").clone();
+        for (queue, name) in noted {
+            if let Err(error) = delete_worker_metadata(&queue, &name).await {
+                tracing::warn!(
+                    %error,
+                    %queue,
+                    %name,
+                    "failed to delete worker metadata"
+                );
+            }
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -78,6 +105,7 @@ pub async fn run(queues: Vec<String>, concurrency: usize, shared: Shared) -> Res
         };
         let pool = shared.pool.clone();
         let worker_name = worker_name(&queue);
+        shared.note_worker(&queue, &worker_name);
 
         monitor = monitor.register(move |_| {
             let pool = pool.clone();
