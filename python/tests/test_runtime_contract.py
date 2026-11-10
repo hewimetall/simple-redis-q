@@ -270,6 +270,149 @@ def test_timeout_on_the_last_attempt_calls_on_dead():
     assert reasons == [("discover", "timeout", {"value": "slow"}, "slow-1", 0)]
 
 
+def test_retries_hook_receives_the_exception_text():
+    registry, _seen = _registry()
+    calls = []
+
+    async def hook(actor, kwargs, reason, message_id, retries, *, error=None):
+        calls.append((actor, kwargs, reason, message_id, retries, error))
+
+    registry.on_dead(hook)
+    message = build_message(
+        actor_name="discover",
+        queue="quota",
+        kwargs={"value": "boom"},
+        headers={},
+        max_retries=0,
+        message_id="dead-error",
+    )
+    result = asyncio.run(registry.dispatch(message))
+    assert result == {"outcome": "dead", "reason": "retries"}
+    assert calls == [
+        ("discover", {"value": "boom"}, "retries", "dead-error", 0, "RuntimeError: boom")
+    ]
+
+
+def test_timeout_hook_receives_the_exception_text():
+    registry, _seen = _registry()
+    calls = []
+
+    def hook(actor, kwargs, reason, message_id, retries, error=None):
+        calls.append((actor, reason, message_id, retries, error))
+
+    registry.on_dead(hook)
+    message = build_message(
+        actor_name="discover",
+        queue="default",
+        kwargs={"value": "slow"},
+        headers={},
+        max_retries=0,
+        time_limit_ms=20,
+        message_id="slow-error",
+    )
+    result = asyncio.run(registry.dispatch(message))
+    assert result == {"outcome": "dead", "reason": "timeout"}
+    assert calls == [("discover", "timeout", "slow-error", 0, "TimeoutError: ")]
+
+
+def test_poison_hook_receives_none():
+    registry, _seen = _registry()
+    calls = []
+
+    def hook(actor, kwargs, reason, message_id, retries, *, error=None):
+        calls.append((reason, message_id, retries, error))
+
+    registry.on_dead(hook)
+    message = build_message(
+        actor_name="discover",
+        queue="quota",
+        kwargs={"value": "ok"},
+        headers={},
+        max_retries=0,
+        max_deliveries=2,
+        message_id="poison-error",
+    )
+    message["deliveries"] = 3
+    result = asyncio.run(registry.dispatch(message))
+    assert result == {"outcome": "dead", "reason": "poison"}
+    assert calls == [("poison", "poison-error", 0, None)]
+
+
+def test_unknown_actor_and_invalid_hooks_receive_none():
+    registry, _seen = _registry()
+    calls = []
+
+    def hook(actor, kwargs, reason, message_id, retries, **extra):
+        calls.append((reason, message_id, extra["error"]))
+
+    registry.on_dead(hook)
+    unknown = build_message(
+        actor_name="missing",
+        queue="quota",
+        kwargs={"value": 1},
+        headers={},
+        max_retries=0,
+        message_id="missing-error",
+        retries=2,
+    )
+    asyncio.run(registry.dispatch(unknown))
+    asyncio.run(registry.note_dead("discover", {"value": 1}, "invalid", "bad-error", 0))
+    assert calls == [
+        ("unknown_actor", "missing-error", None),
+        ("invalid", "bad-error", None),
+    ]
+
+
+def test_five_argument_dead_hook_still_runs():
+    registry, _seen = _registry()
+    calls = []
+
+    def hook(actor, kwargs, reason, message_id, retries):
+        calls.append((actor, kwargs, reason, message_id, retries))
+
+    registry.on_dead(hook)
+    message = build_message(
+        actor_name="discover",
+        queue="quota",
+        kwargs={"value": "boom"},
+        headers={},
+        max_retries=0,
+        message_id="dead-five",
+    )
+    result = asyncio.run(registry.dispatch(message))
+    assert result == {"outcome": "dead", "reason": "retries"}
+    assert calls == [("discover", {"value": "boom"}, "retries", "dead-five", 0)]
+
+
+def test_wrapped_five_argument_hook_still_runs_without_error():
+    import functools
+
+    registry, _seen = _registry()
+    calls = []
+
+    def inner(actor, kwargs, reason, message_id, retries):
+        calls.append((reason, message_id))
+
+    @functools.wraps(inner)
+    def hook(*args, **kwargs):
+        if "error" in kwargs:
+            raise AssertionError("five-argument hook was given error")
+        return inner(*args)
+
+    registry.on_dead(hook)
+    message = build_message(
+        actor_name="discover",
+        queue="quota",
+        kwargs={"value": "boom"},
+        headers={},
+        max_retries=0,
+        message_id="dead-wrapped",
+    )
+    result = asyncio.run(registry.dispatch(message))
+    assert result == {"outcome": "dead", "reason": "retries"}
+    assert calls == [("retries", "dead-wrapped")]
+
+
 def test_poison_delivery_calls_on_dead_and_rejects():
     registry, seen = _registry()
     reasons = []

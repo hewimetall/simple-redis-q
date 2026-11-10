@@ -29,6 +29,33 @@ def _delivery_count(message: dict) -> int:
     return count if count > 0 else 1
 
 
+def _exception_text(caught: BaseException) -> str:
+    return f"{type(caught).__name__}: {caught}"
+
+
+def _hook_accepts_error(hook) -> bool:
+    """Whether the dead-letter hook can take an ``error`` keyword.
+
+    ``inspect.signature`` follows ``functools.wraps`` via ``__wrapped__``.
+    A preserved five-argument hook stays on the original call. ``**kwargs``
+    or a parameter named ``error`` receives ``error=``.
+    """
+
+    try:
+        signature = inspect.signature(hook, follow_wrapped=True)
+    except (TypeError, ValueError):
+        return False
+    for parameter in signature.parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if parameter.name == "error" and parameter.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            return True
+    return False
+
+
 log = logging.getLogger("simple_q")
 
 DEFAULT_TIME_LIMIT_MS = 1_800_000
@@ -294,10 +321,23 @@ class Registry:
         reason: str,
         message_id: str,
         retries: int,
+        *,
+        error: str | None = None,
     ) -> None:
-        """Record a dead-letter from the worker when Python dispatch did not run."""
+        """Record a dead-letter from the worker when Python dispatch did not run.
 
-        await self._dead(actor_name, dict(kwargs or {}), reason, str(message_id), int(retries))
+        ``error`` is ``"{type}: {message}"`` when a handler exception buried
+        the message, and ``None`` for poison, invalid, and unknown actors.
+        """
+
+        await self._dead(
+            actor_name,
+            dict(kwargs or {}),
+            reason,
+            str(message_id),
+            int(retries),
+            error=error,
+        )
 
     async def _dispatch_bound(self, message: dict, actor: Actor | None, current: CurrentMessage) -> dict:
         actor_name = current.actor_name
@@ -308,6 +348,7 @@ class Registry:
                 "unknown_actor",
                 current.message_id,
                 current.retries,
+                error=None,
             )
             return {"outcome": "dead", "reason": "unknown_actor"}
 
@@ -317,7 +358,14 @@ class Registry:
         # the in-memory queue and a direct dispatch, which never reach that check.
         deliveries = int(message.get("deliveries") or 1)
         if deliveries > int(message.get("max_deliveries") or actor.max_deliveries):
-            await self._dead(actor_name, current.kwargs, "poison", message_id, current.retries)
+            await self._dead(
+                actor_name,
+                current.kwargs,
+                "poison",
+                message_id,
+                current.retries,
+                error=None,
+            )
             reject(queue, actor_name)
             return {"outcome": "dead", "reason": "poison"}
 
@@ -343,14 +391,28 @@ class Registry:
                 error = caught
                 if current.retries >= current.max_retries:
                     rejected = True
-                    await self._dead(actor_name, current.kwargs, "timeout", message_id, current.retries)
+                    await self._dead(
+                        actor_name,
+                        current.kwargs,
+                        "timeout",
+                        message_id,
+                        current.retries,
+                        error=_exception_text(caught),
+                    )
                     return {"outcome": "dead", "reason": "timeout"}
                 return await self._retry(message, actor, current)
             except Exception as caught:
                 error = caught
                 if current.retries >= current.max_retries:
                     rejected = True
-                    await self._dead(actor_name, current.kwargs, "retries", message_id, current.retries)
+                    await self._dead(
+                        actor_name,
+                        current.kwargs,
+                        "retries",
+                        message_id,
+                        current.retries,
+                        error=_exception_text(caught),
+                    )
                     return {"outcome": "dead", "reason": "retries"}
                 return await self._retry(message, actor, current)
             else:
@@ -387,10 +449,15 @@ class Registry:
         reason: str,
         message_id: str,
         retries: int,
+        *,
+        error: str | None = None,
     ) -> None:
         for hook in self._on_dead:
             try:
-                result = hook(actor_name, kwargs, reason, message_id, retries)
+                if _hook_accepts_error(hook):
+                    result = hook(actor_name, kwargs, reason, message_id, retries, error=error)
+                else:
+                    result = hook(actor_name, kwargs, reason, message_id, retries)
                 if inspect.isawaitable(result):
                     await result
             except Exception:
