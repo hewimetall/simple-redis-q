@@ -200,6 +200,19 @@ pub async fn ping(timeout: Duration) -> bool {
     false
 }
 
+pub fn note_reject(queue: &str, actor: &str) {
+    let queue = queue.to_owned();
+    let actor = actor.to_owned();
+    let recorded = Python::attach(|py| -> PyResult<()> {
+        py.import("simple_q.metrics")?
+            .call_method1("reject", (queue, actor))?;
+        Ok(())
+    });
+    if let Err(error) = recorded {
+        tracing::warn!("reject metric was not recorded: {error}");
+    }
+}
+
 pub fn note_retry(queue: &str, actor: &str) {
     let queue = queue.to_owned();
     let actor = actor.to_owned();

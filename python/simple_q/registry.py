@@ -301,6 +301,8 @@ class Registry:
 
         queue = current.queue_name
         message_id = current.message_id
+        # The worker buries poison before it calls dispatch. This branch is
+        # the in-memory queue and a direct dispatch, which never reach that check.
         deliveries = int(message.get("deliveries") or 1)
         if deliveries > int(message.get("max_deliveries") or actor.max_deliveries):
             await self._dead(actor_name, current.kwargs, "poison", message_id, current.retries)
