@@ -42,8 +42,8 @@ secret is absent and uses the token fallback when the secret is present.
    git push origin v0.1.0
    ```
 
-6. GitHub Actions builds CPython 3.12 wheels, an sdist, creates a GitHub
-   Release, and publishes to PyPI.
+6. GitHub Actions builds CPython 3.12 wheels for Linux x86_64 and Linux
+   aarch64, an sdist, creates a GitHub Release, and publishes to PyPI.
 
 ## Install the published package
 

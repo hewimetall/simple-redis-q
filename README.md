@@ -10,7 +10,7 @@ The binary is `agent-worker`. The importable Python package is `simple_q`. The R
 pip install simple-q-runtime
 ```
 
-The wheel ships `simple_q` and the `simple_q_runtime` extension for a process that only enqueues work. `agent-worker` stays a separate binary. A `v*` tag builds CPython 3.12 wheels and publishes them; the steps are in [docs/dev/PUBLISH.md](docs/dev/PUBLISH.md).
+The wheel ships `simple_q` and the `simple_q_runtime` extension for a process that only enqueues work. `agent-worker` stays a separate binary. A `v*` tag builds CPython 3.12 wheels for Linux x86_64 and Linux aarch64 and publishes them; the steps are in [docs/dev/PUBLISH.md](docs/dev/PUBLISH.md).
 
 Importing `simple_q` does not open Redis. Call `simple_q.configure(redis_url=...)` after the process is the one that will send, including after a gunicorn fork. `send` before that call fails.
 
