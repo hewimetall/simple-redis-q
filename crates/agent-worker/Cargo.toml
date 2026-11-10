@@ -11,7 +11,7 @@ path = "src/main.rs"
 [dependencies]
 actix-web = "4.19.0"
 anyhow = "1.0.104"
-apalis = { version = "1.0.0", features = ["task-context"] }
+apalis = { version = "1.1.0", features = ["task-context"] }
 apalis-board = { version = "1.0.0", features = ["actix", "ui"] }
 apalis-redis = { version = "1.0.0", features = ["task-tracking"] }
 clap = { version = "4.6.7", features = ["derive"] }
