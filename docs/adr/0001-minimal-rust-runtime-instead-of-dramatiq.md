@@ -7,7 +7,7 @@
 - Заменяет: Dramatiq broker, workers и task-адаптеры
 - Не изменяет: Python Workflow, FSM, repositories, transactional outbox и собственную fan-out-механику
 
-Ревизия сверяет решение с прототипом `agent-worker` и с исходниками закреплённых версий `apalis 1.0.0` и `apalis-redis 1.0.0`. Библиотека принята как транспорт прототипа. Она не считается доказательством гарантий переключения.
+Ревизия сверяет решение с прототипом `agent-worker` и с исходниками закреплённых версий `apalis 1.1.0`, `apalis-core 1.1.0`, `apalis-codec 1.1.0` и `apalis-redis 1.0.0`. Библиотека принята как транспорт прототипа. Она не считается доказательством гарантий переключения.
 
 Эта ревизия дополнительно фиксирует очереди `default` и `quota`, повтор через новую постановку, лимит времени 30 минут и учёт метрик по исправленному Prometheus middleware, а не по stock-реализации Dramatiq.
 
@@ -53,7 +53,7 @@ Rust supervisor          Python не инициализирован
 
 | Компонент | Версия в прототипе | Роль |
 | --- | --- | --- |
-| Worker и concurrency | `apalis 1.0.0`, feature `task-context` | `WorkerBuilder`, `Monitor`, `ConcurrencyLimitLayer` |
+| Worker и concurrency | `apalis 1.1.0`, feature `task-context` | `WorkerBuilder`, `Monitor`, `ConcurrencyLimitLayer` |
 | Redis transport | `apalis-redis 1.0.0`, feature `task-tracking` | очередь, heartbeat, inflight, повторная постановка orphan |
 | Rust async | `tokio` | supervisor, heartbeat, продление lock |
 | Embedded CPython | `pyo3 0.30.1` | модуль `simple_q_runtime` через `append_to_inittab` |
@@ -312,7 +312,7 @@ Reconcile не вызывает бизнес-recovery и не меняет pipel
 
 Если у контейнера `memory.max` — число, supervisor раз в секунду читает `memory.current`. На доле `SIMPLE_Q_MEMORY_SOFT_RATIO` (0.80) child получает SIGUSR1 и дорабатывает текущие задачи. На доле `SIMPLE_Q_MEMORY_HARD_RATIO` (0.95) supervisor посылает SIGKILL child с наибольшим RSS, если этот RSS не меньше половины `memory.current`. Без конечного лимита проверка ничего не делает. Команды `CLIENT` не используются.
 
-`persist_results` остаётся `true`. В `apalis-core 1.0.0` этот флаг — признак ack. `false` пропускает `TaskEvent::Complete`, и сообщение остаётся inflight. Готовые записи чистит отдельный обход: успешные через `SIMPLE_Q_DONE_TTL_SECS` (по умолчанию 24 часа), dead через `SIMPLE_Q_DEAD_TTL_SECS` (по умолчанию 7 суток, как `dead_message_ttl` Dramatiq). Обход идёт пачками `SSCAN`/`HSCAN`. `vacuum` Apalis для этого не используется: он читает весь hash и не снимает множества `done` и `dead`.
+`persist_results` остаётся `true`. В `apalis-core 1.1.0` этот флаг — признак ack. `false` пропускает `TaskEvent::Complete`, и сообщение остаётся inflight. Готовые записи чистит отдельный обход: успешные через `SIMPLE_Q_DONE_TTL_SECS` (по умолчанию 24 часа), dead через `SIMPLE_Q_DEAD_TTL_SECS` (по умолчанию 7 суток, как `dead_message_ttl` Dramatiq). Обход идёт пачками `SSCAN`/`HSCAN`. `vacuum` Apalis для этого не используется: он читает весь hash и не снимает множества `done` и `dead`.
 
 Потеря владения не переводит pipeline в failed.
 
@@ -338,7 +338,7 @@ Supervisor поднимает `--processes` child. Child после `--max-tasks
     → supervisor запускает новый процесс со свежим CPython
 ```
 
-`pause` выбран вместо немедленного `stop`, потому что `CallAll` в `apalis-core 1.0.0` после `stop` ждёт in-flight и до `poll_close` не вызывает `backend.poll_ready`. На этом участке heartbeat backend сам не тикает. `pause` оставляет цикл poll и heartbeat.
+`pause` выбран вместо немедленного `stop`, потому что `CallAll` в `apalis-core 1.1.0` после `stop` ждёт in-flight и до `poll_close` не вызывает `backend.poll_ready`. На этом участке heartbeat backend сам не тикает. `pause` оставляет цикл poll и heartbeat.
 
 Считаются внешние завершения runtime. Уже начатые задачи доезжают, поэтому при concurrency больше 1 число завершений может превысить порог. Внутренние батчи fan-out в счётчик не входят: их в этом runtime нет.
 
