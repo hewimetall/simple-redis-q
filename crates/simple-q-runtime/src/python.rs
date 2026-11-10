@@ -56,6 +56,7 @@ pub fn simple_q_runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.setattr("__embedded__", false)?;
     module.add_function(wrap_pyfunction!(install, module)?)?;
     module.add_function(wrap_pyfunction!(is_configured, module)?)?;
+    module.add_function(wrap_pyfunction!(worker_alive, module)?)?;
     module.add_function(wrap_pyfunction!(enqueue, module)?)?;
     module.add_function(wrap_pyfunction!(acquire_lock, module)?)?;
     module.add_function(wrap_pyfunction!(release_lock, module)?)?;
@@ -75,6 +76,12 @@ fn install(py: Python<'_>, url: String) -> PyResult<()> {
 #[pyfunction]
 fn is_configured() -> bool {
     redis_api::is_configured()
+}
+
+#[pyfunction]
+fn worker_alive(py: Python<'_>, name: String) -> PyResult<bool> {
+    py.detach(|| block_on(redis_api::worker_alive(&name)))
+        .map_err(|error| PyRuntimeError::new_err(error.to_string()))
 }
 
 #[pyfunction]

@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import os
 import random
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -10,7 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from simple_q.backoff import compute_backoff
-from simple_q import worker_name
+from simple_q import worker_alive, worker_name
 from simple_q.message import current_message
 from simple_q.metrics import (
     DURATION_BUCKETS,
@@ -717,3 +719,144 @@ def test_current_message_carries_deliveries_and_the_worker_name():
     asyncio.run(registry.dispatch(plain_message))
     assert seen["plain_name"] is None
     assert seen["plain_deliveries"] == 1
+
+
+def test_worker_alive_is_true_in_memory_mode():
+    from simple_q import disable_memory, enable_memory
+
+    runtime = types.ModuleType("simple_q_runtime")
+    runtime.is_configured = lambda: True
+
+    def probe(name):
+        raise AssertionError(f"memory mode must not touch Redis for {name}")
+
+    runtime.worker_alive = probe
+    sys.modules["simple_q_runtime"] = runtime
+    enable_memory()
+    try:
+        assert worker_alive("agent-worker.default.host.1.abcd1234") is True
+        assert worker_alive("not-a-worker") is True
+    finally:
+        disable_memory()
+
+
+def test_worker_alive_rejects_an_unparseable_name():
+    from simple_q import disable_memory
+
+    disable_memory()
+    runtime = types.ModuleType("simple_q_runtime")
+    runtime.is_configured = lambda: True
+
+    def probe(name):
+        raise AssertionError(f"an unparseable name must not touch Redis: {name}")
+
+    runtime.worker_alive = probe
+    sys.modules["simple_q_runtime"] = runtime
+    assert worker_alive("not-a-worker") is False
+    assert worker_alive("agent-worker.default.host.1") is False
+    assert worker_alive("agent-worker.Bad.host.1.abcd1234") is False
+
+
+def test_worker_alive_is_false_when_redis_is_not_configured():
+    from simple_q import disable_memory
+
+    disable_memory()
+    runtime = types.ModuleType("simple_q_runtime")
+    runtime.is_configured = lambda: False
+
+    def probe(name):
+        raise AssertionError(name)
+
+    runtime.worker_alive = probe
+    sys.modules["simple_q_runtime"] = runtime
+    assert worker_alive("agent-worker.default.host.9.abcd1234") is False
+
+
+def _bind_runtime():
+    """Use the built extension under the name ``configure`` imports."""
+
+    import importlib
+
+    sys.modules.pop("simple_q_runtime", None)
+    try:
+        module = importlib.import_module("simple_q_runtime.simple_q_runtime")
+    except ModuleNotFoundError:
+        module = importlib.import_module("simple_q_runtime")
+    sys.modules["simple_q_runtime"] = module
+    return module
+
+
+def _redis_db15():
+    url = "redis://127.0.0.1:6379/15"
+    try:
+        probe = subprocess.run(
+            ["redis-cli", "-u", url, "PING"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        pytest.skip("Redis is down")
+    if probe.returncode != 0 or "PONG" not in probe.stdout:
+        pytest.skip("Redis is down")
+    return url
+
+
+def _liveness_window() -> int:
+    def positive(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        try:
+            value = int(raw)
+        except ValueError:
+            return default
+        return value if value > 0 else default
+
+    return positive("SIMPLE_Q_HEARTBEAT_SECS", 15) * positive("SIMPLE_Q_MISSED_HEARTBEATS", 4)
+
+
+def test_worker_alive_reads_the_heartbeat_on_redis():
+    from simple_q import configure, disable_memory
+
+    url = _redis_db15()
+    disable_memory()
+    _bind_runtime()
+    configure(url)
+    queue = "walive"
+    key = f"{queue}:workers"
+    fresh = "agent-worker.walive.testhost.11.abcd1234"
+    stale = "agent-worker.walive.testhost.12.abcd1234"
+    unknown = "agent-worker.walive.testhost.13.abcd1234"
+    dotted = "agent-worker.walive.host.example.com.14.abcd1234"
+    try:
+        now = subprocess.run(
+            ["redis-cli", "-u", url, "TIME"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+        seconds = int(now[0])
+        window = _liveness_window()
+        subprocess.run(
+            ["redis-cli", "-u", url, "ZADD", key, str(seconds), fresh, str(seconds), dotted],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        subprocess.run(
+            ["redis-cli", "-u", url, "ZADD", key, str(seconds - window - 1), stale],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert worker_alive(fresh) is True
+        assert worker_alive(dotted) is True
+        assert worker_alive(stale) is False
+        assert worker_alive(unknown) is False
+    finally:
+        subprocess.run(
+            ["redis-cli", "-u", url, "DEL", key],
+            capture_output=True,
+            check=False,
+        )
