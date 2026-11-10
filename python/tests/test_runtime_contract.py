@@ -386,6 +386,30 @@ def test_hook_exceptions_are_logged(caplog=None):
     assert any("start hook failed" in record.getMessage() for record in records)
 
 
+def test_child_memory_scrape_is_zero_without_a_file_and_reads_one_when_present(tmp_path):
+    from simple_q.exposition import child_memory_samples
+
+    missing = child_memory_samples(tmp_path).decode()
+    assert "simple_q_child_memory_drains_total 0\n" in missing
+    assert "simple_q_child_memory_kills_total 0\n" in missing
+
+    prom = tmp_path / "simple_q_child_memory.prom"
+    prom.write_text(
+        "# TYPE simple_q_child_memory_drains_total counter\n"
+        "simple_q_child_memory_drains_total 4\n"
+        "simple_q_child_memory_kills_total 2\n",
+        encoding="utf-8",
+    )
+    present = child_memory_samples(tmp_path).decode()
+    assert "simple_q_child_memory_drains_total 4\n" in present
+    assert "simple_q_child_memory_kills_total 2\n" in present
+
+    prom.write_text("not a sample\n", encoding="utf-8")
+    garbage = child_memory_samples(tmp_path).decode()
+    assert "simple_q_child_memory_drains_total 0\n" in garbage
+    assert "simple_q_child_memory_kills_total 0\n" in garbage
+
+
 def test_scrape_reaps_a_dead_slot_and_keeps_a_live_one():
     import os
     import tempfile
