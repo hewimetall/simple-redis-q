@@ -30,7 +30,7 @@ The process without the internal child flag only supervises. It forks one child 
 
 `--child` is internal. The supervisor starts the embedded interpreter only in that mode.
 
-The supervisor also starts the metrics scrape. `REDIS_URL` comes from the environment through `Config.from_env()`.
+The supervisor also starts the metrics scrape. The Redis URL is the one on the `App`'s `Client`. The library does not read `REDIS_URL`.
 
 ## `admin`
 
@@ -38,7 +38,7 @@ The supervisor also starts the metrics scrape. `REDIS_URL` comes from the enviro
 agent-worker admin
 ```
 
-Serves the admin board. It does not run a worker. `REDIS_URL` is required. `QUEUE` selects the queue and defaults to `default`. Details are on the [tracing and admin](operations.md) page.
+Serves the admin board. It does not run a worker. The Redis URL is the one the application passed to `Client`. `QUEUE` selects the queue and defaults to `default`. Details are on the [tracing and admin](operations.md) page.
 
 ## `metrics`
 
@@ -63,14 +63,6 @@ agent-worker execute --app module:app --task recalc --task-id recalc-1
 ```
 
 Run one task in-process, without Redis. `--app` is `module:attribute`.
-
-## `stubs`
-
-```bash
-agent-worker stubs
-```
-
-Print where the checked-in Python stubs live. This command does not generate them.
 
 ## `agent-worker --version`
 

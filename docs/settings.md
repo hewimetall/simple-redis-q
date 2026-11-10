@@ -2,7 +2,7 @@
 
 These pages describe simple-q 1.0.
 
-`Config.from_env()` is the only environment read. An invalid value raises. There is no silent default: a value that is empty, not a number, zero where the setting must be positive, or a ratio outside `(0, 1)` raises. An omitted variable uses the default in this table. `REDIS_URL` has no default. A missing or empty URL raises.
+`Config.from_env()` is the only environment read. An invalid value raises. There is no silent default: a value that is empty, not a number, zero where the setting must be positive, or a ratio outside `(0, 1)` raises. An omitted variable uses the default in this table. The Redis URL is not one of these settings. The application passes it to `Client`.
 
 `dramatiq_*` metric names and labels are a stable API until 2.0. The names are `dramatiq_messages_total`, `dramatiq_message_errors_total`, `dramatiq_message_retries_total`, `dramatiq_message_rejects_total`, `dramatiq_messages_inprogress`, `dramatiq_delayed_messages_inprogress`, and `dramatiq_message_duration_milliseconds`. The labels are `queue_name` and `actor_name`. `queue_name` is canonical: a `.DQ` or `.XQ` suffix is removed. Both gauges use `livesum`. A retry increments `dramatiq_message_retries_total` once, on the canonical queue, when the retry is enqueued with a delay. Messages waiting in Redis are in Redis, so they do not move `dramatiq_delayed_messages_inprogress`. That gauge moves only while this process holds the message, and it returns to zero when this process releases it.
 
@@ -47,7 +47,6 @@ Any HTTP path on that address returns the scrape. A missing `simple_q_child_memo
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `REDIS_URL` | required | Redis URL for `Client`, the worker, `enqueue`, and the admin board. Missing or empty raises. |
 | `QUEUE` | `default` | Queue shown by `agent-worker admin`. |
 | `BOARD_ADDR` | `127.0.0.1:8080` | `ip:port` for the admin board. |
 | `BOARD_TOKEN` | required, except the insecure loopback case | At least 16 characters from `A-Z`, `a-z`, `0-9`, `.`, `_`, `~`, `-`. |

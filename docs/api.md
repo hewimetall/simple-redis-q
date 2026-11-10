@@ -157,7 +157,6 @@ def worker_name() -> str | None:
 
 ```python
 class Config:
-    redis_url: str
     heartbeat_secs: int
     missed_heartbeats: int
     ping_budget_secs: int
@@ -181,11 +180,10 @@ class Config:
         There is no silent default: a bad number, a zero where the
         setting must be positive, or a ratio outside ``(0, 1)`` raises.
         An omitted variable uses the default in the settings table.
-        ``REDIS_URL`` has no default. A missing or empty URL raises.
         """
 ```
 
-Pass the same `Config` to `Client` and to the worker process. `await client.worker_alive` uses this process's heartbeat window.
+The Redis URL is an argument of `Client`. The library does not read `REDIS_URL`. Pass the same `Config` into that client. The worker uses the client on the `App`. `await client.worker_alive` uses this process's heartbeat window.
 
 A future `Config(metrics_prefix=...)` is not implemented. `dramatiq_*` metric names and labels stay as they are through 1.0. See [Settings](settings.md).
 

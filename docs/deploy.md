@@ -10,7 +10,7 @@ The worker command in every example is:
 agent-worker worker --app module:create_app --factory --queues default
 ```
 
-`module:app` is the same command without `--factory`, when the attribute is already an `App`. `--app` is required. `REDIS_URL` is required and is read only by `Config.from_env()`.
+`module:app` is the same command without `--factory`, when the attribute is already an `App`. `--app` is required. The factory passes the Redis URL to `Client`. The library does not read `REDIS_URL`.
 
 ## How OOM differs
 
@@ -50,8 +50,6 @@ spec:
             - --queues
             - default
           env:
-            - name: REDIS_URL
-              value: redis://redis:6379/0
             - name: SIMPLE_Q_CHILD_MEMORY_SOFT
               value: 512M
             - name: SIMPLE_Q_CHILD_MEMORY_HARD
@@ -79,7 +77,6 @@ The repository `Dockerfile` builds `agent-worker` on `python:3.12-slim-bookworm`
 ```bash
 docker build -t simple-q:1.0 .
 docker run --memory=2g \
-  -e REDIS_URL=redis://redis:6379/0 \
   -p 127.0.0.1:9191:9191 \
   simple-q:1.0 \
   worker --app module:create_app --factory --queues default
@@ -95,7 +92,6 @@ Redis published on a host port has the same trust boundary as enqueue. Set a pas
 [Service]
 User=simple-q
 ExecStart=/opt/simple-q/.venv/bin/agent-worker worker --app module:create_app --factory --queues default
-Environment=REDIS_URL=redis://127.0.0.1:6379/0
 Environment=DRAMATIQ_PROM_HOST=0.0.0.0
 Environment=DRAMATIQ_PROM_PORT=9191
 MemoryMax=2G

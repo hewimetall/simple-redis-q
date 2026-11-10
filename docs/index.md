@@ -23,12 +23,12 @@ async def recalc(project_id: int) -> None:
 
 def create_app() -> App:
     config = Config.from_env()
-    return App(Client(config.redis_url, config=config), actors=[recalc])
+    return App(Client("redis://redis:6379/0", config=config), actors=[recalc])
 
 
 async def enqueue() -> None:
     config = Config.from_env()
-    client = Client(config.redis_url, config=config)
+    client = Client("redis://redis:6379/0", config=config)
     await client.send_with_options(
         recalc,
         kwargs={"project_id": 42},
