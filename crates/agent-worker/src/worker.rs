@@ -95,6 +95,17 @@ async fn handle(
     worker: WorkerContext,
     state: Data<QueueState>,
 ) -> Result<serde_json::Value, BoxDynError> {
+    if let Err(error) = job.validate() {
+        tracing::warn!(
+            message_id = %job.message_id,
+            actor_name = %job.actor_name,
+            queue_name = %job.queue,
+            error = %error,
+            "rejected an invalid message"
+        );
+        return Err(Box::new(AbortError::new(error)));
+    }
+
     state.shared.pool.remember(&worker);
     if state.shared.draining.load(Ordering::SeqCst) || state.shared.shutdown.load(Ordering::SeqCst)
     {
@@ -159,6 +170,7 @@ async fn handle(
                 );
                 std::process::exit(2);
             }
+            bridge::note_retry(&job.queue, &job.actor_name);
             Ok(value)
         }
         Some("dead") => Err(Box::new(AbortError::new(anyhow::anyhow!(

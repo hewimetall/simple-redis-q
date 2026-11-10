@@ -28,13 +28,14 @@ struct BoardConfig {
 
 /// Serve the Apalis board over Redis without starting a worker.
 ///
-/// The default listen address is loopback. Any other address requires
-/// `BOARD_TOKEN`, and every board route then checks that token.
+/// The default listen address is loopback. `BOARD_TOKEN` is required on every
+/// address. `BOARD_INSECURE=1` allows a loopback listener to omit the token.
 pub async fn run() -> Result<()> {
     let redis_url = env::var("REDIS_URL").context("REDIS_URL is required for the admin board")?;
     let board_addr = env::var("BOARD_ADDR").unwrap_or_else(|_| DEFAULT_BOARD_ADDR.to_owned());
     let token = env::var("BOARD_TOKEN").ok();
-    let config = resolve_board(&board_addr, token.as_deref())?;
+    let insecure = env::var("BOARD_INSECURE").ok().as_deref() == Some("1");
+    let config = resolve_board(&board_addr, token.as_deref(), insecure)?;
 
     let queue = env::var("QUEUE").unwrap_or_else(|_| DEFAULT_QUEUE.to_owned());
     anyhow::ensure!(!queue.trim().is_empty(), "QUEUE must not be empty");
@@ -76,12 +77,12 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
-fn resolve_board(addr: &str, token: Option<&str>) -> Result<BoardConfig> {
+fn resolve_board(addr: &str, token: Option<&str>, insecure: bool) -> Result<BoardConfig> {
     let addr: SocketAddr = addr
         .parse()
         .with_context(|| format!("BOARD_ADDR must be ip:port, got {addr}"))?;
     let token = token.map(str::trim).filter(|value| !value.is_empty());
-    if addr.ip().is_loopback() {
+    if addr.ip().is_loopback() && insecure {
         if let Some(token) = token.as_deref() {
             validate_token(token)?;
         }
@@ -92,7 +93,8 @@ fn resolve_board(addr: &str, token: Option<&str>) -> Result<BoardConfig> {
     }
     let Some(token) = token else {
         bail!(
-            "BOARD_TOKEN is required when BOARD_ADDR is not a loopback address ({addr}). \
+            "BOARD_TOKEN is required for {addr}. \
+             BOARD_INSECURE=1 allows a loopback address to omit it. \
              The default address is {DEFAULT_BOARD_ADDR}"
         );
     };
@@ -254,19 +256,21 @@ mod tests {
     use actix_web::web;
 
     #[test]
-    fn loopback_board_does_not_require_a_token() {
-        let config = resolve_board("127.0.0.1:8080", None).unwrap();
-        assert!(config.addr.ip().is_loopback());
+    fn loopback_board_requires_a_token_unless_insecure() {
+        let error = resolve_board("127.0.0.1:8080", None, false).unwrap_err();
+        assert!(error.to_string().contains("BOARD_TOKEN"));
+        let config = resolve_board("127.0.0.1:8080", None, true).unwrap();
         assert!(config.token.is_none());
-        assert!(resolve_board("[::1]:8080", None).is_ok());
+        assert!(resolve_board("[::1]:8080", None, true).is_ok());
+        assert!(resolve_board("0.0.0.0:8080", None, true).is_err());
     }
 
     #[test]
     fn public_board_requires_a_token() {
-        let error = resolve_board("0.0.0.0:8080", None).unwrap_err();
+        let error = resolve_board("0.0.0.0:8080", None, false).unwrap_err();
         assert!(error.to_string().contains("BOARD_TOKEN"));
-        assert!(resolve_board("0.0.0.0:8080", Some("short")).is_err());
-        let config = resolve_board("0.0.0.0:8080", Some("local-only-board-token")).unwrap();
+        assert!(resolve_board("0.0.0.0:8080", Some("short"), false).is_err());
+        let config = resolve_board("0.0.0.0:8080", Some("local-only-board-token"), false).unwrap();
         assert_eq!(config.token.as_deref(), Some("local-only-board-token"));
     }
 

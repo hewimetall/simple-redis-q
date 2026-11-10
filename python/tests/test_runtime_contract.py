@@ -52,6 +52,25 @@ def test_metric_definitions_follow_the_fixed_middleware():
     assert DURATION_BUCKETS[-1] == float("inf")
 
 
+def test_dispatch_does_not_count_a_retry_before_enqueue():
+    setup(multiprocess=False)
+    registry, _seen = _registry()
+    before = value("retries", "quota", "discover")
+    message = build_message(
+        actor_name="discover",
+        queue="quota",
+        kwargs={"value": "boom"},
+        headers={},
+        max_retries=2,
+        min_backoff_ms=15_000,
+        max_backoff_ms=86_400_000,
+        message_id="count-after-enqueue",
+    )
+    result = asyncio.run(registry.dispatch(message))
+    assert result["outcome"] == "retry"
+    assert value("retries", "quota", "discover") == before
+
+
 def test_retry_is_counted_once_on_the_canonical_queue():
     setup(multiprocess=False)
     note_retry("quota.DQ", "discover")

@@ -31,7 +31,7 @@ pub enum Command {
         task_id: String,
     },
 
-    /// Serve the Apalis board. Loopback by default; other addresses require BOARD_TOKEN.
+    /// Serve the Apalis board. BOARD_TOKEN is required unless BOARD_INSECURE=1 on loopback.
     Admin,
 
     /// Serve the multiprocess metrics scrape on dramatiq_prom_host:dramatiq_prom_port.

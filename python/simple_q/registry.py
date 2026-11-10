@@ -8,7 +8,7 @@ from typing import Any
 
 from simple_q.backoff import compute_backoff
 from simple_q.message import CurrentMessage, bind_message, reset_message
-from simple_q.metrics import finish_attempt, note_retry, reject, start_attempt
+from simple_q.metrics import finish_attempt, reject, start_attempt
 
 log = logging.getLogger("simple_q")
 
@@ -260,7 +260,6 @@ class Registry:
             min_backoff=int(message.get("min_backoff_ms") or actor.min_backoff),
             max_backoff=int(message.get("max_backoff_ms") or actor.max_backoff),
         )
-        note_retry(current.queue_name, current.actor_name)
         return {"outcome": "retry", "delay_ms": delay_ms}
 
     async def _dead(self, actor_name: str, kwargs: dict, reason: str) -> None:
