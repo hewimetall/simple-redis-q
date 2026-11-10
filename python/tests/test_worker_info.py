@@ -243,7 +243,10 @@ def test_info_json_shows_the_running_task_then_max_tasks(tmp_path):
             exited = [
                 child
                 for child in children
-                if child.get("state") == "exited" and child.get("reason") == "max_tasks"
+                if child.get("state") == "exited"
+                and child.get("reason") == "max_tasks"
+                and child.get("tasks_done") == 1
+                and child.get("max_tasks") == 1
             ]
             live = [
                 child

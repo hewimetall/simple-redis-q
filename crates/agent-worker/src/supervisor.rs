@@ -967,8 +967,10 @@ impl Roster {
         let Some(mut child) = inner.children.get(&pid).copied() else {
             return;
         };
-        let now = unix_now();
-        child.apply_exit(code, term, now, &mut inner.counters);
+        // `ended_at` 0 means the exit is recorded and the next Redis `TIME`
+        // supplies the timestamp. A local clock here can land before `started_at`
+        // and make `prune_finished` drop the row on that same publish.
+        child.apply_exit(code, term, 0, &mut inner.counters);
         inner.children.insert(pid, child);
     }
 
@@ -985,9 +987,7 @@ impl Roster {
     ) -> (Vec<simple_q_runtime::admin::ChildRecord>, Counters) {
         let mut inner = self.inner.lock().expect("roster");
         for child in inner.children.values_mut() {
-            if child.started_at == 0 {
-                child.started_at = now;
-            }
+            stamp_child_clocks(child, now);
         }
         let mut children: Vec<_> = inner
             .children
@@ -1005,11 +1005,13 @@ impl Roster {
     }
 }
 
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or(0)
+fn stamp_child_clocks(child: &mut ChildTrack, now: u64) {
+    if child.started_at == 0 {
+        child.started_at = now;
+    }
+    if child.ended_at == Some(0) {
+        child.ended_at = Some(now);
+    }
 }
 
 fn spawn_supervisor_heartbeat(
@@ -1107,6 +1109,22 @@ fn rss_of(children: &[(u32, u64)], pid: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_exit_before_the_first_heartbeat_shares_one_redis_clock() {
+        let mut child = ChildTrack::start(0);
+        let mut counters = Counters::default();
+        child.apply_exit(Some(0), None, 0, &mut counters);
+        let redis_now = 1_700_000_000;
+        stamp_child_clocks(&mut child, redis_now);
+        assert_eq!(child.started_at, redis_now);
+        assert_eq!(child.ended_at, Some(redis_now));
+        assert!(!simple_q_runtime::admin::finished_row_expired(
+            child.ended_at,
+            redis_now,
+            40
+        ));
+    }
 
     #[test]
     fn exit_code_3_is_fatal_and_other_codes_restart() {

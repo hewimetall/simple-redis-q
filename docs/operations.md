@@ -84,7 +84,7 @@ The board is a view of the Redis queue. It does not replace the Prometheus scrap
 | --- | --- | --- |
 | `running` | empty | The child is up. The supervisor has not signaled it. |
 | `draining` | `memory_soft` | `SIGUSR1` because that process crossed its soft RSS limit. |
-| `draining` | `memory_ratio` | `SIGUSR1` because the container working set crossed the soft ratio. |
+| `draining` | `memory_ratio` | `SIGUSR1` because the container working set crossed the soft ratio, or the hard ratio when no child owned the usage. A child that does own it is `killed` / `memory_ratio` instead. |
 | `draining` | `shutdown` | `SIGUSR1` because the supervisor got `SIGTERM` or `SIGINT`. |
 | `draining` | `max_tasks` | The child row still says running, and `tasks_done` has reached `max_tasks`. The snapshot shows the drain before the process exits. |
 | `exited` | `max_tasks` | Exit 0 and the supervisor had not sent a signal. The child finished its task budget. |

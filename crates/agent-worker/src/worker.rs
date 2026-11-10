@@ -64,6 +64,19 @@ impl Shared {
         for handle in handles {
             let _ = handle.await;
         }
+        let done = self.completed.load(Ordering::Relaxed);
+        let mut conn = self.redis.clone();
+        if let Err(error) = simple_q_runtime::admin::note_child_tasks(
+            &mut conn,
+            &simple_q_runtime::ids::hostname(),
+            std::os::unix::process::parent_id(),
+            std::process::id(),
+            done,
+        )
+        .await
+        {
+            tracing::warn!(%error, "failed to record tasks_done on the supervisor");
+        }
         let noted = self.worker_names.lock().expect("worker names").clone();
         for (queue, name) in noted {
             let mut conn = self.redis.clone();
@@ -212,6 +225,17 @@ async fn announce_worker(
                 .await
                 {
                     tracing::warn!(%error, %name, "failed to write tasks_done");
+                }
+                if let Err(error) = simple_q_runtime::admin::note_child_tasks(
+                    &mut conn,
+                    &simple_q_runtime::ids::hostname(),
+                    std::os::unix::process::parent_id(),
+                    std::process::id(),
+                    done,
+                )
+                .await
+                {
+                    tracing::warn!(%error, %name, "failed to record tasks_done on the supervisor");
                 }
                 if *stop.borrow() {
                     return Ok(());

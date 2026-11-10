@@ -60,7 +60,8 @@ SLOT  PID  STATE     REASON       RSS    TASKS    HB
 0     23   killed    memory_hard  1.51G  98/500   41s   held 1, waiting for requeue
 1     12   exited    max_tasks    -      500/500  52s
 PID  QUEUE  ACTOR                        KWARGS                  TRY  DLV  RUN
-31   quota  recalc                       project_id=3f1c0b2a…   0/1  1    212s/1800s
+31   quota  recalc                       project_id=3f1c0b2a…    0/1  1    212s/1800s
+23   quota  recalc                       project_id=held         0/1  1    212s/1800s
 QUEUE  ACTIVE  SCHEDULED  INFLIGHT  DONE  DEAD
 quota  12      1          4         9873  0
 ```

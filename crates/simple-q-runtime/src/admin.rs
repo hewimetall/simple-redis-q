@@ -20,6 +20,7 @@ use crate::redis_api::{self, delivery_key};
 pub const SUPERVISORS_KEY: &str = "simple_q:supervisors";
 
 const CHILD_FIELD: &str = "child:";
+const TASKS_FIELD: &str = "tasks:";
 /// `wait` status for `SIGKILL`. The supervisor did not choose this signal.
 const SIGKILL: i32 = 9;
 
@@ -280,6 +281,8 @@ impl ChildTrack {
             started_at: self.started_at,
             ended_at: self.ended_at,
             exit: self.term_signal.or(self.exit_code),
+            tasks_done: None,
+            max_tasks: None,
         }
     }
 }
@@ -305,6 +308,12 @@ pub struct ChildRecord {
     pub ended_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit: Option<i32>,
+    /// Last completed-task count. Kept after the worker metadata hash is deleted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks_done: Option<u64>,
+    /// Task budget for this process. Kept after the worker metadata hash is deleted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tasks: Option<u64>,
 }
 
 /// A finished row is due once `now - ended_at` reaches `retain_secs`.
@@ -370,6 +379,9 @@ pub async fn publish_supervisor(
     let existing = hash_map(&read[1]);
     let retain = supervisor_ttl_secs(settings);
     let mut children = record.children.clone();
+    for child in &mut children {
+        restore_child_progress(&existing, child, record.max_tasks);
+    }
     prune_finished(&mut children, now, retain);
     let mut by_pid: BTreeMap<u32, &ChildRecord> = BTreeMap::new();
     for child in &children {
@@ -401,7 +413,18 @@ pub async fn publish_supervisor(
     let keep: BTreeSet<&str> = fields.iter().map(|(name, _)| name.as_str()).collect();
     let stale: Vec<&str> = existing
         .keys()
-        .filter(|name| name.starts_with(CHILD_FIELD) && !keep.contains(name.as_str()))
+        .filter(|name| {
+            if name.starts_with(CHILD_FIELD) && !keep.contains(name.as_str()) {
+                return true;
+            }
+            match name.strip_prefix(TASKS_FIELD) {
+                Some(pid) => pid
+                    .parse::<u32>()
+                    .ok()
+                    .is_some_and(|pid| !by_pid.contains_key(&pid)),
+                None => false,
+            }
+        })
         .map(String::as_str)
         .collect();
     let ttl = supervisor_ttl_secs(settings);
@@ -467,6 +490,29 @@ pub async fn note_worker_start(
     cmd.query_async::<()>(conn)
         .await
         .context("failed to record worker start")?;
+    Ok(())
+}
+
+/// Remember `tasks_done` on the supervisor hash.
+///
+/// An orderly exit deletes the worker metadata hash. The supervisor copies
+/// this field into `child:{pid}` on its next publish, so the exited row still
+/// has a task count.
+pub async fn note_child_tasks(
+    conn: &mut ConnectionManager,
+    host: &str,
+    supervisor_pid: u32,
+    pid: u32,
+    tasks_done: u64,
+) -> Result<()> {
+    let key = supervisor_key(&supervisor_member(host, supervisor_pid));
+    redis::cmd("HSET")
+        .arg(&key)
+        .arg(format!("{TASKS_FIELD}{pid}"))
+        .arg(tasks_done)
+        .query_async::<()>(conn)
+        .await
+        .context("failed to record child tasks_done")?;
     Ok(())
 }
 
@@ -1182,18 +1228,61 @@ fn process_state(
 }
 
 /// Each queue hash stores the same process counter. Take the newest write, not the sum.
+///
+/// The supervisor child row keeps the last count after an orderly exit deletes the hash.
 fn tasks_done_of(proc: &ProcBuild) -> Option<u64> {
-    proc.by_queue
-        .values()
-        .filter_map(|pick| map_u64(&pick.meta, "tasks_done"))
-        .max()
+    max_u64(
+        proc.by_queue
+            .values()
+            .filter_map(|pick| map_u64(&pick.meta, "tasks_done"))
+            .max(),
+        proc.child.as_ref().and_then(|child| child.tasks_done),
+    )
 }
 
 fn max_tasks(proc: &ProcBuild) -> Option<u64> {
-    proc.by_queue
-        .values()
-        .filter_map(|pick| map_u64(&pick.meta, "max_tasks"))
-        .max()
+    max_u64(
+        proc.by_queue
+            .values()
+            .filter_map(|pick| map_u64(&pick.meta, "max_tasks"))
+            .max(),
+        proc.child.as_ref().and_then(|child| child.max_tasks),
+    )
+}
+
+fn max_u64(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+fn restore_child_progress(
+    existing: &BTreeMap<String, String>,
+    child: &mut ChildRecord,
+    supervisor_max: u64,
+) {
+    if let Some(remembered) = remembered_tasks_done(existing, child.pid) {
+        child.tasks_done = max_u64(child.tasks_done, Some(remembered));
+    }
+    if child.max_tasks.is_none() {
+        let previous = previous_child(existing, child.pid).and_then(|row| row.max_tasks);
+        child.max_tasks = previous.or((supervisor_max > 0).then_some(supervisor_max));
+    }
+}
+
+fn remembered_tasks_done(existing: &BTreeMap<String, String>, pid: u32) -> Option<u64> {
+    let side = existing
+        .get(&format!("{TASKS_FIELD}{pid}"))
+        .and_then(|text| parse_u64_loose(text));
+    let prior = previous_child(existing, pid).and_then(|row| row.tasks_done);
+    max_u64(side, prior)
+}
+
+fn previous_child(existing: &BTreeMap<String, String>, pid: u32) -> Option<ChildRecord> {
+    let text = existing.get(&format!("{CHILD_FIELD}{pid}"))?;
+    serde_json::from_str(text).ok()
 }
 
 fn sort_processes(processes: &mut [ProcessInfo]) {
@@ -1819,6 +1908,8 @@ mod tests {
             started_at: 1,
             ended_at,
             exit: None,
+            tasks_done: None,
+            max_tasks: None,
         }
     }
 
@@ -1867,7 +1958,38 @@ mod tests {
         assert!(json.get("ended_at").is_none());
         assert!(json.get("exit").is_none());
         assert!(json.get("pid").is_none());
+        assert!(json.get("tasks_done").is_none());
+        assert!(json.get("max_tasks").is_none());
         assert_eq!(record.exit, None);
+    }
+
+    #[test]
+    fn an_exited_row_keeps_the_task_count_without_metadata() {
+        let mut child = running_child(12, 1);
+        child.state = "exited".to_owned();
+        child.reason = Some("max_tasks".to_owned());
+        child.tasks_done = Some(500);
+        child.max_tasks = Some(500);
+        child.ended_at = Some(80);
+        let proc = ProcBuild::from_child("host", 12, 1, child);
+        assert_eq!(tasks_done_of(&proc), Some(500));
+        assert_eq!(max_tasks(&proc), Some(500));
+
+        let mut existing = BTreeMap::new();
+        existing.insert("tasks:12".to_owned(), "500".to_owned());
+        let mut fresh = row(12, Some(80));
+        restore_child_progress(&existing, &mut fresh, 500);
+        assert_eq!(fresh.tasks_done, Some(500));
+        assert_eq!(fresh.max_tasks, Some(500));
+        existing.remove("tasks:12");
+        existing.insert(
+            "child:12".to_owned(),
+            serde_json::to_string(&fresh).unwrap(),
+        );
+        let mut again = row(12, Some(80));
+        restore_child_progress(&existing, &mut again, 500);
+        assert_eq!(again.tasks_done, Some(500));
+        assert_eq!(again.max_tasks, Some(500));
     }
 
     #[test]
