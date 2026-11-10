@@ -221,12 +221,14 @@ async fn supervise_slot(
                 status = child.wait() => status,
             }
         };
+        let code = status.context("failed to wait for the worker process")?;
+        let (exit_code, term_signal) = exit_parts(&code);
+        // Shutdown can win the race with this wait. Record the exit before
+        // returning, or the roster keeps the child as running.
+        roster.finish(pid, exit_code, term_signal);
         if *shutdown.borrow() {
             return Ok(());
         }
-        let code = status.context("failed to wait for the worker process")?;
-        let (exit_code, term_signal) = exit_parts(&code);
-        roster.finish(pid, exit_code, term_signal);
         match classify_child_exit(code.success(), code.code()) {
             ChildExit::Recycle => {
                 tracing::info!(index, pid, "worker process recycled");
