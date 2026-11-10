@@ -161,8 +161,28 @@ jobs:
     container: python:3.12-slim
     steps:
       - name: Install the tag version and import it
+        env:
+          PIP_CACHE_DIR: /tmp/pip-cache
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
         run: |
           version="${GITHUB_REF_NAME#v}"
-          pip install "simple-q-runtime==${version}" "simple-q-worker==${version}"
+          mkdir -p "$PIP_CACHE_DIR"
+          # PyPI accepts the upload before the simple index lists it. rc1 and
+          # rc2 both failed this step a few seconds after a successful publish.
+          installed=0
+          i=0
+          while [ "$i" -lt 16 ]; do
+            if pip install --no-cache-dir "simple-q-runtime==${version}" "simple-q-worker==${version}"; then
+              installed=1
+              break
+            fi
+            i=$((i + 1))
+            echo "PyPI index does not list ${version} yet (${i}/16)"
+            sleep 15
+          done
+          if [ "$installed" -ne 1 ]; then
+            echo "simple-q-runtime==${version} did not appear on PyPI"
+            exit 1
+          fi
           agent-worker --version
           python -c 'import simple_q'

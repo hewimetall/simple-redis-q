@@ -24,7 +24,7 @@ Neither crate is published to crates.io (`publish = false`).
 
 ## Wheels
 
-`.github/workflows/release.yml` runs on tags `v*`. For each of `x86_64` and `aarch64` it:
+`.github/workflows/release.yml` runs on tags `v*`. The smoke job installs `simple-q-runtime` and `simple-q-worker` at the tag version from PyPI. The simple index can lag the upload by a few seconds, so that install retries for about four minutes. For each of `x86_64` and `aarch64` the workflow:
 
 1. Builds the `simple-q-runtime` wheel with maturin-action.
 2. Builds `simple-q-worker` with `scripts/build-worker-wheel.sh`.
