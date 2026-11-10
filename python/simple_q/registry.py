@@ -19,6 +19,16 @@ from simple_q.message import CurrentMessage, bind_message, reset_message
 from simple_q.metrics import finish_attempt, reject, start_attempt
 from simple_q.tracing import Tracing
 
+
+def _delivery_count(message: dict) -> int:
+    raw = message.get("deliveries")
+    try:
+        count = int(raw)
+    except (TypeError, ValueError):
+        return 1
+    return count if count > 0 else 1
+
+
 log = logging.getLogger("simple_q")
 
 DEFAULT_TIME_LIMIT_MS = 1_800_000
@@ -264,6 +274,8 @@ class Registry:
             headers={
                 str(key): str(value) for key, value in (message.get("headers") or {}).items()
             },
+            deliveries=_delivery_count(message),
+            worker_name=str(message.get("worker_name") or ""),
         )
         token = bind_message(current)
         try:

@@ -78,20 +78,44 @@ pub fn delivery_key(message_id: &str, retries: u32) -> String {
     format!("delivery:{message_id}:{retries}")
 }
 
+/// `INCR` and `EXPIRE` in one script. A crash between two commands used to
+/// leave the key with no TTL.
+const INCR_EXPIRE: &str = r#"
+local n = redis.call('INCR', KEYS[1])
+redis.call('EXPIRE', KEYS[1], ARGV[1])
+return n
+"#;
+
+fn delivery_counter() -> &'static redis::Script {
+    static SCRIPT: OnceLock<redis::Script> = OnceLock::new();
+    SCRIPT.get_or_init(|| redis::Script::new(INCR_EXPIRE))
+}
+
 /// Count a worker delivery. Orphan requeue does not call this.
+///
+/// The TTL is only the crash backstop. A finished ack deletes the key.
+/// Poison and dead keep it, so a later delivery of the same attempt still
+/// sees a count above `max_deliveries`.
 pub async fn incr_delivery(message_id: &str, retries: u32) -> Result<u64> {
     let key = delivery_key(message_id, retries);
-    let value: i64 = redis::cmd("INCR")
+    let value: i64 = delivery_counter()
+        .key(&key)
+        .arg(names::DEFAULT_DEAD_TTL_SECS)
+        .invoke_async(&mut connection()?)
+        .await
+        .context("failed to count a delivery")?;
+    Ok(value as u64)
+}
+
+/// Drop the delivery key once this attempt is acked.
+pub async fn release_delivery(message_id: &str, retries: u32) -> Result<()> {
+    let key = delivery_key(message_id, retries);
+    let _: i64 = redis::cmd("DEL")
         .arg(&key)
         .query_async(&mut connection()?)
         .await
-        .context("failed to count a delivery")?;
-    let _: Result<(), redis::RedisError> = redis::cmd("EXPIRE")
-        .arg(&key)
-        .arg(names::DEFAULT_DEAD_TTL_SECS)
-        .query_async(&mut connection()?)
-        .await;
-    Ok(value as u64)
+        .context("failed to drop a delivery key")?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -111,5 +135,12 @@ mod tests {
         assert!(!key.contains(":done"));
         assert!(!key.contains(":inflight"));
         assert!(!key.ends_with(".DQ"));
+    }
+
+    #[test]
+    fn the_delivery_script_increments_and_expires_together() {
+        assert!(INCR_EXPIRE.contains("INCR"));
+        assert!(INCR_EXPIRE.contains("EXPIRE"));
+        assert_eq!(INCR_EXPIRE.matches("redis.call").count(), 2);
     }
 }

@@ -59,5 +59,12 @@ async fn a_delayed_message_stays_on_its_own_queue() {
             .expect("delivery"),
         1
     );
-    assert_eq!(redis(&["GET", &format!("delivery:{message_id}:0")]), "1");
+    let key = format!("delivery:{message_id}:0");
+    assert_eq!(redis(&["GET", &key]), "1");
+    let ttl = redis(&["TTL", &key]);
+    assert!(ttl.parse::<i64>().expect("ttl") > 0, "{ttl}");
+    redis_api::release_delivery(&message_id, 0)
+        .await
+        .expect("release");
+    assert_eq!(redis(&["GET", &key]), "");
 }

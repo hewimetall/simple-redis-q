@@ -306,7 +306,11 @@ Reconcile не вызывает бизнес-recovery и не меняет pipel
 
 Пока `retries < max_retries`, пауза считается формулой Dramatiq 1.18 `compute_backoff`: аргумент — число уже сделанных повторов, до увеличения счётчика. При `min_backoff` 15 с и `max_backoff` не ниже 60 с первые три паузы попадают в полуинтервалы `[7.5, 15)`, `[15, 30)` и `[30, 60)` секунд. Новая постановка несёт тот же `message_id` и `retries + 1`. Счётчик `dramatiq_message_retries_total` увеличивается один раз, на канонической очереди, только у постановки с задержкой. Повторная выдача после ETA задержкой не является и счётчик не двигает.
 
-Повторная доставка после падения процесса — другой путь. Сообщение остаётся inflight, ack не делается, и позже orphan-скрипт ставит его снова. Скрипт сам счётчик доставок не увеличивает. Его увеличивает старт попытки в worker. Ключ `delivery:{message_id}:{retries}` лежит вне keyspace Apalis. Значение по умолчанию — 5, переменная `SIMPLE_Q_MAX_DELIVERIES`.
+Повторная доставка после падения процесса — другой путь. Сообщение остаётся inflight, ack не делается, и позже orphan-скрипт ставит его снова. Скрипт сам счётчик доставок не увеличивает. Его увеличивает старт попытки в worker. Ключ `delivery:{message_id}:{retries}` лежит вне keyspace Apalis. `INCR` и `EXPIRE` выполняются одним Lua-скриптом: обрыв между двумя командами больше не оставляет ключ без срока. Срок — `SIMPLE_Q_DEAD_TTL_SECS` (7 суток) и нужен только если процесс умер до ack. Успешный ack и постановка повтора удаляют ключ сразу. Poison и dead ключ не удаляют: следующая доставка той же попытки должна снова увидеть счётчик выше `max_deliveries`. Значение по умолчанию — 5, переменная `SIMPLE_Q_MAX_DELIVERIES`.
+
+`current_message()` в handler несёт `deliveries` и `worker_name`. `simple_q.worker_name()` читает это имя и вне handler возвращает `None`. Имя — идентификатор Apalis-worker'а: `agent-worker.{queue}.{host}.{pid}.{suffix}`.
+
+Если у контейнера `memory.max` — число, supervisor раз в секунду читает `memory.current`. На доле `SIMPLE_Q_MEMORY_SOFT_RATIO` (0.80) child получает SIGUSR1 и дорабатывает текущие задачи. На доле `SIMPLE_Q_MEMORY_HARD_RATIO` (0.95) supervisor посылает SIGKILL child с наибольшим RSS, если этот RSS не меньше половины `memory.current`. Без конечного лимита проверка ничего не делает. Команды `CLIENT` не используются.
 
 `persist_results` остаётся `true`. В `apalis-core 1.0.0` этот флаг — признак ack. `false` пропускает `TaskEvent::Complete`, и сообщение остаётся inflight. Готовые записи чистит отдельный обход: успешные через `SIMPLE_Q_DONE_TTL_SECS` (по умолчанию 24 часа), dead через `SIMPLE_Q_DEAD_TTL_SECS` (по умолчанию 7 суток, как `dead_message_ttl` Dramatiq). Обход идёт пачками `SSCAN`/`HSCAN`. `vacuum` Apalis для этого не используется: он читает весь hash и не снимает множества `done` и `dead`.
 
@@ -417,7 +421,7 @@ Runtime не включает prometheus layer Apalis: тот слой созд�
 ```text
 Rust
 ├── main.rs            # команды; supervisor не инициализирует Python
-├── supervisor.rs      # процессы, SIGTERM, перезапуск
+├── supervisor.rs      # процессы, SIGTERM, порог памяти контейнера
 ├── child.rs           # CPython, ping, drain, код 2
 ├── worker.rs          # Apalis + Redis; poison до входа в Python
 ├── bridge.rs          # execute, реестр, ping, cancel

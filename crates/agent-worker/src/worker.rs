@@ -3,7 +3,9 @@
 //! Poison is decided here, from the delivery count, before Python is called.
 //! Retry and timeout come back from Python, because they need the exception.
 //! Redis is the server side (`redis_api`). The handler sees a copy of the
-//! message. Retry stores the original job, so the sender's headers stay in Redis.
+//! message, including the delivery count and this process's worker name.
+//! Retry stores the original job, so the sender's headers stay in Redis.
+//! The delivery key is deleted only after ack.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -204,7 +206,7 @@ async fn handle_job(
         deliveries,
         "running actor"
     );
-    let result = bridge::execute(&dispatched, &task_id, deliveries).await;
+    let result = bridge::execute(&dispatched, &task_id, deliveries, worker.name()).await;
 
     note_finished(&state);
 
@@ -234,6 +236,7 @@ async fn handle_job(
                 std::process::exit(2);
             }
             bridge::note_retry(&job.queue, &job.actor_name);
+            release_acked(&job).await;
             Ok(value)
         }
         Some("dead") => Err(Box::new(AbortError::new(anyhow::anyhow!(
@@ -243,7 +246,21 @@ async fn handle_job(
                 .and_then(|item| item.as_str())
                 .unwrap_or("dead")
         )))),
-        _ => Ok(value),
+        _ => {
+            release_acked(&job).await;
+            Ok(value)
+        }
+    }
+}
+
+async fn release_acked(job: &Job) {
+    if let Err(error) = redis_api::release_delivery(&job.message_id, job.retries).await {
+        tracing::warn!(
+            message_id = %job.message_id,
+            retries = job.retries,
+            error = %error,
+            "failed to drop the delivery key after ack"
+        );
     }
 }
 
