@@ -10,6 +10,14 @@ description = "Calls Python. The job crosses as JSON."
 technology = "module"
 
 [[elements]]
+id = "cgroup"
+workspace_id = "sidecar"
+kind = "external"
+name = "cgroup"
+description = "Container memory.current and memory.max."
+technology = "filesystem"
+
+[[elements]]
 id = "child"
 workspace_id = "sidecar"
 kind = "code"
@@ -51,7 +59,7 @@ workspace_id = "sidecar"
 kind = "component"
 parent_id = "crate-worker"
 name = "Process"
-description = "Supervisor and one child."
+description = "Supervisor, one child, and the container memory watch."
 technology = "rust"
 
 [[elements]]
@@ -164,8 +172,8 @@ id = "py-registry"
 workspace_id = "sidecar"
 kind = "code"
 parent_id = "cmp-dispatch"
-name = "Registry.dispatch"
-description = "on_send, handler, retry, or dead."
+name = "registry"
+description = "on_send, handler, retry, or dead. The current message carries the worker name and the delivery count."
 technology = "module"
 
 [[elements]]
@@ -182,7 +190,7 @@ workspace_id = "sidecar"
 kind = "code"
 parent_id = "cmp-server"
 name = "redis_api"
-description = "Opens Redis."
+description = "Opens Redis. The delivery counter is one script."
 technology = "module"
 
 [[elements]]
@@ -198,7 +206,7 @@ workspace_id = "sidecar"
 kind = "code"
 parent_id = "cmp-process"
 name = "supervisor"
-description = "Forks children. Does not take messages."
+description = "Forks children and watches container memory. Does not take messages."
 technology = "module"
 
 [[elements]]
@@ -216,7 +224,7 @@ workspace_id = "sidecar"
 kind = "code"
 parent_id = "cmp-process"
 name = "worker"
-description = "One delivery: run, retry, or bury."
+description = "One delivery: count it, bury poison, or run the handler."
 technology = "module"
 
 [[relationships]]
@@ -304,11 +312,18 @@ to_id = "py-module"
 description = "enqueue when memory mode is off"
 
 [[relationships]]
+id = "sup-cgroup"
+workspace_id = "sidecar"
+from_id = "supervisor"
+to_id = "cgroup"
+description = "Reads memory.current and memory.max. No Redis."
+
+[[relationships]]
 id = "sup-child"
 workspace_id = "sidecar"
 from_id = "supervisor"
 to_id = "child"
-description = "Forks a child and reaps it"
+description = "Forks a child. Soft memory drains it. Hard memory SIGKILLs the largest child."
 
 [[relationships]]
 id = "tel-exp"
@@ -322,14 +337,14 @@ id = "worker-bridge"
 workspace_id = "sidecar"
 from_id = "worker"
 to_id = "bridge"
-description = "Copy that carries the process traceparent"
+description = "Copy carries the traceparent, the delivery count, and the worker name."
 
 [[relationships]]
 id = "worker-job"
 workspace_id = "sidecar"
 from_id = "worker"
 to_id = "job"
-description = "Validates the stored message"
+description = "Validates the stored message and decides poison before Python."
 
 [[relationships]]
 id = "worker-lock"
@@ -350,7 +365,7 @@ id = "worker-redis"
 workspace_id = "sidecar"
 from_id = "worker"
 to_id = "redis-port"
-description = "Lease, delivery count, retry enqueue"
+description = "Lease, one-script delivery count, delete that key on ack, retry enqueue."
 
 [[relationships]]
 id = "worker-tel"

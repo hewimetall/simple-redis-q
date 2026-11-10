@@ -27,22 +27,34 @@ label = "store"
 n = 4
 from_id = "worker"
 to_id = "redis-port"
-label = "take and count the delivery"
+label = "count the delivery in one script"
 
 [[steps]]
 n = 5
+from_id = "worker"
+to_id = "job"
+label = "decide poison before Python"
+
+[[steps]]
+n = 6
 from_id = "worker"
 to_id = "telemetry"
 label = "process span, parent from headers"
 
 [[steps]]
-n = 6
+n = 7
 from_id = "worker"
 to_id = "bridge"
-label = "copy with the span traceparent"
+label = "copy with traceparent, deliveries, and worker name"
 
 [[steps]]
-n = 7
+n = 8
 from_id = "bridge"
 to_id = "py-registry"
 label = "handler, then retry or dead"
+
+[[steps]]
+n = 9
+from_id = "worker"
+to_id = "redis-port"
+label = "delete the delivery key on ack"
