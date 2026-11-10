@@ -28,11 +28,14 @@ use simple_q_runtime::slots::{reset_slot_gauges, wipe_db_files};
 
 pub async fn run(
     app: String,
+    factory: bool,
     queues: Vec<String>,
     processes: u32,
     concurrency: usize,
     max_tasks: u64,
     limits: ChildMemoryLimits,
+    memory_soft_ratio: f64,
+    memory_hard_ratio: f64,
 ) -> Result<()> {
     if processes == 0 {
         anyhow::bail!("--processes must be greater than zero");
@@ -73,6 +76,7 @@ pub async fn run(
             supervise_slot(
                 index,
                 app,
+                factory,
                 queues,
                 concurrency,
                 max_tasks,
@@ -89,7 +93,14 @@ pub async fn run(
     loop {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                apply_memory_pressure(&live, &mut pressure, limits, &memory_metrics);
+                apply_memory_pressure(
+                &live,
+                &mut pressure,
+                limits,
+                memory_soft_ratio,
+                memory_hard_ratio,
+                &memory_metrics,
+            );
             }
             _ = terminate.recv() => {
                 tracing::info!("SIGTERM received; draining child processes");
@@ -137,6 +148,7 @@ pub async fn run(
 async fn supervise_slot(
     index: u32,
     app: String,
+    factory: bool,
     queues: Vec<String>,
     concurrency: usize,
     max_tasks: u64,
@@ -153,7 +165,15 @@ async fn supervise_slot(
         }
 
         reset_slot_gauges(&prom_dir, index).context("failed to reset slot gauges")?;
-        let mut child = spawn_child(&app, &queues, concurrency, max_tasks, index, &prom_dir)?;
+        let mut child = spawn_child(
+            &app,
+            factory,
+            &queues,
+            concurrency,
+            max_tasks,
+            index,
+            &prom_dir,
+        )?;
         let pid = child.id().context("child process has no pid")?;
         tracing::info!(index, pid, "worker process started");
 
@@ -224,6 +244,7 @@ pub fn classify_child_exit(success: bool, code: Option<i32>) -> ChildExit {
 
 fn spawn_child(
     app: &str,
+    factory: bool,
     queues: &[String],
     concurrency: usize,
     max_tasks: u64,
@@ -231,11 +252,16 @@ fn spawn_child(
     prom_dir: &std::path::Path,
 ) -> Result<Child> {
     let executable = std::env::current_exe().context("failed to resolve the worker executable")?;
-    Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .arg("worker")
         .arg("--child")
         .arg("--app")
-        .arg(app)
+        .arg(app);
+    if factory {
+        command.arg("--factory");
+    }
+    command
         .arg("--queues")
         .arg(queues.join(","))
         .arg("--concurrency")
@@ -450,27 +476,32 @@ impl std::fmt::Display for ChildMemoryConfigError {
 
 impl std::error::Error for ChildMemoryConfigError {}
 
-const CHILD_MEMORY_SOFT_ENV: &str = "SIMPLE_Q_CHILD_MEMORY_SOFT";
-const CHILD_MEMORY_HARD_ENV: &str = "SIMPLE_Q_CHILD_MEMORY_HARD";
 const CHILD_MEMORY_PROM: &str = "simple_q_child_memory.prom";
 
-/// The flag wins. An omitted flag falls through to the environment value.
-pub fn prefer_flag<'a>(flag: Option<&'a str>, env_value: Option<&'a str>) -> Option<&'a str> {
-    flag.or(env_value)
-}
-
-/// Resolve the worker flags and `SIMPLE_Q_CHILD_MEMORY_SOFT` /
-/// `SIMPLE_Q_CHILD_MEMORY_HARD`. The flag wins when both are set.
+/// The flag wins over the byte limits already stored on `Config`.
 pub fn load_child_memory_limits(
+    configured_soft: Option<u64>,
+    configured_hard: Option<u64>,
     soft_flag: Option<&str>,
     hard_flag: Option<&str>,
 ) -> Result<ChildMemoryLimits, ChildMemoryConfigError> {
-    let soft_env = std::env::var(CHILD_MEMORY_SOFT_ENV).ok();
-    let hard_env = std::env::var(CHILD_MEMORY_HARD_ENV).ok();
-    parse_child_memory_limits(
-        prefer_flag(soft_flag, soft_env.as_deref()),
-        prefer_flag(hard_flag, hard_env.as_deref()),
-    )
+    let soft = match soft_flag {
+        Some(raw) => Some(parse_byte_size(raw)?),
+        None => configured_soft,
+    };
+    let hard = match hard_flag {
+        Some(raw) => Some(parse_byte_size(raw)?),
+        None => configured_hard,
+    };
+    if let (Some(left), Some(right)) = (soft, hard) {
+        if left >= right {
+            return Err(ChildMemoryConfigError::soft_not_below(
+                &left.to_string(),
+                &right.to_string(),
+            ));
+        }
+    }
+    Ok(ChildMemoryLimits { soft, hard })
 }
 
 /// `K`, `M`, and `G` are powers of 1024, with an optional `B`. A bare number
@@ -617,21 +648,6 @@ simple_q_child_memory_kills_total {kills}
     )
 }
 
-fn memory_ratios() -> (f64, f64) {
-    (
-        ratio("SIMPLE_Q_MEMORY_SOFT_RATIO", 0.80),
-        ratio("SIMPLE_Q_MEMORY_HARD_RATIO", 0.95),
-    )
-}
-
-fn ratio(name: &str, default: f64) -> f64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse::<f64>().ok())
-        .filter(|value| value.is_finite() && *value > 0.0 && *value < 1.0)
-        .unwrap_or(default)
-}
-
 fn cgroup_dir() -> Option<std::path::PathBuf> {
     let text = std::fs::read_to_string("/proc/self/cgroup").ok()?;
     cgroup_memory_dir(&text)
@@ -741,6 +757,8 @@ fn apply_memory_pressure(
     live: &LivePids,
     pressure: &mut Pressure,
     limits: ChildMemoryLimits,
+    memory_soft_ratio: f64,
+    memory_hard_ratio: f64,
     metrics: &ChildMemoryMetrics,
 ) {
     let pids: Vec<u32> = live.lock().expect("live pids").values().copied().collect();
@@ -777,8 +795,7 @@ fn apply_memory_pressure(
     let Some((usage, limit)) = container_memory() else {
         return;
     };
-    let (soft, hard) = memory_ratios();
-    match memory_action(usage, limit, soft, hard) {
+    match memory_action(usage, limit, memory_soft_ratio, memory_hard_ratio) {
         MemoryAction::None => {}
         MemoryAction::Drain => {
             drain_one_for_ratio(
@@ -967,17 +984,15 @@ mod tests {
     }
 
     #[test]
-    fn the_flag_wins_over_the_environment_value() {
-        assert_eq!(prefer_flag(Some("1G"), Some("abc")), Some("1G"));
-        assert_eq!(prefer_flag(None, Some("1500M")), Some("1500M"));
-        assert_eq!(prefer_flag(None, None), None);
-        let limits = parse_child_memory_limits(
-            prefer_flag(Some("512K"), Some("0")),
-            prefer_flag(None, Some("1G")),
-        )
-        .unwrap();
+    fn the_flag_wins_over_the_configured_limit() {
+        let limits = load_child_memory_limits(Some(1), Some(2), Some("512K"), Some("1G")).unwrap();
         assert_eq!(limits.soft, Some(512 * 1024));
         assert_eq!(limits.hard, Some(1024 * 1024 * 1024));
+        let configured = load_child_memory_limits(Some(512 * 1024), Some(1024 * 1024 * 1024), None, None)
+            .unwrap();
+        assert_eq!(configured.soft, Some(512 * 1024));
+        assert_eq!(configured.hard, Some(1024 * 1024 * 1024));
+        assert!(load_child_memory_limits(Some(2_000), Some(1_000), None, None).is_err());
     }
 
     #[test]

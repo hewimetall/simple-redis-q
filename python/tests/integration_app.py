@@ -7,9 +7,7 @@ import json
 import os
 import time
 
-from simple_q import Registry
-
-app = Registry()
+from simple_q import App, Client, Config, actor
 
 
 def _append(path: str, payload: dict) -> None:
@@ -17,7 +15,7 @@ def _append(path: str, payload: dict) -> None:
         handle.write(json.dumps(payload) + "\n")
 
 
-@app.actor(name="hold", queue="holdq", max_retries=0, time_limit=120_000, max_deliveries=5)
+@actor(name="hold", queue="holdq", max_retries=0, time_limit=120_000, max_deliveries=5)
 async def hold():
     path = os.environ["HOLD_TOUCH"]
     _append(path, {"pid": os.getpid()})
@@ -37,7 +35,7 @@ def _hold_gil(seconds: int) -> None:
         raise RuntimeError("unreachable")
 
 
-@app.actor(name="gil", queue="gilq", max_retries=0, time_limit=120_000, max_deliveries=5)
+@actor(name="gil", queue="gilq", max_retries=0, time_limit=120_000, max_deliveries=5)
 async def gil():
     path = os.environ["GIL_TOUCH"]
     _append(path, {"pid": os.getpid()})
@@ -45,24 +43,34 @@ async def gil():
     return {"ok": True}
 
 
-@app.actor(name="die", queue="killq", max_retries=0, time_limit=120_000, max_deliveries=1)
+@actor(name="die", queue="killq", max_retries=0, time_limit=120_000, max_deliveries=1)
 async def die():
     path = os.environ["KILL_TOUCH"]
     _append(path, {"pid": os.getpid()})
     await asyncio.sleep(3600)
 
 
-@app.on_dead
-def remember(actor_name, kwargs, reason, message_id, retries):
+def remember(letter):
     path = os.environ.get("DEAD_LOG")
     if not path:
         return
     _append(
         path,
         {
-            "actor_name": actor_name,
-            "reason": reason,
-            "message_id": message_id,
-            "retries": retries,
+            "actor_name": letter.actor_name,
+            "kwargs": letter.kwargs,
+            "reason": letter.reason,
+            "message_id": letter.message_id,
+            "retries": letter.retries,
+            "deliveries": letter.deliveries,
+            "error": letter.error,
         },
+    )
+
+
+def create_app() -> App:
+    return App(
+        client=Client(os.environ["REDIS_URL"], config=Config.from_env()),
+        actors=[hold, gil, die],
+        on_dead=[remember],
     )

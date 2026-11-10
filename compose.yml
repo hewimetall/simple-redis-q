@@ -30,7 +30,8 @@ services:
     command:
       - worker
       - --app
-      - simple_q.app:app
+      - example_app:create_app
+      - --factory
       - --queues
       - default
       - --processes

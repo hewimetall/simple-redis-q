@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import textwrap
@@ -17,7 +18,15 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-BINARY = Path(os.environ.get("AGENT_WORKER_BIN", ROOT / "target" / "release" / "agent-worker"))
+def _default_binary() -> Path:
+    debug = ROOT / "target" / "debug" / "agent-worker"
+    release = ROOT / "target" / "release" / "agent-worker"
+    if debug.is_file():
+        return debug
+    return release
+
+
+BINARY = Path(os.environ["AGENT_WORKER_BIN"]) if os.environ.get("AGENT_WORKER_BIN") else _default_binary()
 
 SENDER = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 LINK = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-b7ad6b7169203331-01"
@@ -56,7 +65,7 @@ def test_process_span_is_a_child_and_keeps_its_link(tmp_path):
             from opentelemetry.sdk.resources import Resource
             from opentelemetry.trace import SpanKind
 
-            from simple_q import Registry, Tracing
+            from simple_q import App, Client, Config, Tracing, actor
             from simple_q.message import current_message
 
             RESOURCE = Resource.create({"service.name": "agent-worker"})
@@ -107,24 +116,7 @@ def test_process_span_is_a_child_and_keeps_its_link(tmp_path):
                     return None
 
 
-            app = Registry(
-                tracing=Tracing(
-                    exporter=Recorder(os.environ["SPAN_LOG"], RESOURCE),
-                    resource=RESOURCE,
-                    targets={
-                        "agent_worker": "info",
-                        "simple_q_runtime": "info",
-                        "apalis": "debug",
-                    },
-                    max_queue_size=2048,
-                    max_export_batch_size=512,
-                    scheduled_delay_ms=200,
-                    export_timeout_ms=10000,
-                )
-            )
-
-
-            @app.actor(
+            @actor(
                 name="traced",
                 queue="traceq",
                 max_retries=1,
@@ -148,6 +140,26 @@ def test_process_span_is_a_child_and_keeps_its_link(tmp_path):
                 if current.retries == 0:
                     raise RuntimeError("again")
                 return {"ok": True}
+
+
+            def create_app():
+                return App(
+                    client=Client(os.environ["REDIS_URL"], config=Config.from_env()),
+                    actors=[traced],
+                    tracing=Tracing(
+                        exporter=Recorder(os.environ["SPAN_LOG"], RESOURCE),
+                        resource=RESOURCE,
+                        targets={
+                            "agent_worker": "info",
+                            "simple_q_runtime": "info",
+                            "apalis": "debug",
+                        },
+                        max_queue_size=2048,
+                        max_export_batch_size=512,
+                        scheduled_delay_ms=200,
+                        export_timeout_ms=10000,
+                    ),
+                )
             """
         ),
         encoding="utf-8",
@@ -163,11 +175,19 @@ def test_process_span_is_a_child_and_keeps_its_link(tmp_path):
         user_site = site.getusersitepackages()
     except Exception:
         user_site = ""
+    worker_py = tmp_path / "worker-py"
+    shutil.copytree(
+        ROOT / "python" / "simple_q",
+        worker_py / "simple_q",
+        ignore=shutil.ignore_patterns("*.so", "*.pyd", "__pycache__"),
+    )
     env.update(
         {
             "REDIS_URL": url,
             "PYTHONPATH": os.pathsep.join(
-                part for part in (str(tmp_path), str(ROOT / "python"), user_site) if part
+                part
+                for part in (str(tmp_path), str(worker_py), user_site)
+                if part
             ),
             "SPAN_LOG": str(span_log),
             "HEADER_LOG": str(header_log),
@@ -180,7 +200,8 @@ def test_process_span_is_a_child_and_keeps_its_link(tmp_path):
             str(BINARY),
             "worker",
             "--app",
-            "trace_app:app",
+            "trace_app:create_app",
+            "--factory",
             "--queues",
             queue,
             "--processes",

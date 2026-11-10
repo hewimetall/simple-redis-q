@@ -1,18 +1,19 @@
 import asyncio
+import importlib.util
 import logging
 import os
 import random
 import subprocess
 import sys
-import types
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from simple_q import App, DeadLetter, MemoryClient, actor, worker_name
 from simple_q.backoff import compute_backoff
-from simple_q import worker_alive, worker_name
+from simple_q.dispatch import MESSAGE_VERSION, build_message, usable_lock_key
 from simple_q.message import current_message
 from simple_q.metrics import (
     DURATION_BUCKETS,
@@ -26,19 +27,24 @@ from simple_q.metrics import (
     start_attempt,
     value,
 )
-from simple_q.registry import MESSAGE_VERSION, Registry, build_message
 
 
-@pytest.fixture(autouse=True)
-def _restore_embedded_runtime_module():
-    previous = sys.modules.get("simple_q_runtime")
-    try:
-        yield
-    finally:
-        if previous is None:
-            sys.modules.pop("simple_q_runtime", None)
-        else:
-            sys.modules["simple_q_runtime"] = previous
+class FakeClient:
+    def __init__(self, *, busy=False, release_error=None):
+        self.busy = busy
+        self.release_error = release_error
+        self.keys = []
+
+    async def acquire_lock(self, key, ttl):
+        self.keys.append(key)
+        if self.busy:
+            return None
+        return "owner-1"
+
+    async def release_lock(self, key, owner):
+        if self.release_error is not None:
+            raise self.release_error
+        return True
 
 
 def test_backoff_matches_dramatiq_1_18_ranges():
@@ -69,9 +75,36 @@ def test_metric_definitions_follow_the_fixed_middleware():
     assert DURATION_BUCKETS[-1] == float("inf")
 
 
+def test_dramatiq_metric_names_and_labels_are_frozen():
+    setup(multiprocess=False)
+    from simple_q.metrics import _METRICS
+
+    frozen = {
+        "dramatiq_messages_total": ("queue_name", "actor_name"),
+        "dramatiq_message_errors_total": ("queue_name", "actor_name"),
+        "dramatiq_message_retries_total": ("queue_name", "actor_name"),
+        "dramatiq_message_rejects_total": ("queue_name", "actor_name"),
+        "dramatiq_messages_inprogress": ("queue_name", "actor_name"),
+        "dramatiq_delayed_messages_inprogress": ("queue_name", "actor_name"),
+        "dramatiq_message_duration_milliseconds": ("queue_name", "actor_name"),
+    }
+    def exported_name(metric) -> str:
+        name = metric._name
+        if getattr(metric, "_type", "") == "counter":
+            return f"{name}_total"
+        return name
+
+    found = {
+        exported_name(metric): tuple(metric._labelnames)
+        for metric in _METRICS.values()
+        if getattr(metric, "_name", "").startswith("dramatiq_")
+    }
+    assert found == frozen
+
+
 def test_dispatch_does_not_count_a_retry_before_enqueue():
     setup(multiprocess=False)
-    registry, _seen = _registry()
+    app, _seen = _discover()
     before = value("retries", "quota", "discover")
     message = build_message(
         actor_name="discover",
@@ -83,7 +116,7 @@ def test_dispatch_does_not_count_a_retry_before_enqueue():
         max_backoff_ms=86_400_000,
         message_id="count-after-enqueue",
     )
-    result = asyncio.run(registry.dispatch(message))
+    result = asyncio.run(app.dispatch(message))
     assert result["outcome"] == "retry"
     assert value("retries", "quota", "discover") == before
 
@@ -137,52 +170,50 @@ def test_message_version_and_headers_are_separate_from_kwargs():
     assert message["time_limit_ms"] == 1_800_000
 
 
-def test_send_before_configure_fails_clearly():
-    runtime = types.ModuleType("simple_q_runtime")
-    runtime.is_configured = lambda: False
-
-    async def enqueue(*args):
-        raise AssertionError("enqueue must not run")
-
-    runtime.enqueue = enqueue
-    sys.modules["simple_q_runtime"] = runtime
-    registry = Registry()
-
-    @registry.actor(name="discover", queue="default")
-    async def discover(value: int):
-        return value
-
-    try:
-        asyncio.run(discover.send(value=1))
-    except RuntimeError as error:
-        assert "configure" in str(error)
-    else:
-        raise AssertionError("send without configure succeeded")
+def test_queue_name_is_one_lowercase_word():
+    with pytest.raises(ValueError, match="default"):
+        build_message(
+            actor_name="discover",
+            queue="Quota",
+            kwargs={},
+            headers={},
+            max_retries=0,
+        )
 
 
-def test_registry_tracing_defaults_to_none():
+def test_app_tracing_defaults_to_none():
     from simple_q import Tracing
 
-    assert Registry().tracing is None
-    assert Registry(tracing=None).tracing is None
+    app, _seen = _discover()
+    assert app.tracing is None
+    assert App(client=FakeClient(), actors=app.actors.values(), tracing=None).tracing is None
     assert Tracing is not None
 
 
-def test_import_does_not_open_the_runtime_module_by_itself():
-    sys.modules.pop("simple_q_runtime", None)
-    import simple_q.backoff as backoff
-    import simple_q.registry as registry
+def test_importing_an_actor_module_does_not_construct_an_app_or_open_redis():
+    sys.modules.pop("simple_q._runtime", None)
+    sys.modules.pop("actor_only", None)
+    path = Path(__file__).resolve().parent / "actor_only.py"
+    spec = importlib.util.spec_from_file_location("actor_only", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert "simple_q._runtime" not in sys.modules
+    assert not hasattr(module, "App")
+    assert module.recalc.name == "recalc"
+    assert module.recalc.queue == "default"
 
-    assert "simple_q_runtime" not in sys.modules
-    assert backoff.compute_backoff is not None
-    assert registry.Registry is not None
+
+def test_a_repeated_actor_name_fails_at_construction():
+    first, _seen = _discover()
+    again, _seen = _discover()
+    with pytest.raises(ValueError, match="already registered"):
+        App(client=FakeClient(), actors=[*first.actors.values(), *again.actors.values()])
 
 
-def _registry():
-    registry = Registry()
+def _discover():
     seen = []
 
-    @registry.actor(
+    @actor(
         name="discover",
         queue="quota",
         max_retries=2,
@@ -199,11 +230,11 @@ def _registry():
             await asyncio.sleep(1)
         return {"ok": True}
 
-    return registry, seen
+    return App(client=FakeClient(), actors=[discover]), seen
 
 
 def test_retry_then_success_keeps_one_message_id_and_reports_retries():
-    registry, seen = _registry()
+    app, seen = _discover()
     message = build_message(
         actor_name="discover",
         queue="quota",
@@ -214,12 +245,12 @@ def test_retry_then_success_keeps_one_message_id_and_reports_retries():
         max_backoff_ms=86_400_000,
         message_id="same-id",
     )
-    first = asyncio.run(registry.dispatch(message))
+    first = asyncio.run(app.dispatch(message))
     assert first["outcome"] == "retry"
     assert 7_500 <= first["delay_ms"] < 15_000
     message["retries"] = 1
     message["kwargs"] = {"value": "ok"}
-    second = asyncio.run(registry.dispatch(message))
+    second = asyncio.run(app.dispatch(message))
     assert second["outcome"] == "ok"
     assert seen[0][1]["message_id"] == "same-id"
     assert seen[0][1]["retries"] == 0
@@ -228,14 +259,17 @@ def test_retry_then_success_keeps_one_message_id_and_reports_retries():
     assert "actor_name" in seen[0][1] and "kwargs" in seen[0][1]
 
 
+def _letter(calls):
+    def hook(letter: DeadLetter):
+        calls.append(letter)
+
+    return hook
+
+
 def test_last_exception_calls_on_dead_once():
-    registry, _seen = _registry()
+    app, _seen = _discover()
     calls = []
-
-    def hook(actor, kwargs, reason, message_id, retries):
-        calls.append((actor, kwargs, reason, message_id, retries))
-
-    registry.on_dead(hook)
+    app.on_dead(_letter(calls))
     message = build_message(
         actor_name="discover",
         queue="quota",
@@ -244,19 +278,23 @@ def test_last_exception_calls_on_dead_once():
         max_retries=0,
         message_id="dead-1",
     )
-    result = asyncio.run(registry.dispatch(message))
+    result = asyncio.run(app.dispatch(message))
     assert result == {"outcome": "dead", "reason": "retries"}
-    assert calls == [("discover", {"value": "boom"}, "retries", "dead-1", 0)]
+    assert len(calls) == 1
+    letter = calls[0]
+    assert letter.actor_name == "discover"
+    assert letter.kwargs == {"value": "boom"}
+    assert letter.reason == "retries"
+    assert letter.message_id == "dead-1"
+    assert letter.retries == 0
+    assert letter.deliveries == 1
+    assert letter.error == "RuntimeError: boom"
 
 
 def test_timeout_on_the_last_attempt_calls_on_dead():
-    registry, _seen = _registry()
-    reasons = []
-    registry.on_dead(
-        lambda actor, kwargs, reason, message_id, retries: reasons.append(
-            (actor, reason, kwargs, message_id, retries)
-        )
-    )
+    app, _seen = _discover()
+    calls = []
+    app.on_dead(_letter(calls))
     message = build_message(
         actor_name="discover",
         queue="default",
@@ -266,65 +304,23 @@ def test_timeout_on_the_last_attempt_calls_on_dead():
         time_limit_ms=20,
         message_id="slow-1",
     )
-    result = asyncio.run(registry.dispatch(message))
+    result = asyncio.run(app.dispatch(message))
     assert result["outcome"] == "dead"
     assert result["reason"] == "timeout"
-    assert reasons == [("discover", "timeout", {"value": "slow"}, "slow-1", 0)]
-
-
-def test_retries_hook_receives_the_exception_text():
-    registry, _seen = _registry()
-    calls = []
-
-    async def hook(actor, kwargs, reason, message_id, retries, *, error=None):
-        calls.append((actor, kwargs, reason, message_id, retries, error))
-
-    registry.on_dead(hook)
-    message = build_message(
-        actor_name="discover",
-        queue="quota",
-        kwargs={"value": "boom"},
-        headers={},
-        max_retries=0,
-        message_id="dead-error",
-    )
-    result = asyncio.run(registry.dispatch(message))
-    assert result == {"outcome": "dead", "reason": "retries"}
-    assert calls == [
-        ("discover", {"value": "boom"}, "retries", "dead-error", 0, "RuntimeError: boom")
-    ]
-
-
-def test_timeout_hook_receives_the_exception_text():
-    registry, _seen = _registry()
-    calls = []
-
-    def hook(actor, kwargs, reason, message_id, retries, error=None):
-        calls.append((actor, reason, message_id, retries, error))
-
-    registry.on_dead(hook)
-    message = build_message(
-        actor_name="discover",
-        queue="default",
-        kwargs={"value": "slow"},
-        headers={},
-        max_retries=0,
-        time_limit_ms=20,
-        message_id="slow-error",
-    )
-    result = asyncio.run(registry.dispatch(message))
-    assert result == {"outcome": "dead", "reason": "timeout"}
-    assert calls == [("discover", "timeout", "slow-error", 0, "TimeoutError: ")]
+    letter = calls[0]
+    assert letter.actor_name == "discover"
+    assert letter.reason == "timeout"
+    assert letter.kwargs == {"value": "slow"}
+    assert letter.message_id == "slow-1"
+    assert letter.retries == 0
+    assert letter.deliveries == 1
+    assert letter.error.startswith("TimeoutError:")
 
 
 def test_poison_hook_receives_none():
-    registry, _seen = _registry()
+    app, _seen = _discover()
     calls = []
-
-    def hook(actor, kwargs, reason, message_id, retries, *, error=None):
-        calls.append((reason, message_id, retries, error))
-
-    registry.on_dead(hook)
+    app.on_dead(_letter(calls))
     message = build_message(
         actor_name="discover",
         queue="quota",
@@ -335,19 +331,22 @@ def test_poison_hook_receives_none():
         message_id="poison-error",
     )
     message["deliveries"] = 3
-    result = asyncio.run(registry.dispatch(message))
+    result = asyncio.run(app.dispatch(message))
     assert result == {"outcome": "dead", "reason": "poison"}
-    assert calls == [("poison", "poison-error", 0, None)]
+    letter = calls[0]
+    assert letter.reason == "poison"
+    assert letter.message_id == "poison-error"
+    assert letter.retries == 0
+    assert letter.deliveries == 3
+    assert letter.error is None
+    assert letter.actor_name == "discover"
+    assert letter.kwargs == {"value": "ok"}
 
 
 def test_unknown_actor_and_invalid_hooks_receive_none():
-    registry, _seen = _registry()
+    app, _seen = _discover()
     calls = []
-
-    def hook(actor, kwargs, reason, message_id, retries, **extra):
-        calls.append((reason, message_id, extra["error"]))
-
-    registry.on_dead(hook)
+    app.on_dead(_letter(calls))
     unknown = build_message(
         actor_name="missing",
         queue="quota",
@@ -357,72 +356,22 @@ def test_unknown_actor_and_invalid_hooks_receive_none():
         message_id="missing-error",
         retries=2,
     )
-    asyncio.run(registry.dispatch(unknown))
-    asyncio.run(registry.note_dead("discover", {"value": 1}, "invalid", "bad-error", 0))
-    assert calls == [
-        ("unknown_actor", "missing-error", None),
-        ("invalid", "bad-error", None),
+    asyncio.run(app.dispatch(unknown))
+    asyncio.run(app.note_dead("discover", {"value": 1}, "invalid", "bad-error", 0))
+    assert [(letter.reason, letter.message_id, letter.error, letter.deliveries) for letter in calls] == [
+        ("unknown_actor", "missing-error", None, 1),
+        ("invalid", "bad-error", None, 0),
     ]
-
-
-def test_five_argument_dead_hook_still_runs():
-    registry, _seen = _registry()
-    calls = []
-
-    def hook(actor, kwargs, reason, message_id, retries):
-        calls.append((actor, kwargs, reason, message_id, retries))
-
-    registry.on_dead(hook)
-    message = build_message(
-        actor_name="discover",
-        queue="quota",
-        kwargs={"value": "boom"},
-        headers={},
-        max_retries=0,
-        message_id="dead-five",
-    )
-    result = asyncio.run(registry.dispatch(message))
-    assert result == {"outcome": "dead", "reason": "retries"}
-    assert calls == [("discover", {"value": "boom"}, "retries", "dead-five", 0)]
-
-
-def test_wrapped_five_argument_hook_still_runs_without_error():
-    import functools
-
-    registry, _seen = _registry()
-    calls = []
-
-    def inner(actor, kwargs, reason, message_id, retries):
-        calls.append((reason, message_id))
-
-    @functools.wraps(inner)
-    def hook(*args, **kwargs):
-        if "error" in kwargs:
-            raise AssertionError("five-argument hook was given error")
-        return inner(*args)
-
-    registry.on_dead(hook)
-    message = build_message(
-        actor_name="discover",
-        queue="quota",
-        kwargs={"value": "boom"},
-        headers={},
-        max_retries=0,
-        message_id="dead-wrapped",
-    )
-    result = asyncio.run(registry.dispatch(message))
-    assert result == {"outcome": "dead", "reason": "retries"}
-    assert calls == [("retries", "dead-wrapped")]
+    assert calls[0].actor_name == "missing"
+    assert calls[0].kwargs == {"value": 1}
+    assert calls[0].retries == 2
+    assert calls[1].retries == 0
 
 
 def test_poison_delivery_calls_on_dead_and_rejects():
-    registry, seen = _registry()
-    reasons = []
-    registry.on_dead(
-        lambda actor, kwargs, reason, message_id, retries: reasons.append(
-            (reason, message_id, retries)
-        )
-    )
+    app, seen = _discover()
+    calls = []
+    app.on_dead(_letter(calls))
     before = value("rejects", "quota", "discover")
     message = build_message(
         actor_name="discover",
@@ -434,31 +383,23 @@ def test_poison_delivery_calls_on_dead_and_rejects():
         message_id="poison-1",
     )
     message["deliveries"] = 3
-    result = asyncio.run(registry.dispatch(message))
+    result = asyncio.run(app.dispatch(message))
     assert result == {"outcome": "dead", "reason": "poison"}
-    assert reasons == [("poison", "poison-1", 0)]
+    assert calls[0].reason == "poison"
+    assert calls[0].message_id == "poison-1"
+    assert calls[0].error is None
     assert seen == []
     assert value("rejects", "quota", "discover") == before + 1
 
 
 def test_lock_skip_counts_as_a_processed_message_without_an_error():
-    runtime = types.ModuleType("simple_q_runtime")
+    client = FakeClient(busy=True)
 
-    async def acquire_lock(key, ttl):
-        return None
-
-    async def release_lock(key, owner):
-        raise AssertionError("release without an owner")
-
-    runtime.acquire_lock = acquire_lock
-    runtime.release_lock = release_lock
-    sys.modules["simple_q_runtime"] = runtime
-    registry = Registry()
-
-    @registry.actor(name="gated", queue="default", lock_key="demo:gate", skip_on_lock=True)
+    @actor(name="gated", queue="default", lock_key="demo:gate", skip_on_lock=True)
     async def gated():
         raise AssertionError("handler ran")
 
+    app = App(client=client, actors=[gated])
     before_total = value("total", "default", "gated")
     before_errors = value("errors", "default", "gated")
     message = build_message(
@@ -471,30 +412,20 @@ def test_lock_skip_counts_as_a_processed_message_without_an_error():
         skip_on_lock=True,
         message_id="skip-1",
     )
-    result = asyncio.run(registry.dispatch(message))
+    result = asyncio.run(app.dispatch(message))
     assert result["outcome"] == "skipped"
     assert value("total", "default", "gated") == before_total + 1
     assert value("errors", "default", "gated") == before_errors
 
 
 def test_release_failure_keeps_a_successful_result():
-    runtime = types.ModuleType("simple_q_runtime")
+    client = FakeClient(release_error=RuntimeError("redis down"))
 
-    async def acquire_lock(key, ttl):
-        return "owner-1"
-
-    async def release_lock(key, owner):
-        raise RuntimeError("redis down")
-
-    runtime.acquire_lock = acquire_lock
-    runtime.release_lock = release_lock
-    sys.modules["simple_q_runtime"] = runtime
-    registry = Registry()
-
-    @registry.actor(name="gated", queue="default", lock_key="demo:gate")
+    @actor(name="gated", queue="default", lock_key="demo:gate")
     async def gated():
         return {"ok": True}
 
+    app = App(client=client, actors=[gated])
     message = build_message(
         actor_name="gated",
         queue="default",
@@ -504,18 +435,18 @@ def test_release_failure_keeps_a_successful_result():
         lock_key="demo:gate",
         message_id="rel-1",
     )
-    result = asyncio.run(registry.dispatch(message))
+    result = asyncio.run(app.dispatch(message))
     assert result["outcome"] == "ok"
     assert result["result"] == {"ok": True}
 
 
-def test_hook_exceptions_are_logged(caplog=None):
-    registry = Registry()
+def test_hook_exceptions_are_logged():
+    app, _seen = _discover()
 
     def broken():
         raise RuntimeError("hook")
 
-    registry.on_start(broken)
+    app.on_start(broken)
     records = []
 
     class ListHandler(logging.Handler):
@@ -525,7 +456,7 @@ def test_hook_exceptions_are_logged(caplog=None):
     handler = ListHandler()
     logging.getLogger("simple_q").addHandler(handler)
     try:
-        asyncio.run(registry.startup())
+        asyncio.run(app.startup())
     finally:
         logging.getLogger("simple_q").removeHandler(handler)
     assert any("start hook failed" in record.getMessage() for record in records)
@@ -576,17 +507,10 @@ def test_scrape_reaps_a_dead_slot_and_keeps_a_live_one():
         assert not os.path.exists(os.path.join(directory, "slot_9.pid"))
 
 
-def _dead_hook(calls):
-    def hook(actor, kwargs, reason, message_id, retries):
-        calls.append((actor, kwargs, reason, message_id, retries))
-
-    return hook
-
-
 def test_unknown_actor_calls_on_dead_once():
-    registry, _seen = _registry()
+    app, _seen = _discover()
     calls = []
-    registry.on_dead(_dead_hook(calls))
+    app.on_dead(_letter(calls))
     message = build_message(
         actor_name="missing",
         queue="quota",
@@ -596,23 +520,36 @@ def test_unknown_actor_calls_on_dead_once():
         message_id="missing-1",
         retries=2,
     )
-    result = asyncio.run(registry.dispatch(message))
+    result = asyncio.run(app.dispatch(message))
     assert result == {"outcome": "dead", "reason": "unknown_actor"}
-    assert calls == [("missing", {"value": 1}, "unknown_actor", "missing-1", 2)]
+    letter = calls[0]
+    assert letter.actor_name == "missing"
+    assert letter.kwargs == {"value": 1}
+    assert letter.reason == "unknown_actor"
+    assert letter.message_id == "missing-1"
+    assert letter.retries == 2
+    assert letter.error is None
 
 
 def test_invalid_message_hook_is_called_once():
-    registry = Registry()
+    app, _seen = _discover()
     calls = []
-    registry.on_dead(_dead_hook(calls))
-    asyncio.run(registry.note_dead("discover", {"value": 1}, "invalid", "bad-1", 0))
-    assert calls == [("discover", {"value": 1}, "invalid", "bad-1", 0)]
+    app.on_dead(_letter(calls))
+    asyncio.run(app.note_dead("discover", {"value": 1}, "invalid", "bad-1", 0))
+    letter = calls[0]
+    assert letter.actor_name == "discover"
+    assert letter.kwargs == {"value": 1}
+    assert letter.reason == "invalid"
+    assert letter.message_id == "bad-1"
+    assert letter.retries == 0
+    assert letter.deliveries == 0
+    assert letter.error is None
 
 
 def test_each_dead_reason_notifies_the_hook_once_per_event():
-    registry, _seen = _registry()
+    app, _seen = _discover()
     calls = []
-    registry.on_dead(_dead_hook(calls))
+    app.on_dead(_letter(calls))
 
     retry_message = build_message(
         actor_name="discover",
@@ -649,23 +586,26 @@ def test_each_dead_reason_notifies_the_hook_once_per_event():
         max_retries=0,
         message_id="once-unknown",
     )
-    asyncio.run(registry.dispatch(retry_message))
-    asyncio.run(registry.dispatch(timeout_message))
-    asyncio.run(registry.dispatch(poison_message))
-    asyncio.run(registry.dispatch(unknown_message))
-    asyncio.run(registry.note_dead("discover", {}, "invalid", "once-invalid", 4))
-    reasons = [call[2] for call in calls]
+    asyncio.run(app.dispatch(retry_message))
+    asyncio.run(app.dispatch(timeout_message))
+    asyncio.run(app.dispatch(poison_message))
+    asyncio.run(app.dispatch(unknown_message))
+    asyncio.run(app.note_dead("discover", {}, "invalid", "once-invalid", 4))
+    reasons = [letter.reason for letter in calls]
     assert reasons == ["retries", "timeout", "poison", "unknown_actor", "invalid"]
-    assert len(calls) == len(set((call[2], call[3]) for call in calls))
+    assert calls[0].error == "RuntimeError: boom"
+    assert calls[1].error.startswith("TimeoutError:")
+    assert calls[2].error is None
+    assert calls[3].error is None
+    assert calls[4].error is None
+    assert len(calls) == len({(letter.reason, letter.message_id) for letter in calls})
 
 
 def test_traceparent_set_at_send_is_visible_in_the_handler():
     import contextvars
 
-    from simple_q import disable_memory, drain, enable_memory
-
     traceparent = contextvars.ContextVar("traceparent", default="")
-    registry = Registry()
+    client = MemoryClient()
     seen = {}
 
     def stamp(actor_name, kwargs, headers):
@@ -678,137 +618,102 @@ def test_traceparent_set_at_send_is_visible_in_the_handler():
         seen["around"] = current_message().headers["traceparent"]
         return await call_next()
 
-    registry.on_send(stamp)
-    registry.around_dispatch(around)
+    client.on_send(stamp)
 
-    @registry.actor(name="traced", queue="default", max_retries=0)
+    @actor(name="traced", queue="default", max_retries=0)
     async def traced():
         seen["handler"] = current_message().headers["traceparent"]
         return "ok"
 
-    enable_memory()
+    app = App(client=client, actors=[traced], around_dispatch=[around])
+    token = traceparent.set("00-from-caller")
     try:
-        token = traceparent.set("00-from-caller")
-        try:
-            asyncio.run(traced.send())
-        finally:
-            traceparent.reset(token)
-        asyncio.run(drain("default", registry))
+        asyncio.run(client.send(traced))
     finally:
-        disable_memory()
+        traceparent.reset(token)
+    asyncio.run(client.drain(app))
     assert seen == {"around": "00-from-caller", "handler": "00-from-caller"}
 
 
 def test_memory_unique_key_blocks_a_second_send_until_drain():
-    from simple_q import disable_memory, drain, enable_memory
-    from simple_q.memory import depth
-
-    registry = Registry()
+    client = MemoryClient()
     seen = []
 
-    @registry.actor(name="recalc", queue="default", max_retries=0)
+    @actor(name="recalc", queue="default", max_retries=0)
     async def recalc(project: str):
         seen.append(project)
         return project
 
-    enable_memory()
-    try:
-        first = asyncio.run(
-            recalc.send_with_options(kwargs={"project": "42"}, unique_key="recalc:proj-42")
-        )
-        second = asyncio.run(
-            recalc.send_with_options(kwargs={"project": "42"}, unique_key="recalc:proj-42")
-        )
-        assert isinstance(first, str)
-        assert second is None
-        assert depth("default") == 1
-        plain = asyncio.run(recalc.send(project="42"))
-        assert isinstance(plain, str)
-        assert depth("default") == 2
-        asyncio.run(drain("default", registry))
-        assert seen == ["42", "42"]
-        assert depth("default") == 0
-        third = asyncio.run(
-            recalc.send_with_options(kwargs={"project": "42"}, unique_key="recalc:proj-42")
-        )
-        assert isinstance(third, str)
-        assert depth("default") == 1
-    finally:
-        disable_memory()
+    app = App(client=client, actors=[recalc])
+    first = asyncio.run(
+        client.send_with_options(recalc, kwargs={"project": "42"}, unique_key="recalc:42")
+    )
+    second = asyncio.run(
+        client.send_with_options(recalc, kwargs={"project": "42"}, unique_key="recalc:42")
+    )
+    assert isinstance(first, str)
+    assert second is None
+    assert client.depth("default") == 1
+    plain = asyncio.run(client.send(recalc, project="42"))
+    assert isinstance(plain, str)
+    assert client.depth("default") == 2
+    asyncio.run(client.drain(app))
+    assert seen == ["42", "42"]
+    assert client.depth("default") == 0
+    third = asyncio.run(
+        client.send_with_options(recalc, kwargs={"project": "42"}, unique_key="recalc:42")
+    )
+    assert isinstance(third, str)
+    assert client.depth("default") == 1
 
 
 def test_memory_drain_runs_messages_sent_by_a_handler():
-    from simple_q import disable_memory, drain, enable_memory
-
-    registry = Registry()
+    client = MemoryClient()
     seen = []
 
-    @registry.actor(name="parent", queue="default", max_retries=0)
+    @actor(name="parent", queue="default", max_retries=0)
     async def parent():
         seen.append("parent")
-        await child.send(value=2)
+        await client.send(child, value=2)
 
-    @registry.actor(name="child", queue="default", max_retries=0)
+    @actor(name="child", queue="default", max_retries=0)
     async def child(value: int):
         seen.append(value)
 
-    enable_memory()
-    try:
-        asyncio.run(parent.send())
-        asyncio.run(drain("default", registry))
-    finally:
-        disable_memory()
+    app = App(client=client, actors=[parent, child])
+    asyncio.run(client.send(parent))
+    asyncio.run(client.drain(app))
     assert seen == ["parent", 2]
 
 
 def test_lock_key_template_is_filled_from_kwargs():
-    runtime = types.ModuleType("simple_q_runtime")
-    seen = {}
+    client = FakeClient()
 
-    async def acquire_lock(key, ttl):
-        seen["key"] = key
-        return "owner"
+    @actor(name="calc", queue="default", lock_key="cache:calc:{project_name}", max_retries=0)
+    async def calc(project_name: str):
+        return project_name
 
-    async def release_lock(key, owner):
-        return True
-
-    runtime.acquire_lock = acquire_lock
-    runtime.release_lock = release_lock
-    previous = sys.modules.get("simple_q_runtime")
-    sys.modules["simple_q_runtime"] = runtime
-    try:
-        registry = Registry()
-
-        @registry.actor(name="calc", queue="default", lock_key="cache:calc:{project_name}", max_retries=0)
-        async def calc(project_name: str):
-            return project_name
-
-        message = build_message(
-            actor_name="calc",
-            queue="default",
-            kwargs={"project_name": "alpha"},
-            headers={},
-            max_retries=0,
-            lock_key="cache:calc:{project_name}",
-            message_id="lock-1",
-        )
-        result = asyncio.run(registry.dispatch(message))
-        assert result["outcome"] == "ok"
-        assert seen["key"] == "cache:calc:alpha"
-    finally:
-        if previous is None:
-            sys.modules.pop("simple_q_runtime", None)
-        else:
-            sys.modules["simple_q_runtime"] = previous
+    app = App(client=client, actors=[calc])
+    message = build_message(
+        actor_name="calc",
+        queue="default",
+        kwargs={"project_name": "alpha"},
+        headers={},
+        max_retries=0,
+        lock_key="cache:calc:{project_name}",
+        message_id="lock-1",
+    )
+    result = asyncio.run(app.dispatch(message))
+    assert result["outcome"] == "ok"
+    assert client.keys == ["cache:calc:alpha"]
 
 
 def test_lock_key_template_rejects_a_missing_placeholder():
-    registry = Registry()
-
-    @registry.actor(name="calc", queue="default", lock_key="cache:calc:{project_name}", max_retries=0)
+    @actor(name="calc", queue="default", lock_key="cache:calc:{project_name}", max_retries=0)
     async def calc(project_name: str = "x"):
         return project_name
 
+    app = App(client=FakeClient(), actors=[calc])
     message = build_message(
         actor_name="calc",
         queue="default",
@@ -819,7 +724,7 @@ def test_lock_key_template_rejects_a_missing_placeholder():
         message_id="lock-missing",
     )
     try:
-        asyncio.run(registry.dispatch(message))
+        asyncio.run(app.dispatch(message))
     except KeyError as error:
         assert "project_name" in str(error)
     else:
@@ -827,16 +732,14 @@ def test_lock_key_template_rejects_a_missing_placeholder():
 
 
 def test_lock_key_rejects_a_non_canonical_character():
-    from simple_q.registry import usable_lock_key
-
     assert usable_lock_key("cache:calc:alpha")
     assert not usable_lock_key("cache:acme\u200b")
-    registry = Registry()
 
-    @registry.actor(name="calc", queue="default", lock_key="cache:calc:{project_name}", max_retries=0)
+    @actor(name="calc", queue="default", lock_key="cache:calc:{project_name}", max_retries=0)
     async def calc(project_name: str):
         return project_name
 
+    app = App(client=FakeClient(), actors=[calc])
     message = build_message(
         actor_name="calc",
         queue="default",
@@ -847,7 +750,7 @@ def test_lock_key_rejects_a_non_canonical_character():
         message_id="lock-zwsp",
     )
     try:
-        asyncio.run(registry.dispatch(message))
+        asyncio.run(app.dispatch(message))
     except ValueError as error:
         assert "not a usable server key" in str(error)
     else:
@@ -856,15 +759,16 @@ def test_lock_key_rejects_a_non_canonical_character():
 
 def test_current_message_carries_deliveries_and_the_worker_name():
     assert worker_name() is None
-    registry = Registry()
+    app, _seen = _discover()
     seen = {}
 
-    @registry.actor(name="marked", queue="default", max_retries=0)
+    @actor(name="marked", queue="default", max_retries=0)
     async def marked():
         seen["name"] = worker_name()
         seen["deliveries"] = current_message().deliveries
         seen["field"] = current_message().worker_name
 
+    marked_app = App(client=FakeClient(), actors=[*app.actors.values(), marked])
     message = build_message(
         actor_name="marked",
         queue="default",
@@ -875,7 +779,7 @@ def test_current_message_carries_deliveries_and_the_worker_name():
     )
     message["deliveries"] = 4
     message["worker_name"] = "agent-worker.default.host.7.abcd"
-    result = asyncio.run(registry.dispatch(message))
+    result = asyncio.run(marked_app.dispatch(message))
     assert result["outcome"] == "ok"
     assert seen == {
         "name": "agent-worker.default.host.7.abcd",
@@ -884,11 +788,12 @@ def test_current_message_carries_deliveries_and_the_worker_name():
     }
     assert worker_name() is None
 
-    @registry.actor(name="plain", queue="default", max_retries=0)
+    @actor(name="plain", queue="default", max_retries=0)
     async def plain():
         seen["plain_name"] = worker_name()
         seen["plain_deliveries"] = current_message().deliveries
 
+    plain_app = App(client=FakeClient(), actors=[plain])
     plain_message = build_message(
         actor_name="plain",
         queue="default",
@@ -897,78 +802,22 @@ def test_current_message_carries_deliveries_and_the_worker_name():
         max_retries=0,
         message_id="plain-1",
     )
-    asyncio.run(registry.dispatch(plain_message))
+    asyncio.run(plain_app.dispatch(plain_message))
     assert seen["plain_name"] is None
     assert seen["plain_deliveries"] == 1
 
 
-def test_worker_alive_is_true_in_memory_mode():
-    from simple_q import disable_memory, enable_memory
+def test_memory_client_worker_alive_is_true():
+    async def probe():
+        client = MemoryClient()
+        assert await client.worker_alive("agent-worker.default.host.1.abcd1234") is True
+        assert await client.worker_alive("not-a-worker") is True
 
-    runtime = types.ModuleType("simple_q_runtime")
-    runtime.is_configured = lambda: True
-
-    def probe(name):
-        raise AssertionError(f"memory mode must not touch Redis for {name}")
-
-    runtime.worker_alive = probe
-    sys.modules["simple_q_runtime"] = runtime
-    enable_memory()
-    try:
-        assert worker_alive("agent-worker.default.host.1.abcd1234") is True
-        assert worker_alive("not-a-worker") is True
-    finally:
-        disable_memory()
+    asyncio.run(probe())
 
 
-def test_worker_alive_rejects_an_unparseable_name():
-    from simple_q import disable_memory
-
-    disable_memory()
-    runtime = types.ModuleType("simple_q_runtime")
-    runtime.is_configured = lambda: True
-
-    def probe(name):
-        raise AssertionError(f"an unparseable name must not touch Redis: {name}")
-
-    runtime.worker_alive = probe
-    sys.modules["simple_q_runtime"] = runtime
-    assert worker_alive("not-a-worker") is False
-    assert worker_alive("agent-worker.default.host.1") is False
-    assert worker_alive("agent-worker.Bad.host.1.abcd1234") is False
-
-
-def test_worker_alive_is_false_when_redis_is_not_configured():
-    from simple_q import disable_memory
-
-    disable_memory()
-    runtime = types.ModuleType("simple_q_runtime")
-    runtime.is_configured = lambda: False
-
-    def probe(name):
-        raise AssertionError(name)
-
-    runtime.worker_alive = probe
-    sys.modules["simple_q_runtime"] = runtime
-    assert worker_alive("agent-worker.default.host.9.abcd1234") is False
-
-
-def _bind_runtime():
-    """Use the built extension under the name ``configure`` imports."""
-
-    import importlib
-
-    sys.modules.pop("simple_q_runtime", None)
-    try:
-        module = importlib.import_module("simple_q_runtime.simple_q_runtime")
-    except ModuleNotFoundError:
-        module = importlib.import_module("simple_q_runtime")
-    sys.modules["simple_q_runtime"] = module
-    return module
-
-
-def _redis_db15():
-    url = "redis://127.0.0.1:6379/15"
+def _redis_db(number: int) -> str:
+    url = f"redis://127.0.0.1:6379/{number}"
     try:
         probe = subprocess.run(
             ["redis-cli", "-u", url, "PING"],
@@ -983,33 +832,120 @@ def _redis_db15():
     return url
 
 
-def _liveness_window() -> int:
-    def positive(name: str, default: int) -> int:
-        raw = os.environ.get(name)
-        if raw is None:
-            return default
+def _redis(*args: str, db: int = 15) -> str:
+    output = subprocess.run(
+        ["redis-cli", "-n", str(db), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return output.stdout
+
+
+def test_config_from_env_rejects_bad_values(monkeypatch):
+    from simple_q import Config
+
+    names = [
+        "SIMPLE_Q_HEARTBEAT_SECS",
+        "SIMPLE_Q_MISSED_HEARTBEATS",
+        "SIMPLE_Q_PING_BUDGET_SECS",
+        "SIMPLE_Q_DONE_TTL_SECS",
+        "SIMPLE_Q_DEAD_TTL_SECS",
+        "SIMPLE_Q_UNIQUE_TTL_SECS",
+        "SIMPLE_Q_MAX_DELIVERIES",
+        "SIMPLE_Q_MEMORY_SOFT_RATIO",
+        "SIMPLE_Q_MEMORY_HARD_RATIO",
+        "SIMPLE_Q_CHILD_MEMORY_SOFT",
+        "SIMPLE_Q_CHILD_MEMORY_HARD",
+    ]
+    for name in names:
+        monkeypatch.delenv(name, raising=False)
+    config = Config.from_env()
+    assert config.heartbeat_secs == 15
+    assert config.missed_heartbeats == 4
+    assert config.unique_ttl_secs == 86400
+    assert config.max_deliveries == 5
+    assert config.memory_soft_ratio == pytest.approx(0.80)
+    assert config.memory_hard_ratio == pytest.approx(0.95)
+
+    monkeypatch.setenv("SIMPLE_Q_HEARTBEAT_SECS", "abc")
+    with pytest.raises(ValueError, match="SIMPLE_Q_HEARTBEAT_SECS"):
+        Config.from_env()
+    monkeypatch.delenv("SIMPLE_Q_HEARTBEAT_SECS")
+    monkeypatch.setenv("SIMPLE_Q_MEMORY_SOFT_RATIO", "1.5")
+    with pytest.raises(ValueError, match="SIMPLE_Q_MEMORY_SOFT_RATIO"):
+        Config.from_env()
+
+
+def test_two_clients_write_to_their_own_databases():
+    from simple_q import Client, Config
+
+    left_url = _redis_db(15)
+    right_url = _redis_db(13)
+    queue = "splitq"
+    for db in (15, 13):
+        _redis("DEL", f"{queue}:data", f"{queue}:pending", f"{queue}:scheduled", db=db)
+
+    @actor(queue=queue, max_retries=0)
+    async def recalc(project_id: str) -> None:
+        return None
+
+    async def send_both():
+        left = Client(left_url, config=Config())
+        right = Client(right_url, config=Config())
         try:
-            value = int(raw)
-        except ValueError:
-            return default
-        return value if value > 0 else default
+            await left.send(recalc, project_id="15")
+            await right.send(recalc, project_id="13")
+        finally:
+            await left.close()
+            await right.close()
 
-    return positive("SIMPLE_Q_HEARTBEAT_SECS", 15) * positive("SIMPLE_Q_MISSED_HEARTBEATS", 4)
+    asyncio.run(send_both())
+    left_payload = _redis("HVALS", f"{queue}:data", db=15)
+    right_payload = _redis("HVALS", f"{queue}:data", db=13)
+    assert '"project_id":"15"' in left_payload
+    assert '"project_id":"13"' not in left_payload
+    assert '"project_id":"13"' in right_payload
+    assert '"project_id":"15"' not in right_payload
+    for db in (15, 13):
+        _redis("DEL", f"{queue}:data", f"{queue}:pending", f"{queue}:scheduled", db=db)
 
 
-def test_worker_alive_reads_the_heartbeat_on_redis():
-    from simple_q import configure, disable_memory
+def test_worker_alive_never_connected_or_bad_name_is_false_and_quiet(caplog):
+    from simple_q import Client, Config
 
-    url = _redis_db15()
-    disable_memory()
-    _bind_runtime()
-    configure(url)
+    url = _redis_db(15)
+
+    async def probe():
+        client = Client(url, config=Config())
+        caplog.set_level(logging.DEBUG)
+        assert await client.worker_alive("not-a-worker") is False
+        assert await client.worker_alive("agent-worker.default.host.1.abcd") is False
+
+        @actor(queue="walive", max_retries=0)
+        async def marker(project_id: str) -> None:
+            return None
+
+        await client.send(marker, project_id="x")
+        assert await client.worker_alive("not-a-worker") is False
+        await client.close()
+        return True
+
+    assert asyncio.run(probe()) is True
+    assert not caplog.records
+
+
+def test_worker_alive_reads_the_heartbeat_and_lets_the_loop_run():
+    from simple_q import Client, Config
+
+    url = _redis_db(15)
     queue = "walive"
     key = f"{queue}:workers"
     fresh = "agent-worker.walive.testhost.11.abcd1234"
     stale = "agent-worker.walive.testhost.12.abcd1234"
     unknown = "agent-worker.walive.testhost.13.abcd1234"
     dotted = "agent-worker.walive.host.example.com.14.abcd1234"
+    _redis("DEL", key, db=15)
     try:
         now = subprocess.run(
             ["redis-cli", "-u", url, "TIME"],
@@ -1018,7 +954,7 @@ def test_worker_alive_reads_the_heartbeat_on_redis():
             check=True,
         ).stdout.split()
         seconds = int(now[0])
-        window = _liveness_window()
+        window = 15 * 4
         subprocess.run(
             ["redis-cli", "-u", url, "ZADD", key, str(seconds), fresh, str(seconds), dotted],
             capture_output=True,
@@ -1031,13 +967,43 @@ def test_worker_alive_reads_the_heartbeat_on_redis():
             text=True,
             check=True,
         )
-        assert worker_alive(fresh) is True
-        assert worker_alive(dotted) is True
-        assert worker_alive(stale) is False
-        assert worker_alive(unknown) is False
+
+        async def probe():
+            client = Client(url, config=Config())
+
+            @actor(queue=queue, max_retries=0)
+            async def marker(project_id: str) -> None:
+                return None
+
+            await client.send(marker, project_id="live")
+            progressed = {"ok": False}
+
+            async def other():
+                await asyncio.sleep(0.01)
+                progressed["ok"] = True
+
+            task = asyncio.create_task(other())
+            saw = False
+            alive = None
+            for _ in range(40):
+                alive = await client.worker_alive(fresh)
+                if progressed["ok"]:
+                    saw = True
+                    break
+            await task
+            stale_alive = await client.worker_alive(stale)
+            unknown_alive = await client.worker_alive(unknown)
+            dotted_alive = await client.worker_alive(dotted)
+            bad = await client.worker_alive("not-a-worker")
+            await client.close()
+            return alive, stale_alive, unknown_alive, dotted_alive, bad, saw
+
+        alive, stale_alive, unknown_alive, dotted_alive, bad, saw = asyncio.run(probe())
+        assert alive is True
+        assert dotted_alive is True
+        assert stale_alive is False
+        assert unknown_alive is False
+        assert bad is False
+        assert saw is True
     finally:
-        subprocess.run(
-            ["redis-cli", "-u", url, "DEL", key],
-            capture_output=True,
-            check=False,
-        )
+        _redis("DEL", key, f"{queue}:data", f"{queue}:pending", f"{queue}:scheduled", db=15)

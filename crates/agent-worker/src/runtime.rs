@@ -1,21 +1,42 @@
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::path::{Path, PathBuf};
 
 use pyo3::prelude::*;
 use simple_q_runtime::python::simple_q_runtime as embedded_runtime;
 
+const EMBEDDED_NAME: &CStr = c"simple_q._runtime";
+
 pub fn initialize() {
     pyo3::append_to_inittab!(embedded_runtime);
+    unsafe {
+        pyo3::ffi::PyImport_AppendInittab(
+            EMBEDDED_NAME.as_ptr(),
+            Some(embedded_runtime::__pyo3_init),
+        );
+    }
     init_interpreter();
     Python::attach(|py| {
+        let module = load_embedded(py);
+        let modules = py
+            .import("sys")
+            .expect("sys")
+            .getattr("modules")
+            .expect("sys.modules");
+        modules
+            .set_item("simple_q._runtime", &module)
+            .expect("register simple_q._runtime");
+        let _ = modules.del_item("_runtime");
+        module
+            .setattr("__name__", "simple_q._runtime")
+            .expect("name the embedded module");
         let module = py
-            .import("simple_q_runtime")
-            .expect("simple_q_runtime is registered on the inittab");
+            .import("simple_q._runtime")
+            .expect("simple_q._runtime is registered on the inittab");
         let file = module.getattr("__file__").ok();
         if let Some(file) = file.filter(|value| !value.is_none()) {
             if let Ok(path) = file.extract::<String>() {
                 if path.ends_with(".so") || path.ends_with(".pyd") {
-                    panic!("simple_q_runtime was loaded from {path}, not the inittab");
+                    panic!("simple_q._runtime was loaded from {path}, not the inittab");
                 }
             }
         }
@@ -23,6 +44,24 @@ pub fn initialize() {
             .setattr("__embedded__", true)
             .expect("mark the inittab module");
     });
+}
+
+fn load_embedded(py: Python<'_>) -> Bound<'_, PyAny> {
+    let imp = py.import("_imp").expect("_imp");
+    let machinery = py.import("importlib.machinery").expect("importlib.machinery");
+    for name in ["simple_q._runtime", "_runtime"] {
+        let spec = machinery
+            .call_method1("ModuleSpec", (name, py.None()))
+            .expect("module spec");
+        if let Ok(module) = imp.call_method1("create_builtin", (spec,)) {
+            if !module.is_none() {
+                imp.call_method1("exec_builtin", (&module,))
+                    .expect("execute the inittab module");
+                return module;
+            }
+        }
+    }
+    panic!("simple_q._runtime is registered on the inittab");
 }
 
 fn init_interpreter() {

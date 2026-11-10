@@ -1,8 +1,7 @@
-//! Adapter from the worker to the Python registry.
+//! Adapter from the worker to the Python app.
 //!
 //! The worker calls into Python by function name (`tracked`, `shutdown`,
-//! `note_retry`, `note_dead`). The job still crosses this boundary as JSON.
-//! That is the current seam, not a second model of the message.
+//! `note_retry`, `note_dead`). The job crosses this boundary as JSON.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -21,7 +20,7 @@ static LOCALS: OnceLock<TaskLocals> = OnceLock::new();
 static APP: OnceLock<Py<PyAny>> = OnceLock::new();
 static PING_SCHEDULE_STUCK: AtomicBool = AtomicBool::new(false);
 
-pub fn start(app_path: &str) -> Result<Option<crate::telemetry::RawTracing>> {
+pub fn start(app_path: &str, factory: bool) -> Result<Option<crate::telemetry::RawTracing>> {
     let (sender, receiver) = std::sync::mpsc::channel();
     let app_path = app_path.to_owned();
 
@@ -35,7 +34,7 @@ pub fn start(app_path: &str) -> Result<Option<crate::telemetry::RawTracing>> {
                 LOCALS
                     .set(TaskLocals::new(event_loop.clone()))
                     .expect("event loop locals installed once");
-                let app = load_controller(py, &app_path)?;
+                let app = load_app(py, &app_path, factory)?;
                 let tracing = match crate::telemetry::read_tracing(py, &app) {
                     Ok(value) => value,
                     Err(error) => {
@@ -45,7 +44,7 @@ pub fn start(app_path: &str) -> Result<Option<crate::telemetry::RawTracing>> {
                         return Ok(());
                     }
                 };
-                APP.set(app.unbind()).expect("controller installed once");
+                APP.set(app.unbind()).expect("app installed once");
                 sender.send(Ok(tracing)).expect("loop start signal");
                 event_loop.call_method0("run_forever")?;
                 Ok(())
@@ -53,7 +52,7 @@ pub fn start(app_path: &str) -> Result<Option<crate::telemetry::RawTracing>> {
             if let Err(error) = started {
                 Python::attach(|py| error.print(py));
                 let _ = sender.send(Err(anyhow::anyhow!(
-                    "Python loop did not publish a controller: {error}"
+                    "Python loop did not publish an app: {error}"
                 )));
             }
         })
@@ -63,12 +62,16 @@ pub fn start(app_path: &str) -> Result<Option<crate::telemetry::RawTracing>> {
         .recv()
         .context("Python loop thread exited before signalling")??;
     if LOCALS.get().is_none() || APP.get().is_none() {
-        anyhow::bail!("Python loop did not publish a controller");
+        anyhow::bail!("Python loop did not publish an app");
     }
     Ok(tracing)
 }
 
-pub fn load_controller<'py>(py: Python<'py>, app_path: &str) -> PyResult<Bound<'py, PyAny>> {
+pub fn load_app<'py>(
+    py: Python<'py>,
+    app_path: &str,
+    factory: bool,
+) -> PyResult<Bound<'py, PyAny>> {
     let (module_name, attribute) = app_path
         .split_once(':')
         .filter(|(module, attribute)| !module.is_empty() && !attribute.is_empty())
@@ -76,13 +79,44 @@ pub fn load_controller<'py>(py: Python<'py>, app_path: &str) -> PyResult<Bound<'
             pyo3::exceptions::PyValueError::new_err("Expected application path: module:attribute")
         })?;
 
-    let app = py.import(module_name)?.getattr(attribute)?;
-    if app.getattr("dispatch").is_err() {
+    let loaded = py.import(module_name)?.getattr(attribute)?;
+    let app = if factory { loaded.call0()? } else { loaded };
+    if app.getattr("dispatch").is_err() || app.getattr("client").is_err() {
         return Err(pyo3::exceptions::PyTypeError::new_err(format!(
-            "{app_path} must be a Registry with dispatch"
+            "{app_path} must be an App"
         )));
     }
     Ok(app)
+}
+
+pub fn read_config(app_path: &str, factory: bool) -> Result<simple_q_runtime::config::Config> {
+    Python::attach(|py| -> PyResult<simple_q_runtime::config::Config> {
+        let app = load_app(py, app_path, factory)?;
+        let config = app.getattr("client")?.getattr("config")?;
+        let config = config
+            .cast::<simple_q_runtime::config::Config>()
+            .map_err(|error| pyo3::exceptions::PyTypeError::new_err(error.to_string()))?;
+        Ok(config.borrow().clone())
+    })
+    .map_err(|error: PyErr| anyhow::anyhow!(error.to_string()))
+}
+
+pub async fn connect_client() -> Result<(
+    simple_q_runtime::redis_api::ConnectionManager,
+    simple_q_runtime::config::Config,
+)> {
+    let state = Python::attach(|py| -> Result<_> {
+        let app = APP.get().context("app is not loaded")?;
+        let client = app.bind(py).getattr("client").map_err(|error| {
+            anyhow::anyhow!("app.client is not a Client: {error}")
+        })?;
+        let client = client
+            .cast::<simple_q_runtime::python::Client>()
+            .map_err(|error| anyhow::anyhow!("app.client is not a Client: {error}"))?;
+        Ok(client.borrow().state())
+    })?;
+    let conn = state.connect().await?;
+    Ok((conn, state.config.clone()))
 }
 
 pub async fn call_hook(name: &str) -> Result<()> {
@@ -237,13 +271,19 @@ pub fn note_retry(queue: &str, actor: &str) {
     }
 }
 
-pub async fn note_dead(job: &Job, reason: &str, error: Option<&str>) -> Result<()> {
+pub async fn note_dead(
+    job: &Job,
+    reason: &str,
+    deliveries: u64,
+    error: Option<&str>,
+) -> Result<()> {
     let locals = LOCALS.get().context("Python loop is not running")?;
     let reason = reason.to_owned();
     let error = error.map(str::to_owned);
     let actor_name = job.actor_name.clone();
     let message_id = job.message_id.clone();
     let retries = job.retries;
+    let deliveries = deliveries;
     let kwargs = if job.kwargs.is_object() {
         job.kwargs.clone()
     } else {
@@ -259,7 +299,7 @@ pub async fn note_dead(job: &Job, reason: &str, error: Option<&str>) -> Result<(
         keywords.set_item("error", error)?;
         let coroutine = app.bind(py).call_method(
             "note_dead",
-            (actor_name, payload, reason, message_id, retries),
+            (actor_name, payload, reason, message_id, retries, deliveries),
             Some(&keywords),
         )?;
         Ok(coroutine.unbind())

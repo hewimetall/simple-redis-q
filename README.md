@@ -1,6 +1,6 @@
 # simple-q
 
-Rust supervisor and queue runtime for Python async tasks. The worker binary is `agent-worker`. Application code imports `simple_q`.
+Rust supervisor and queue runtime for Python async tasks. The worker binary is `agent-worker`. Application code imports `simple_q`. The Rust extension inside that package is `simple_q._runtime`.
 
 ## Install
 
@@ -25,7 +25,7 @@ async def recalc(project_id: int) -> None:
 
 def create_app() -> App:
     config = Config.from_env()
-    return App(Client("redis://redis:6379/0", config=config), actors=[recalc])
+    return App(client=Client("redis://redis:6379/0", config=config), actors=[recalc])
 
 
 async def enqueue() -> None:

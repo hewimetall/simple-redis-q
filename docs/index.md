@@ -23,7 +23,7 @@ async def recalc(project_id: int) -> None:
 
 def create_app() -> App:
     config = Config.from_env()
-    return App(Client("redis://redis:6379/0", config=config), actors=[recalc])
+    return App(client=Client("redis://redis:6379/0", config=config), actors=[recalc])
 
 
 async def enqueue() -> None:

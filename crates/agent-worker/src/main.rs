@@ -15,8 +15,9 @@ mod worker;
 
 use std::collections::BTreeMap;
 
+use simple_q_runtime::config::Config;
 use simple_q_runtime::job::{Job, new_message_id};
-use simple_q_runtime::names::{DEFAULT_TIME_LIMIT_MS, max_deliveries};
+use simple_q_runtime::names::DEFAULT_TIME_LIMIT_MS;
 use simple_q_runtime::redis_api;
 
 use anyhow::Context;
@@ -27,14 +28,15 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Stubs => {
-            init_log();
-            commands::stubs::run()
-        }
-        Command::Execute { app, task, task_id } => {
+        Command::Execute {
+            app,
+            factory,
+            task,
+            task_id,
+        } => {
             init_log();
             runtime::initialize();
-            commands::execute::run(&app, &task, &task_id)
+            commands::execute::run(&app, factory, &task, &task_id)
         }
         Command::Admin => {
             init_log();
@@ -53,7 +55,9 @@ fn main() -> anyhow::Result<()> {
             init_log();
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(async {
-                redis_api::install_from_env().await?;
+                let url = std::env::var("REDIS_URL").context("REDIS_URL is required")?;
+                let settings = Config::from_env()?;
+                let mut conn = redis_api::connect(&url).await?;
                 let kwargs = serde_json::from_str(&payload)?;
                 let headers: BTreeMap<String, String> = serde_json::from_str(&headers)
                     .context("headers must be a JSON object of strings")?;
@@ -69,13 +73,15 @@ fn main() -> anyhow::Result<()> {
                     time_limit_ms: DEFAULT_TIME_LIMIT_MS,
                     min_backoff_ms,
                     max_backoff_ms,
-                    max_deliveries: max_deliveries(),
+                    max_deliveries: settings.max_deliveries,
                     lock_key: None,
                     lock_ttl: 30,
                     skip_on_lock: false,
                     unique_key: None,
                 };
-                redis_api::enqueue_job(job, None).await.map(|_| ())
+                redis_api::enqueue_job(&mut conn, &settings, job, None)
+                    .await
+                    .map(|_| ())
             })
         }
         Command::Metrics => {
@@ -86,6 +92,7 @@ fn main() -> anyhow::Result<()> {
         Command::Worker {
             child: false,
             app,
+            factory,
             queues,
             processes,
             concurrency,
@@ -94,7 +101,11 @@ fn main() -> anyhow::Result<()> {
             child_memory_hard,
         } => {
             init_log();
+            runtime::initialize();
+            let settings = bridge::read_config(&app, factory)?;
             let limits = match supervisor::load_child_memory_limits(
+                settings.child_memory_soft,
+                settings.child_memory_hard,
                 child_memory_soft.as_deref(),
                 child_memory_hard.as_deref(),
             ) {
@@ -109,21 +120,25 @@ fn main() -> anyhow::Result<()> {
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(supervisor::run(
                 app,
+                factory,
                 queues,
                 processes,
                 concurrency,
                 max_tasks_per_process,
                 limits,
+                settings.memory_soft_ratio,
+                settings.memory_hard_ratio,
             ))
         }
         Command::Worker {
             child: true,
             app,
+            factory,
             queues,
             concurrency,
             max_tasks_per_process,
             ..
-        } => child::run_child(app, queues, concurrency, max_tasks_per_process),
+        } => child::run_child(app, factory, queues, concurrency, max_tasks_per_process),
     }
 }
 

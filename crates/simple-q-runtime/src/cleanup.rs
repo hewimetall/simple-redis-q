@@ -6,7 +6,6 @@ use std::collections::BTreeSet;
 use anyhow::{Context, Result};
 use redis::aio::ConnectionManager;
 
-use crate::redis_api::connection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SweepStats {
@@ -25,16 +24,16 @@ pub fn should_delete(done_at: i64, now: i64, ttl_secs: u64) -> bool {
 /// the done and dead sets. This walk uses a cursor and removes the payload,
 /// the per-task meta hash, and the set member together.
 pub async fn sweep_queue(
+    conn: &mut ConnectionManager,
     queue: &str,
     now: i64,
     done_ttl_secs: u64,
     dead_ttl_secs: u64,
     batch: usize,
 ) -> Result<SweepStats> {
-    let mut conn = connection()?;
-    let done = sweep_set(&mut conn, queue, "done", now, done_ttl_secs, batch).await?;
-    let dead = sweep_set(&mut conn, queue, "dead", now, dead_ttl_secs, batch).await?;
-    sweep_orphan_metadata(&mut conn, queue, batch).await?;
+    let done = sweep_set(conn, queue, "done", now, done_ttl_secs, batch).await?;
+    let dead = sweep_set(conn, queue, "dead", now, dead_ttl_secs, batch).await?;
+    sweep_orphan_metadata(conn, queue, batch).await?;
     Ok(SweepStats { done, dead })
 }
 
@@ -42,11 +41,15 @@ pub async fn sweep_queue(
 ///
 /// Apalis writes this hash with no TTL. Orphan requeue removes the name from
 /// the workers set and leaves the hash. The caller logs a failed delete.
-pub async fn delete_worker_metadata(queue: &str, worker_name: &str) -> Result<()> {
+pub async fn delete_worker_metadata(
+    conn: &mut ConnectionManager,
+    queue: &str,
+    worker_name: &str,
+) -> Result<()> {
     let key = worker_metadata_key(queue, worker_name);
     let _: i64 = redis::cmd("DEL")
         .arg(&key)
-        .query_async(&mut connection()?)
+        .query_async(conn)
         .await
         .context("failed to delete worker metadata")?;
     Ok(())

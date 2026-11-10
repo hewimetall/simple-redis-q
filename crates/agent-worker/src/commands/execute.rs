@@ -1,32 +1,21 @@
 use anyhow::{Context, Result};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use tokio::runtime::Builder;
 
-use crate::bridge::load_controller;
-use simple_q_runtime::redis_api;
+use crate::bridge::load_app;
 
-pub fn run(app_path: &str, task_name: &str, task_id: &str) -> Result<()> {
-    if std::env::var("REDIS_URL").is_ok() {
-        let runtime = Builder::new_multi_thread().enable_all().build()?;
-        let runtime: &'static tokio::runtime::Runtime = Box::leak(Box::new(runtime));
-        pyo3_async_runtimes::tokio::init_with_runtime(runtime)
-            .map_err(|_| anyhow::anyhow!("Tokio runtime was already installed"))?;
-        runtime.block_on(redis_api::install_from_env())?;
-    }
-
+pub fn run(app_path: &str, factory: bool, task_name: &str, task_id: &str) -> Result<()> {
     let result = Python::attach(|py| -> PyResult<()> {
-        let app = load_controller(py, app_path)?;
+        let app = load_app(py, app_path, factory)?;
+        let actors = app.getattr("actors")?;
+        let actor = actors.get_item(task_name)?;
+        let function = actor.getattr("function")?;
 
         let payload = PyDict::new(py);
         payload.set_item("task_id", task_id)?;
-
-        let coroutine = app.call_method1("execute", (task_name, payload))?;
-
+        let coroutine = function.call((), Some(&payload))?;
         let result = py.import("asyncio")?.call_method1("run", (coroutine,))?;
-
         println!("Result: {}", result.repr()?.to_str()?);
-
         Ok(())
     });
 
@@ -35,5 +24,5 @@ pub fn run(app_path: &str, task_name: &str, task_id: &str) -> Result<()> {
             Python::attach(|py| error.print(py));
             anyhow::anyhow!(error.to_string())
         })
-        .context("Controller execution failed")
+        .context("actor execution failed")
 }

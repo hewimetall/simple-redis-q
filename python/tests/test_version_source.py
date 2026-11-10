@@ -46,7 +46,7 @@ def test_workspace_package_version_is_the_only_source():
     assert worker["project"]["dependencies"] == [f"simple-q-runtime=={pep440(source)}"]
 
     runtime = tomllib.loads((ROOT / "pyproject.toml").read_text())
-    assert runtime["tool"]["maturin"]["module-name"] == "simple_q_runtime"
+    assert runtime["tool"]["maturin"]["module-name"] == "simple_q._runtime"
 
     lock = tomllib.loads((ROOT / "Cargo.lock").read_text())
     locked = {
