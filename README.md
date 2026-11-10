@@ -32,7 +32,7 @@ app = Registry(
 )
 ```
 
-`RUST_LOG` filters the text log. `targets` filters the OpenTelemetry layer, so `RUST_LOG=warn` still exports the process span.
+`RUST_LOG` filters the text log. `targets` filters the OpenTelemetry layer, so `RUST_LOG=warn` still exports the process span. Omitting `targets` uses `agent_worker=info`, `simple_q_runtime=info`, and `apalis=debug`. An empty map is rejected at child startup.
 
 ## Install
 
