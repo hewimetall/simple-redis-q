@@ -113,15 +113,18 @@ There is no synchronous send. `send` and `send_with_options` are async.
 class App:
     def __init__(
         self,
+        *,
         client: Client,
         actors,
         on_start=None,
         on_stop=None,
         on_dead=None,
         around_dispatch=None,
+        tracing=None,
     ):
         """Bind actor declarations to ``client``.
 
+        Every argument is keyword-only.
         ``actors`` is a sequence of declarations from ``@actor``.
         A duplicate actor name is an error.
         ``on_start`` and ``on_stop`` are called in the child around the

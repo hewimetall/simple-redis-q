@@ -19,7 +19,7 @@ async def recalc(project_id: int) -> None:
 
 def create_app() -> App:
     config = Config.from_env()
-    app = App(Client("redis://redis:6379/0", config=config), actors=[recalc])
+    app = App(client=Client("redis://redis:6379/0", config=config), actors=[recalc])
     app.tracing = Tracing(
         exporter=exporter,  # export(spans) and shutdown()
         resource=Resource.create({"service.name": "agent-worker"}),

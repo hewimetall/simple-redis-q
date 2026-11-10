@@ -20,7 +20,7 @@ Dramatiq middleware does not plug in. There is no middleware chain to append, no
 | Actor decorator that binds a broker | `@actor(...)` returns an immutable declaration, bound to neither an `App` nor a connection |
 | `actor.send` | `await client.send` and `await client.send_with_options` |
 | Middleware that edits a message at send | `client.on_send` |
-| Middleware around the worker call | `App(..., around_dispatch=...)` |
+| Middleware around the worker call | `App(client=..., around_dispatch=...)` |
 | Retries and `age_limit` style failure | `max_retries` on `@actor`, then `on_dead(letter: DeadLetter)` |
 | A synchronous `send` | none; send is async |
 
