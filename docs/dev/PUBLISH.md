@@ -41,7 +41,7 @@ The script then installs the already built runtime wheel and the new worker whee
 
 - `agent-worker --version` matches `importlib.metadata.version("simple-q-runtime")`
 - `import simple_q` works with `PYTHONPATH` unset
-- `agent-worker execute --app simple_q.app:app --task demo` runs
+- the wheel script's internal execute smoke check completes
 
 ## Trusted Publishing
 
