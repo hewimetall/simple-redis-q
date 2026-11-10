@@ -53,6 +53,19 @@ if pep440(left) != pep440(right):
     raise SystemExit(f"agent-worker {left} != simple-q-runtime {right}")
 PY
 env -u PYTHONPATH /opt/venv/bin/python -c 'import simple_q'
-env -u PYTHONPATH /opt/venv/bin/agent-worker execute --app simple_q.app:app --task demo
+mkdir -p /tmp/smokeapp
+cat > /tmp/smokeapp/smoke_app.py << 'PY'
+from simple_q import App, MemoryClient, actor
+
+
+@actor(queue="default")
+async def demo(task_id: str) -> str:
+    return task_id
+
+
+def create_app() -> App:
+    return App(client=MemoryClient(), actors=[demo])
+PY
+env PYTHONPATH=/tmp/smokeapp /opt/venv/bin/agent-worker execute --factory --app smoke_app:create_app --task demo
 cp /tmp/wheels/simple_q_worker-*.whl /io/dist/
 EOF

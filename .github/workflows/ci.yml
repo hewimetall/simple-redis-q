@@ -31,7 +31,8 @@ jobs:
 
       - name: Unit tests
         run: |
-          python3 -m pip install pytest prometheus_client
+          python3 -m pip install pytest prometheus_client "maturin>=1.8,<2"
+          maturin develop
           python3 -m pytest python/tests/test_runtime_contract.py python/tests/test_lock_release.py python/tests/test_version_source.py -q
           cargo test --workspace
 
