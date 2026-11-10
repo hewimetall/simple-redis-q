@@ -1,0 +1,43 @@
+site_name: simple-q
+site_description: simple-q 1.0, a queue runtime for Python async tasks
+site_url: https://hewimetall.github.io/simple-redis-q/
+repo_url: https://github.com/hewimetall/simple-redis-q
+repo_name: hewimetall/simple-redis-q
+docs_dir: docs
+exclude_docs: |
+  dev/**
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - content.code.copy
+    - content.code.annotate
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+plugins:
+  - search
+
+nav:
+  - Quick start: index.md
+  - Concepts: concepts.md
+  - API: api.md
+  - Command line: cli.md
+  - Settings: settings.md
+  - Deploy: deploy.md
+  - Tracing and the admin board: operations.md
+  - Migration from Dramatiq: migration.md
+  - Redis keys: redis-keys.md
+  - Limitations: limitations.md
+  - Architecture: architecture.md

@@ -22,14 +22,16 @@ jobs:
         platform:
           - runner: ubuntu-24.04
             target: x86_64
-          - runner: ubuntu-24.04
+            docker: linux/amd64
+          - runner: ubuntu-24.04-arm
             target: aarch64
+            docker: linux/arm64
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -41,15 +43,11 @@ jobs:
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
 
-      - name: Register foreign architectures
-        if: matrix.platform.target == 'aarch64'
-        run: docker run --privileged --rm tonistiigi/binfmt --install arm64
-
       - name: Build the worker wheel
-        run: bash scripts/build-worker-wheel.sh ${{ matrix.platform.target == 'aarch64' && 'linux/arm64' || 'linux/amd64' }}
+        run: bash scripts/build-worker-wheel.sh ${{ matrix.platform.docker }}
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wheels-linux-${{ matrix.platform.target }}
           path: dist
@@ -59,7 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Build sdist
         uses: PyO3/maturin-action@v1
@@ -68,7 +66,7 @@ jobs:
           args: --out dist
 
       - name: Upload sdist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wheels-sdist
           path: dist
@@ -83,13 +81,13 @@ jobs:
       contents: write
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           files: dist/*
@@ -112,7 +110,7 @@ jobs:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
@@ -130,12 +128,14 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: runtime
+          skip-existing: true
 
       - name: Publish simple-q-worker with Trusted Publishing
         if: ${{ env.PYPI_API_TOKEN == '' }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: worker
+          skip-existing: true
 
       - name: Publish simple-q-runtime with API token fallback
         if: ${{ env.PYPI_API_TOKEN != '' }}
@@ -143,6 +143,7 @@ jobs:
         with:
           packages-dir: runtime
           password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true
 
       - name: Publish simple-q-worker with API token fallback
         if: ${{ env.PYPI_API_TOKEN != '' }}
@@ -150,3 +151,18 @@ jobs:
         with:
           packages-dir: worker
           password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true
+
+  smoke:
+    name: Smoke published packages
+    runs-on: ubuntu-latest
+    needs:
+      - pypi
+    container: python:3.12-slim
+    steps:
+      - name: Install the tag version and import it
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          pip install "simple-q-runtime==${version}" "simple-q-worker==${version}"
+          agent-worker --version
+          python -c 'import simple_q'

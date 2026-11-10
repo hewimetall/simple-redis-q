@@ -1,56 +1,44 @@
-# agent-worker
+# simple-q
 
-Rust supervisor and embedded CPython 3.12 runtime for registered Python async tasks.
-
-The binary is `agent-worker`. The importable Python package is `simple_q`. The Rust extension is `simple_q._runtime`, embedded in the worker and also built into the wheel.
-
-Importing `simple_q`, or a module that only decorates actors, does not construct an `App` and does not open Redis. `Client` opens its own connection on the first send. `Config.from_env()` is the only reader of `SIMPLE_Q_*`.
-
-A queue name is one non-empty word of lowercase ASCII letters and digits, such as `default`. The decision for replacing Dramatiq is recorded in [docs/adr/0001-minimal-rust-runtime-instead-of-dramatiq.md](docs/adr/0001-minimal-rust-runtime-instead-of-dramatiq.md).
-
-Metrics keep the Dramatiq names and the accounting of the fixed Prometheus middleware: canonical `queue_name`, both gauges in `livesum`, and a retry counted once when it is enqueued with a delay. Redis-scheduled retries are not in-process memory, so they do not move `dramatiq_delayed_messages_inprogress`. The scrape listens on `DRAMATIQ_PROM_HOST`:`DRAMATIQ_PROM_PORT` (default `0.0.0.0:9191`) and any path. `DRAMATIQ_PROM_DB` is the multiprocess directory. The supervisor wipes `*.db` once; each child writes files under `SIMPLE_Q_SLOT`. The same directory holds `simple_q_child_memory.prom` with `simple_q_child_memory_drains_total` and `simple_q_child_memory_kills_total`. The scrape adds those samples. A missing file is zero.
-
-`agent-worker admin` listens on `127.0.0.1:8080` and requires `BOARD_TOKEN` (at least 16 letters or digits), including on loopback. `BOARD_INSECURE=1` omits the token only for a loopback address. Open the board once as `/?token=...`; the token is then kept in an HttpOnly cookie. The compose file publishes that port on the host loopback and still requires `BOARD_TOKEN`, because the process inside the container listens on the container network.
-
-Redis in compose has no password and is published on `127.0.0.1:6379`. Anyone who can reach it can put work on a queue. Set `requirepass` before sharing that port.
-
-## Tracing
-
-The child does not open an OTLP connection. Pass `Tracing` to `App` and Rust spans are handed to that Python exporter on a dedicated thread. `tracing=None` is the default: no OpenTelemetry layer is installed, and Python is not called to export spans.
-
-```python
-import os
-
-from opentelemetry.sdk.resources import Resource
-
-from simple_q import App, Client, Config, Tracing, actor
-
-@actor(queue="default", max_retries=3)
-async def recalc(project_id: str) -> None:
-    return None
-
-def create_app() -> App:
-    return App(
-        client=Client(os.environ["REDIS_URL"], config=Config.from_env()),
-        actors=[recalc],
-        tracing=Tracing(
-            exporter=exporter,  # export(spans) and shutdown()
-            resource=Resource.create({"service.name": "agent-worker"}),
-            targets={"agent_worker": "info", "simple_q_runtime": "info", "apalis": "debug"},
-        ),
-    )
-```
-
-Start the worker with `agent-worker worker --app module:create_app --factory`. `--app` is required.
-
-`RUST_LOG` filters the text log. `targets` filters the OpenTelemetry layer, so `RUST_LOG=warn` still exports the process span. Omitting `targets` uses `agent_worker=info`, `simple_q_runtime=info`, and `apalis=debug`. An empty map is rejected at child startup.
+Rust supervisor and queue runtime for Python async tasks. The worker binary is `agent-worker`. Application code imports `simple_q`. The Rust extension inside that package is `simple_q._runtime`.
 
 ## Install
+
+Supported runtime: CPython 3.12, Linux x86_64 and aarch64.
 
 ```bash
 uv add simple-q-runtime simple-q-worker
 ```
 
-`simple-q-runtime` is the importable package (`import simple_q`). `simple-q-worker` installs the `agent-worker` binary into the virtualenv and depends on the same version of `simple-q-runtime`. The binary is placed at `.venv/bin/agent-worker`. CPython locates that environment from `pyvenv.cfg` one directory above the executable, so the installed package imports without `PYTHONPATH`.
+`simple-q-runtime` is the importable package (`import simple_q`). `simple-q-worker` installs the `agent-worker` binary into the virtualenv and depends on the same version of `simple-q-runtime`.
 
-Wheels are Linux only, for x86_64 and aarch64. The extension wheel is a manylinux build. The binary wheel is built in `python:3.12-slim-bookworm` and tagged `manylinux_2_36`, because the binary links `libpython3.12.so.1.0`. Publish steps are in [docs/dev/PUBLISH.md](docs/dev/PUBLISH.md).
+## Example
+
+```python
+from simple_q import App, Client, Config, actor
+
+
+@actor(queue="default", max_retries=2, lock_key="cache:discovery")
+async def recalc(project_id: int) -> None:
+    ...
+
+
+def create_app() -> App:
+    config = Config.from_env()
+    return App(Client("redis://redis:6379/0", config=config), actors=[recalc])
+
+
+async def enqueue() -> None:
+    config = Config.from_env()
+    client = Client("redis://redis:6379/0", config=config)
+    await client.send_with_options(
+        recalc,
+        kwargs={"project_id": 42},
+        unique_key="recalc:42",
+    )
+    await client.close()
+```
+
+## Documentation
+
+These pages describe 1.0: [docs/index.md](docs/index.md). GitHub Pages publishes that site from `main` and from `v*` tags.

@@ -29,7 +29,29 @@ uv venv /opt/venv
 uv pip install --python /opt/venv/bin/python dist/simple_q_runtime-*.whl /tmp/wheels/simple_q_worker-*.whl
 bin_ver="$(/opt/venv/bin/agent-worker --version | awk '{print $NF}')"
 py_ver="$(/opt/venv/bin/python -c 'import importlib.metadata as m; print(m.version("simple-q-runtime"))')"
-test "$bin_ver" = "$py_ver"
+python - "$bin_ver" "$py_ver" << 'PY'
+import re
+import sys
+
+def pep440(version):
+    return re.sub(
+        r"[-_.]?(alpha|a|beta|b|rc|c|preview|pre)[-_.]?(\d+)",
+        lambda match: {
+            "alpha": "a",
+            "beta": "b",
+            "c": "rc",
+            "pre": "rc",
+            "preview": "rc",
+        }.get(match.group(1), match.group(1))
+        + match.group(2),
+        version,
+        count=1,
+    )
+
+left, right = sys.argv[1:]
+if pep440(left) != pep440(right):
+    raise SystemExit(f"agent-worker {left} != simple-q-runtime {right}")
+PY
 env -u PYTHONPATH /opt/venv/bin/python -c 'import simple_q'
 env -u PYTHONPATH /opt/venv/bin/agent-worker execute --app simple_q.app:app --task demo
 cp /tmp/wheels/simple_q_worker-*.whl /io/dist/
