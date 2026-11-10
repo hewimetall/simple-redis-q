@@ -39,7 +39,7 @@ async def enqueue() -> None:
 
 `@actor` returns an immutable declaration. It is bound to neither an `App` nor a connection. `Config.from_env()` reads the `SIMPLE_Q_*` settings. An invalid value raises. There is no silent default. The Redis URL is an argument of `Client`. `agent-worker enqueue` and `agent-worker admin` are the commands that read `REDIS_URL`.
 
-Start the supervisor with the factory that returns the `App`. `--app` is required.
+Start the supervisor with the factory that returns the `App`. `--app` is required unless `SIMPLE_Q_APP` is set.
 
 ```bash
 agent-worker worker --app module:create_app --factory --queues default

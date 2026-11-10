@@ -11,6 +11,7 @@ use std::time::Duration;
 use anyhow::Result;
 use tokio::runtime::Builder;
 use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::watch;
 
 use simple_q_runtime::cleanup::sweep_queue;
 use simple_q_runtime::lock;
@@ -67,6 +68,8 @@ pub fn run_child(
             worker_names: Arc::new(Mutex::new(Vec::new())),
             redis: conn,
             config: config.clone(),
+            stop_meta: Arc::new(watch::channel(false).0),
+            announces: Arc::new(Mutex::new(Vec::new())),
         };
 
         let terminate = signal(SignalKind::terminate())?;

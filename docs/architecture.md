@@ -53,6 +53,8 @@ The apalis worker calls `handle`, which calls `handle_job`. `incr_delivery` runs
 
 Once a second the supervisor reads each child's RSS and, when `memory.max` is finite, the cgroup working set (`memory.current` minus `inactive_file`). A per-child byte limit drains with `SIGUSR1` or kills with `SIGKILL`. A ratio `Kill` signals the largest child only when that child's RSS is at least half the usage. Otherwise the largest not-yet-drained child gets `SIGUSR1`. The child treats `SIGUSR1` as stop-taking-work. `SIGKILL` has no handler.
 
+The supervisor also writes `simple_q:supervisors` and `simple_q:supervisor:{host}.{pid}`. Each child adds `ppid`, `slot`, `started_at`, `max_tasks`, and `tasks_done` on its worker metadata hash. `agent-worker info` and `QueueAdmin.snapshot` read those records. They do not scan the queue.
+
 ### Tracing
 
 `tracing=None` installs no OpenTelemetry layer. Otherwise `PythonBatchProcessor.on_end` queues the finished span, and the OS thread `otel-export` calls `exporter.export`. Tokio tasks do not call into Python. Exit 2 skips the flush.

@@ -13,6 +13,7 @@ pub mod names;
 pub mod ping;
 
 // Server side. Redis, locks, and metric files.
+pub mod admin;
 pub mod cleanup;
 pub mod lock;
 pub mod redis_api;

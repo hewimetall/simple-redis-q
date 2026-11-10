@@ -10,7 +10,7 @@ The worker command in every example is:
 agent-worker worker --app module:create_app --factory --queues default
 ```
 
-`module:app` is the same command without `--factory`, when the attribute is already an `App`. `--app` is required. The factory passes the Redis URL to `Client`. The worker command does not read `REDIS_URL`. It connects with the URL on the `App`'s `Client`. `enqueue` and `admin` do read `REDIS_URL`.
+`module:app` is the same command without `--factory`, when the attribute is already an `App`. `--app` is required unless `SIMPLE_Q_APP` is set. `SIMPLE_Q_APP_FACTORY`, when set, is the same as `--factory`. The factory passes the Redis URL to `Client`. The worker command does not read `REDIS_URL`. It connects with the URL on the `App`'s `Client`. `enqueue` and `admin` do read `REDIS_URL`. `agent-worker info` uses the client URL and only reads.
 
 ## How OOM differs
 
@@ -20,7 +20,7 @@ A cgroup with `memory.oom.group` kills the whole container. Every process in the
 
 systemd and Docker do not do that grouping unless configured. systemd's `MemoryOOMGroup=` defaults off, so a kernel OOM kills one process in the unit. Docker does not set `memory.oom.group` unless the cgroup was configured that way. The ratio backstop still runs whenever `memory.max` is finite, on all three.
 
-`SIGKILL` from the supervisor restarts that child. A kernel OOM that kills the supervisor does not.
+`SIGKILL` from the supervisor restarts that child. A kernel OOM that kills the supervisor does not. In `agent-worker info`, that supervisor kill is `killed` / `memory_hard`. A child whose supervisor record is gone, with a stale heartbeat and a metadata hash still present, is `killed` with no reason.
 
 ## Kubernetes
 

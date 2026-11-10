@@ -54,4 +54,6 @@ Any HTTP path on that address returns the scrape. A missing `simple_q_child_memo
 | `BOARD_TOKEN` | required, except the insecure loopback case | At least 16 characters from `A-Z`, `a-z`, `0-9`, `.`, `_`, `~`, `-`. |
 | `BOARD_INSECURE` | unset | `1` allows a loopback listener to omit the token. Any other address still requires the token. |
 | `RUST_LOG` | `info` | Text log filter. It does not filter the OpenTelemetry layer. |
-| `HOSTNAME` | `/etc/hostname`, then `localhost` | Host field inside the worker name. |
+| `HOSTNAME` | `/etc/hostname`, then `localhost` | Host field inside the worker name and the supervisor record. |
+| `SIMPLE_Q_APP` | unset | `module:attribute` for `worker` and `info` when `--app` is omitted. |
+| `SIMPLE_Q_APP_FACTORY` | unset | When set, `worker` and `info` call the attribute, the same as `--factory`. |

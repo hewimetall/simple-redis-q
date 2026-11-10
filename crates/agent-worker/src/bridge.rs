@@ -89,6 +89,7 @@ pub fn load_app<'py>(
     Ok(app)
 }
 
+#[allow(dead_code)]
 pub fn read_config(app_path: &str, factory: bool) -> Result<simple_q_runtime::config::Config> {
     Python::attach(|py| -> PyResult<simple_q_runtime::config::Config> {
         let app = load_app(py, app_path, factory)?;
@@ -101,15 +102,37 @@ pub fn read_config(app_path: &str, factory: bool) -> Result<simple_q_runtime::co
     .map_err(|error: PyErr| anyhow::anyhow!(error.to_string()))
 }
 
+/// Redis URL and `Config` stored on the application's `Client`.
+///
+/// The supervisor and `info` use this. Neither command is a queue worker.
+pub fn read_client(
+    app_path: &str,
+    factory: bool,
+) -> Result<(String, simple_q_runtime::config::Config)> {
+    Python::attach(|py| -> Result<_> {
+        let app =
+            load_app(py, app_path, factory).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let client = app
+            .getattr("client")
+            .map_err(|error| anyhow::anyhow!("app.client is not a Client: {error}"))?;
+        let client = client
+            .cast::<simple_q_runtime::python::Client>()
+            .map_err(|error| anyhow::anyhow!("app.client is not a Client: {error}"))?;
+        let state = client.borrow().state();
+        Ok((state.url.clone(), state.config.clone()))
+    })
+}
+
 pub async fn connect_client() -> Result<(
     simple_q_runtime::redis_api::ConnectionManager,
     simple_q_runtime::config::Config,
 )> {
     let state = Python::attach(|py| -> Result<_> {
         let app = APP.get().context("app is not loaded")?;
-        let client = app.bind(py).getattr("client").map_err(|error| {
-            anyhow::anyhow!("app.client is not a Client: {error}")
-        })?;
+        let client = app
+            .bind(py)
+            .getattr("client")
+            .map_err(|error| anyhow::anyhow!("app.client is not a Client: {error}"))?;
         let client = client
             .cast::<simple_q_runtime::python::Client>()
             .map_err(|error| anyhow::anyhow!("app.client is not a Client: {error}"))?;

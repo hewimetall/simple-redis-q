@@ -21,7 +21,7 @@ pub fn worker_name(queue: &str) -> String {
     )
 }
 
-fn hostname() -> String {
+pub fn hostname() -> String {
     if let Ok(value) = std::env::var("HOSTNAME") {
         let trimmed = value.trim();
         if !trimmed.is_empty() {

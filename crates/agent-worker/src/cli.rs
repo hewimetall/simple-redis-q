@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -38,6 +38,35 @@ pub enum Command {
     /// Serve the multiprocess metrics scrape on dramatiq_prom_host:dramatiq_prom_port.
     Metrics,
 
+    /// Read live supervisors and queue depths. This process does not register or heartbeat.
+    Info {
+        /// Python App in module:attribute format.
+        #[arg(long, env = "SIMPLE_Q_APP")]
+        app: String,
+
+        /// Call the attribute. It must return an App.
+        /// `SIMPLE_Q_APP_FACTORY`, when set, enables this the same way `--factory` does.
+        #[arg(
+            long,
+            env = "SIMPLE_Q_APP_FACTORY",
+            action = ArgAction::SetTrue,
+            value_parser = env_flag_present
+        )]
+        factory: bool,
+
+        /// Include supervisors on every host, and print orphans.
+        #[arg(long)]
+        all: bool,
+
+        /// Queue to include. Repeat the flag to name more than one.
+        #[arg(long = "queue")]
+        queue: Vec<String>,
+
+        /// Print the snapshot as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Enqueue one JSON payload. Fails immediately when Redis is unavailable.
     Enqueue {
         /// Queue name. A lowercase word such as `default`.
@@ -72,11 +101,17 @@ pub enum Command {
     /// Run queue workers. Without `--child` this process only supervises children.
     Worker {
         /// Python App in module:attribute format.
-        #[arg(long)]
+        #[arg(long, env = "SIMPLE_Q_APP")]
         app: String,
 
         /// Call the attribute. It must return an App.
-        #[arg(long)]
+        /// `SIMPLE_Q_APP_FACTORY`, when set, enables this the same way `--factory` does.
+        #[arg(
+            long,
+            env = "SIMPLE_Q_APP_FACTORY",
+            action = ArgAction::SetTrue,
+            value_parser = env_flag_present
+        )]
         factory: bool,
 
         /// Queues assigned to this process, comma-separated.
@@ -111,4 +146,9 @@ pub enum Command {
         #[arg(long, hide = true)]
         child: bool,
     },
+}
+
+/// Presence of the variable enables the flag. The value is not read.
+fn env_flag_present(_value: &str) -> Result<bool, std::convert::Infallible> {
+    Ok(true)
 }
