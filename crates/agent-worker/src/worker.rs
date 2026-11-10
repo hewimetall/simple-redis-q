@@ -1,3 +1,12 @@
+//! One delivery of one job.
+//!
+//! Poison is decided here, from the delivery count, before Python is called.
+//! Retry and timeout come back from Python, because they need the exception.
+//! Redis is the server side (`redis_api`). The handler sees a copy of the
+//! message, including the delivery count and this process's worker name.
+//! Retry stores the original job, so the sender's headers stay in Redis.
+//! The delivery key is deleted only after ack.
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -10,7 +19,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use crate::bridge;
 use crate::telemetry;
 use simple_q_runtime::ids::worker_name;
-use simple_q_runtime::job::Job;
+use simple_q_runtime::job::{Decision, Job, decide};
 use simple_q_runtime::redis_api::{self, connection, queue_config};
 use simple_q_runtime::registry;
 
@@ -153,13 +162,6 @@ async fn handle_job(
     }
 
     let task_id = task.task_id().to_owned();
-    tracing::info!(
-        message_id = %job.message_id,
-        actor_name = %job.actor_name,
-        queue_name = %job.queue,
-        retries = job.retries,
-        "running actor"
-    );
     let deliveries = match redis_api::incr_delivery(&job.message_id, job.retries).await {
         Ok(value) => value,
         Err(error) => {
@@ -174,19 +176,39 @@ async fn handle_job(
             std::process::exit(2);
         }
     };
-    let result = bridge::execute(&dispatched, &task_id, deliveries).await;
-
-    let finished = state.shared.completed.fetch_add(1, Ordering::AcqRel) + 1;
-    if finished >= state.shared.max_tasks {
-        state.shared.draining.store(true, Ordering::SeqCst);
-        state.shared.pool.pause_all();
-        tracing::info!(
-            finished,
-            max_tasks = state.shared.max_tasks,
-            in_flight = registry::len(),
-            "process reached max tasks; draining active handlers"
+    if decide(deliveries, job.max_deliveries) == Decision::Poison {
+        tracing::warn!(
+            message_id = %job.message_id,
+            actor_name = %job.actor_name,
+            queue_name = %job.queue,
+            retries = job.retries,
+            deliveries,
+            max_deliveries = job.max_deliveries,
+            "burying a poison message before the handler"
         );
+        if let Err(hook_error) = bridge::note_dead(&job, "poison").await {
+            tracing::warn!(
+                message_id = %job.message_id,
+                actor_name = %job.actor_name,
+                error = %hook_error,
+                "dead-letter hook failed for a poison message"
+            );
+        }
+        bridge::note_reject(&job.queue, &job.actor_name);
+        note_finished(&state);
+        return Err(Box::new(AbortError::new(anyhow::anyhow!("dead: poison"))));
     }
+    tracing::info!(
+        message_id = %job.message_id,
+        actor_name = %job.actor_name,
+        queue_name = %job.queue,
+        retries = job.retries,
+        deliveries,
+        "running actor"
+    );
+    let result = bridge::execute(&dispatched, &task_id, deliveries, worker.name()).await;
+
+    note_finished(&state);
 
     let value = match result {
         Ok(value) => value,
@@ -214,6 +236,7 @@ async fn handle_job(
                 std::process::exit(2);
             }
             bridge::note_retry(&job.queue, &job.actor_name);
+            release_acked(&job).await;
             Ok(value)
         }
         Some("dead") => Err(Box::new(AbortError::new(anyhow::anyhow!(
@@ -223,6 +246,34 @@ async fn handle_job(
                 .and_then(|item| item.as_str())
                 .unwrap_or("dead")
         )))),
-        _ => Ok(value),
+        _ => {
+            release_acked(&job).await;
+            Ok(value)
+        }
+    }
+}
+
+async fn release_acked(job: &Job) {
+    if let Err(error) = redis_api::release_delivery(&job.message_id, job.retries).await {
+        tracing::warn!(
+            message_id = %job.message_id,
+            retries = job.retries,
+            error = %error,
+            "failed to drop the delivery key after ack"
+        );
+    }
+}
+
+fn note_finished(state: &Data<QueueState>) {
+    let finished = state.shared.completed.fetch_add(1, Ordering::AcqRel) + 1;
+    if finished >= state.shared.max_tasks {
+        state.shared.draining.store(true, Ordering::SeqCst);
+        state.shared.pool.pause_all();
+        tracing::info!(
+            finished,
+            max_tasks = state.shared.max_tasks,
+            in_flight = registry::len(),
+            "process reached max tasks; draining active handlers"
+        );
     }
 }

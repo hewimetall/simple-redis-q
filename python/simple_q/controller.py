@@ -1,3 +1,9 @@
+"""Controller facade. It registers a method and sends a message.
+
+The dispatch decision lives on `Registry`. This module does not talk to Redis
+except to enqueue.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -138,9 +144,9 @@ def task(
         raise ValueError("max_retries must be zero or greater")
     if lock_ttl <= 0:
         raise ValueError("lock_ttl must be greater than zero")
-    if lock_key is not None and (
-        not lock_key or lock_key.startswith("lock:") or any(char.isspace() for char in lock_key)
-    ):
+    from simple_q.registry import usable_lock_key
+
+    if lock_key is not None and not usable_lock_key(lock_key):
         raise ValueError(
             "lock_key must be a non-empty server key such as 'cache:discovery' without the lock: prefix"
         )

@@ -1,3 +1,8 @@
+//! Identifiers for locks and worker names.
+//!
+//! `hostname` is the only I/O here. It reads `HOSTNAME` or `/etc/hostname`.
+//! Callers outside this module use `worker_name` and `lock_owner`.
+
 use std::process;
 
 use uuid::Uuid;
@@ -15,7 +20,7 @@ pub fn worker_name(queue: &str) -> String {
     )
 }
 
-pub fn hostname() -> String {
+fn hostname() -> String {
     if let Ok(value) = std::env::var("HOSTNAME") {
         let trimmed = value.trim();
         if !trimmed.is_empty() {

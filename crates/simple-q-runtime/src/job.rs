@@ -1,3 +1,5 @@
+//! The message. No Redis and no Python. Producers and workers share this shape.
+
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
@@ -42,7 +44,8 @@ impl Job {
         if value.get("version").is_none() {
             bail!("message is missing version");
         }
-        let job: Self = serde_json::from_value(value).context("message does not match version 1")?;
+        let job: Self =
+            serde_json::from_value(value).context("message does not match version 1")?;
         job.validate()?;
         Ok(job)
     }
@@ -76,6 +79,28 @@ impl Job {
 
 pub fn new_message_id() -> String {
     Uuid::new_v4().to_string()
+}
+
+/// Worker decision for one counted delivery.
+///
+/// Retry and timeout stay in Python: they need the exception. Poison is
+/// decided here, before the handler runs. A delivery that only hangs the
+/// interpreter must still be buried by the next process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    Run,
+    Poison,
+}
+
+/// `deliveries` is the value Redis returned from `INCR`, so the first run is 1.
+///
+/// A count above `max_deliveries` is poison. The handler must not be entered.
+pub fn decide(deliveries: u64, max_deliveries: u32) -> Decision {
+    if deliveries > u64::from(max_deliveries) {
+        Decision::Poison
+    } else {
+        Decision::Run
+    }
 }
 
 #[cfg(test)]
@@ -113,7 +138,12 @@ mod tests {
     fn a_missing_or_foreign_version_is_rejected() {
         let mut missing = sample();
         missing.as_object_mut().unwrap().remove("version");
-        assert!(Job::parse(missing).unwrap_err().to_string().contains("version"));
+        assert!(
+            Job::parse(missing)
+                .unwrap_err()
+                .to_string()
+                .contains("version")
+        );
 
         let mut foreign = sample();
         foreign["version"] = json!(2);
@@ -123,5 +153,29 @@ mod tests {
                 .to_string()
                 .contains("unsupported message version")
         );
+    }
+
+    #[test]
+    fn a_delivery_past_the_limit_is_poison_and_the_limit_itself_still_runs() {
+        assert_eq!(decide(1, 1), Decision::Run);
+        assert_eq!(decide(2, 1), Decision::Poison);
+        assert_eq!(decide(5, 5), Decision::Run);
+        assert_eq!(decide(6, 5), Decision::Poison);
+    }
+
+    #[test]
+    fn the_message_module_does_not_open_redis() {
+        let source = include_str!("job.rs");
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("use ") || trimmed.starts_with("extern ") {
+                for crate_name in ["redis", "pyo3", "tokio", "apalis"] {
+                    assert!(
+                        !trimmed.contains(crate_name),
+                        "job.rs imports {crate_name}: {trimmed}"
+                    );
+                }
+            }
+        }
     }
 }

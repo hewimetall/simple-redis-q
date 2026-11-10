@@ -1,3 +1,6 @@
+//! Executions of this process. The Python module prints them. The worker
+//! reads the count to decide that a drain is idle. This is not the actor registry.
+
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};

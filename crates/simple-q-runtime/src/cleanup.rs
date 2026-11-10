@@ -1,3 +1,5 @@
+//! Server side. Delete finished Redis records after their TTL.
+
 use anyhow::Result;
 use redis::aio::ConnectionManager;
 

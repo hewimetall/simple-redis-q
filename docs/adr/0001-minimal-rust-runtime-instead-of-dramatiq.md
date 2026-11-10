@@ -7,7 +7,7 @@
 - Заменяет: Dramatiq broker, workers и task-адаптеры
 - Не изменяет: Python Workflow, FSM, repositories, transactional outbox и собственную fan-out-механику
 
-Ревизия сверяет решение с прототипом `agent-worker` и с исходниками закреплённых версий `apalis 1.0.0` и `apalis-redis 1.0.0`. Библиотека принята как транспорт прототипа. Она не считается доказательством гарантий переключения.
+Ревизия сверяет решение с прототипом `agent-worker` и с исходниками закреплённых версий `apalis 1.1.0`, `apalis-core 1.1.0`, `apalis-codec 1.1.0` и `apalis-redis 1.0.0`. Библиотека принята как транспорт прототипа. Она не считается доказательством гарантий переключения.
 
 Эта ревизия дополнительно фиксирует очереди `default` и `quota`, повтор через новую постановку, лимит времени 30 минут и учёт метрик по исправленному Prometheus middleware, а не по stock-реализации Dramatiq.
 
@@ -37,6 +37,8 @@ Runtime этого решения — текущий репозиторий. Б�
 
 Rust executable запускает child-процессы со встроенным CPython. Rust исполняет доставку и вызов задачи. Python выполняет handler, hooks и use cases.
 
+Стороны остаются модулями одного крейта. Бизнес-типы `job`, `names` и `ping` не открывают Redis и не вызывают Python. Redis, lock и файлы метрик — серверная сторона, её вызывает бизнес-решение. Импортируемый модуль и бинарник `agent-worker` — пользовательская сторона: они зависят от библиотеки, библиотека от них не зависит. Отдельный крейт на каждую сторону только переименовал бы те же модули. Карта элементов — `docs/model.toml`.
+
 ```text
 Rust supervisor          Python не инициализирован
     ├── child            CPython 3.12 инициализирован здесь
@@ -51,7 +53,7 @@ Rust supervisor          Python не инициализирован
 
 | Компонент | Версия в прототипе | Роль |
 | --- | --- | --- |
-| Worker и concurrency | `apalis 1.0.0`, feature `task-context` | `WorkerBuilder`, `Monitor`, `ConcurrencyLimitLayer` |
+| Worker и concurrency | `apalis 1.1.0`, feature `task-context` | `WorkerBuilder`, `Monitor`, `ConcurrencyLimitLayer` |
 | Redis transport | `apalis-redis 1.0.0`, feature `task-tracking` | очередь, heartbeat, inflight, повторная постановка orphan |
 | Rust async | `tokio` | supervisor, heartbeat, продление lock |
 | Embedded CPython | `pyo3 0.30.1` | модуль `simple_q_runtime` через `append_to_inittab` |
@@ -288,9 +290,9 @@ Reconcile не вызывает бизнес-recovery и не меняет pipel
 
 ## 11. Длительное исполнение и ошибки
 
-80 минут допустимы как длительность задачи, если её собственный лимит это позволяет. Lease сообщения не равен лимиту исполнения. Лимит по умолчанию — 30 минут (`1_800_000` мс), как прежний глобальный timeout Dramatiq. Истечение отменяет coroutine и считается неудачной попыткой: при оставшихся повторах сообщение ставится снова, на последней попытке вызывается `on_dead` с причиной `timeout`. Обычное исключение на последней попытке тоже вызывает `on_dead`, с причиной `retries`. Незарегистрированный актор вызывает `on_dead` с причиной `unknown_actor`. Сообщение, которое не проходит `Job::validate`, вызывает `on_dead` с причиной `invalid`. `on_dead` также вызывается для poison: после `max_deliveries` доставок одного и того же attempt актор не запускается. Хук получает `actor_name`, `kwargs`, `reason`, `message_id` и `retries`.
+80 минут допустимы как длительность задачи, если её собственный лимит это позволяет. Lease сообщения не равен лимиту исполнения. Лимит по умолчанию — 30 минут (`1_800_000` мс), как прежний глобальный timeout Dramatiq. Истечение отменяет coroutine и считается неудачной попыткой: при оставшихся повторах сообщение ставится снова, на последней попытке вызывается `on_dead` с причиной `timeout`. Обычное исключение на последней попытке тоже вызывает `on_dead`, с причиной `retries`. Незарегистрированный актор вызывает `on_dead` с причиной `unknown_actor`. Сообщение, которое не проходит `Job::validate`, вызывает `on_dead` с причиной `invalid`. Poison решает Rust-функция `decide` после `INCR` и до `bridge::execute`: если счётчик доставок больше `max_deliveries`, сообщение хоронится, `on_dead` вызывается с причиной `poison`, и handler не стартует. Так зависший в native-коде или держащий GIL handler не получает следующую доставку. Повтор и timeout остаются в Python: им нужно исключение. Прямой `dispatch` и очередь в памяти по-прежнему хоронят poison сами, потому что до worker они не доходят. Хук получает `actor_name`, `kwargs`, `reason`, `message_id` и `retries`.
 
-`Registry.on_send` вызывается в задаче отправителя до перехода в Rust и может дописать заголовки, видя `contextvars` вызывающего кода. `Registry.around_dispatch` оборачивает handler вместе с решением retry или dead; к началу хука уже доступен `current_message()`. Шаблон `lock_key` вида `cache:calc:{project_name}` раскрывается из kwargs в момент dispatch. Пустое значение, пробел и префикс `lock:` после подстановки отвергаются. `simple_q.enable_memory` подменяет постановку очередью в памяти, а `drain` прогоняет её через `dispatch` до опустошения, включая сообщения, отправленные из handler.
+`Registry.on_send` вызывается в задаче отправителя до перехода в Rust и может дописать заголовки, видя `contextvars` вызывающего кода. `Registry.around_dispatch` оборачивает handler вместе с решением retry или dead; к началу хука уже доступен `current_message()`. Шаблон `lock_key` вида `cache:calc:{project_name}` остаётся в Python и раскрывается из kwargs в момент dispatch. После подстановки ключ состоит только из латинских букв, цифр и знаков `:._-` и не начинается с `lock:`. `simple_q.enable_memory` подменяет постановку очередью в памяти, а `drain` прогоняет её через `dispatch` до опустошения, включая сообщения, отправленные из handler.
 
 Параметры heartbeat прототипа заданы явно, потому что `Default` у `apalis_redis::Config` ставит `missed_heartbeats = 10`, тогда как комментарий и serde-функция рядом задают 2:
 
@@ -304,9 +306,13 @@ Reconcile не вызывает бизнес-recovery и не меняет pipel
 
 Пока `retries < max_retries`, пауза считается формулой Dramatiq 1.18 `compute_backoff`: аргумент — число уже сделанных повторов, до увеличения счётчика. При `min_backoff` 15 с и `max_backoff` не ниже 60 с первые три паузы попадают в полуинтервалы `[7.5, 15)`, `[15, 30)` и `[30, 60)` секунд. Новая постановка несёт тот же `message_id` и `retries + 1`. Счётчик `dramatiq_message_retries_total` увеличивается один раз, на канонической очереди, только у постановки с задержкой. Повторная выдача после ETA задержкой не является и счётчик не двигает.
 
-Повторная доставка после падения процесса — другой путь. Сообщение остаётся inflight, ack не делается, и позже orphan-скрипт ставит его снова. Скрипт сам счётчик доставок не увеличивает. Его увеличивает старт попытки в worker. Ключ `delivery:{message_id}:{retries}` лежит вне keyspace Apalis. Значение по умолчанию — 5, переменная `SIMPLE_Q_MAX_DELIVERIES`.
+Повторная доставка после падения процесса — другой путь. Сообщение остаётся inflight, ack не делается, и позже orphan-скрипт ставит его снова. Скрипт сам счётчик доставок не увеличивает. Его увеличивает старт попытки в worker. Ключ `delivery:{message_id}:{retries}` лежит вне keyspace Apalis. `INCR` и `EXPIRE` выполняются одним Lua-скриптом: обрыв между двумя командами больше не оставляет ключ без срока. Срок — `SIMPLE_Q_DEAD_TTL_SECS` (7 суток) и нужен только если процесс умер до ack. Успешный ack и постановка повтора удаляют ключ сразу. Poison и dead ключ не удаляют: следующая доставка той же попытки должна снова увидеть счётчик выше `max_deliveries`. Значение по умолчанию — 5, переменная `SIMPLE_Q_MAX_DELIVERIES`.
 
-`persist_results` остаётся `true`. В `apalis-core 1.0.0` этот флаг — признак ack. `false` пропускает `TaskEvent::Complete`, и сообщение остаётся inflight. Готовые записи чистит отдельный обход: успешные через `SIMPLE_Q_DONE_TTL_SECS` (по умолчанию 24 часа), dead через `SIMPLE_Q_DEAD_TTL_SECS` (по умолчанию 7 суток, как `dead_message_ttl` Dramatiq). Обход идёт пачками `SSCAN`/`HSCAN`. `vacuum` Apalis для этого не используется: он читает весь hash и не снимает множества `done` и `dead`.
+`current_message()` в handler несёт `deliveries` и `worker_name`. `simple_q.worker_name()` читает это имя и вне handler возвращает `None`. Имя — идентификатор Apalis-worker'а: `agent-worker.{queue}.{host}.{pid}.{suffix}`.
+
+Если у контейнера `memory.max` — число, supervisor раз в секунду читает `memory.current`. На доле `SIMPLE_Q_MEMORY_SOFT_RATIO` (0.80) child получает SIGUSR1 и дорабатывает текущие задачи. На доле `SIMPLE_Q_MEMORY_HARD_RATIO` (0.95) supervisor посылает SIGKILL child с наибольшим RSS, если этот RSS не меньше половины `memory.current`. Без конечного лимита проверка ничего не делает. Команды `CLIENT` не используются.
+
+`persist_results` остаётся `true`. В `apalis-core 1.1.0` этот флаг — признак ack. `false` пропускает `TaskEvent::Complete`, и сообщение остаётся inflight. Готовые записи чистит отдельный обход: успешные через `SIMPLE_Q_DONE_TTL_SECS` (по умолчанию 24 часа), dead через `SIMPLE_Q_DEAD_TTL_SECS` (по умолчанию 7 суток, как `dead_message_ttl` Dramatiq). Обход идёт пачками `SSCAN`/`HSCAN`. `vacuum` Apalis для этого не используется: он читает весь hash и не снимает множества `done` и `dead`.
 
 Потеря владения не переводит pipeline в failed.
 
@@ -332,7 +338,7 @@ Supervisor поднимает `--processes` child. Child после `--max-tasks
     → supervisor запускает новый процесс со свежим CPython
 ```
 
-`pause` выбран вместо немедленного `stop`, потому что `CallAll` в `apalis-core 1.0.0` после `stop` ждёт in-flight и до `poll_close` не вызывает `backend.poll_ready`. На этом участке heartbeat backend сам не тикает. `pause` оставляет цикл poll и heartbeat.
+`pause` выбран вместо немедленного `stop`, потому что `CallAll` в `apalis-core 1.1.0` после `stop` ждёт in-flight и до `poll_close` не вызывает `backend.poll_ready`. На этом участке heartbeat backend сам не тикает. `pause` оставляет цикл poll и heartbeat.
 
 Считаются внешние завершения runtime. Уже начатые задачи доезжают, поэтому при concurrency больше 1 число завершений может превысить порог. Внутренние батчи fan-out в счётчик не входят: их в этом runtime нет.
 
@@ -404,7 +410,7 @@ Runtime не включает prometheus layer Apalis: тот слой созд�
 
 Код 2, в том числе неотзывчивый интерпретатор, буфер не сбрасывает: span'ы застрявшей задачи теряются, потому что GIL может быть занят. `Py_Finalize` не вызывается, на `atexit` полагаться нельзя. `force_flush` и любой другой flush экспортёра остаются в `on_stop` приложения. При обычном выходе child сначала вызывает `shutdown` провайдера Rust, и только потом `on_stop`.
 
-Код 3 — неверная конфигурация трассировки: у экспортёра нет вызываемых `export` и `shutdown`, `resource` не является OpenTelemetry `Resource`, либо уровень target не разбирается. Child завершается до старта worker, очередь не трогается. Для supervisor код 3 фатален: слот не засыпает и не перезапускается, supervisor останавливается с ошибкой. Любой другой ненулевой код по-прежнему ждёт паузу и поднимает процесс снова.
+Код 3 — неверная конфигурация трассировки: у экспортёра нет вызываемых `export` и `shutdown`, `resource` не является OpenTelemetry `Resource`, уровень target не разбирается, либо список targets пуст. Пустой фильтр отбрасывает все span'ы, поэтому это ошибка конфигурации, а не тихий режим. Если `targets` не передан, остаются `agent_worker=info`, `simple_q_runtime=info` и `apalis=debug`. Child завершается до старта worker, очередь не трогается. Для supervisor код 3 фатален: слот не засыпает и не перезапускается, supervisor останавливается с ошибкой. Любой другой ненулевой код по-прежнему ждёт паузу и поднимает процесс снова.
 
 Производственное окно orphan остаётся 60 секунд. CI сжимает его (`SIMPLE_Q_HEARTBEAT_SECS=5`, `SIMPLE_Q_MISSED_HEARTBEATS=2`), в том числе для задачи, которая держит GIL чистым Python-циклом дольше этого окна. Окно в 120 секунд в CI не добавляется.
 
@@ -415,15 +421,15 @@ Runtime не включает prometheus layer Apalis: тот слой созд�
 ```text
 Rust
 ├── main.rs            # команды; supervisor не инициализирует Python
-├── supervisor.rs      # процессы, SIGTERM, перезапуск
+├── supervisor.rs      # процессы, SIGTERM, порог памяти контейнера
 ├── child.rs           # CPython, ping, drain, код 2
-├── worker.rs          # Apalis + Redis, pause/stop
+├── worker.rs          # Apalis + Redis; poison до входа в Python
 ├── bridge.rs          # execute, реестр, ping, cancel
 crates/simple-q-runtime   # сообщение, очередь, lock, постановка; rlib и cdylib
 crates/agent-worker       # supervisor, child, bridge, доска, scrape
 
 Python
-├── simple_q/registry.py     # регистрация акторов, повтор, timeout, poison
+├── simple_q/registry.py     # регистрация акторов, повтор, timeout, шаблон lock_key
 ├── simple_q/metrics.py      # семь метрик Dramatiq
 ├── simple_q/controller.py   # локальный @task и lock
 └── simple_q/app.py          # демонстрационный реестр
@@ -524,7 +530,7 @@ Apalis и Redis backend — основа прототипа, не доказат
 - Нет прогона на производственном окне orphan в 60 секунд и нет прогона на 80 минут. Интеграционный тест CI сжимает окно (`SIMPLE_Q_HEARTBEAT_SECS=5`, `SIMPLE_Q_MISSED_HEARTBEATS=2`) и на Redis 7 и Redis 8 проверяет, что задача длиннее этого окна не выдаётся второму child, а score worker и `locked_at` растут.
 - Нет упаковки, в которой HTTP-процесс и worker вызывают один и тот же lock и один и тот же `enqueue`.
 - Нет сверки `/metrics`: имена, labels, типы и значения.
-- Не пройдены сценарии зависшего native-кода и закрытия цикла при отмене. SIGKILL child в середине handler покрыт тем же сжатым тестом: после окна счётчик доставок растёт, и при `SIMPLE_Q_MAX_DELIVERIES=1` один раз вызывается `on_dead` с причиной `poison`.
+- Не пройдены сценарии зависшего native-кода на производственном окне и закрытия цикла при отмене. Сжатый тест SIGKILL покрывает повторную выдачу: после окна счётчик доставок растёт, и при `SIMPLE_Q_MAX_DELIVERIES=1` Rust один раз вызывает `on_dead` с причиной `poison`, не входя в handler.
 
 Расширение runtime бизнес-правилами, чтобы обойти любой из этих пунктов, решением не является.
 

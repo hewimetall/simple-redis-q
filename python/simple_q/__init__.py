@@ -5,7 +5,7 @@ Call ``configure(redis_url=...)`` before ``send``.
 """
 
 from simple_q.memory import disable_memory, drain, enable_memory
-from simple_q.message import current_message
+from simple_q.message import current_message, worker_name
 from simple_q.registry import Registry, build_message, configure
 from simple_q.tracing import Tracing
 
@@ -18,4 +18,5 @@ __all__ = [
     "disable_memory",
     "drain",
     "enable_memory",
+    "worker_name",
 ]

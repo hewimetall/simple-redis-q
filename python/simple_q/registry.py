@@ -1,3 +1,11 @@
+"""Registry is the user-side entry and the dispatch decision.
+
+Actors and `on_send` are how application code drives a task. `dispatch` is the
+business step: resolve the lock key, run the handler, then retry or bury it.
+Redis and the in-memory queue are behind that step. They are not part of the
+decision.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -10,6 +18,16 @@ from simple_q.backoff import compute_backoff
 from simple_q.message import CurrentMessage, bind_message, reset_message
 from simple_q.metrics import finish_attempt, reject, start_attempt
 from simple_q.tracing import Tracing
+
+
+def _delivery_count(message: dict) -> int:
+    raw = message.get("deliveries")
+    try:
+        count = int(raw)
+    except (TypeError, ValueError):
+        return 1
+    return count if count > 0 else 1
+
 
 log = logging.getLogger("simple_q")
 
@@ -256,6 +274,8 @@ class Registry:
             headers={
                 str(key): str(value) for key, value in (message.get("headers") or {}).items()
             },
+            deliveries=_delivery_count(message),
+            worker_name=str(message.get("worker_name") or ""),
         )
         token = bind_message(current)
         try:
@@ -293,6 +313,8 @@ class Registry:
 
         queue = current.queue_name
         message_id = current.message_id
+        # The worker buries poison before it calls dispatch. This branch is
+        # the in-memory queue and a direct dispatch, which never reach that check.
         deliveries = int(message.get("deliveries") or 1)
         if deliveries > int(message.get("max_deliveries") or actor.max_deliveries):
             await self._dead(actor_name, current.kwargs, "poison", message_id, current.retries)
@@ -416,13 +438,17 @@ def resolve_lock_key(template: str | None, kwargs: dict) -> str | None:
         except KeyError as error:
             missing = error.args[0]
             raise KeyError(f"lock_key placeholder {missing} is missing from kwargs") from error
-    if (
-        not resolved
-        or resolved.startswith("lock:")
-        or any(character.isspace() for character in resolved)
-    ):
+    if not usable_lock_key(resolved):
         raise ValueError(f"lock_key {resolved!r} is not a usable server key")
     return resolved
+
+
+def usable_lock_key(key: str) -> bool:
+    """A lock key is ASCII letters, digits, and ``:._-``, without a ``lock:`` prefix."""
+
+    if not key or key.startswith("lock:"):
+        return False
+    return all(character.isascii() and (character.isalnum() or character in ":._-") for character in key)
 
 
 def _bind_around(hook, message: dict, inner):
