@@ -1,3 +1,8 @@
+//! Server side. A Redis lock whose key has already been checked by `names`.
+//!
+//! The business rule for a usable key lives in `names`. This module only
+//! stores and releases the lock.
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};

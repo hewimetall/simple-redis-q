@@ -1,3 +1,9 @@
+//! User side that only forks and reaps children.
+//!
+//! It does not take messages. Exit code 3 is a bad tracing config and stops
+//! the supervisor. Any other non-zero code waits and starts that slot again.
+//! A panic while the slots are draining is a supervisor failure.
+
 use std::time::Duration;
 
 use anyhow::{Context, Result};

@@ -1,3 +1,10 @@
+//! One delivery of one job.
+//!
+//! The decision to run, retry, or bury the job stays here. Redis is the server
+//! side (`redis_api`). The Python handler is the user side (`bridge`) and sees
+//! a copy of the message. Retry stores the original job, so the sender's
+//! headers stay on the message in Redis.
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 

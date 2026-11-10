@@ -1,3 +1,5 @@
+"""The message the handler is allowed to see. No Redis and no queue client."""
+
 from __future__ import annotations
 
 import contextvars

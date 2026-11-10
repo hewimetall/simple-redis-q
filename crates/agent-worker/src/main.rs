@@ -1,3 +1,9 @@
+//! User side of the process. Each command drives the library. The library
+//! does not know which command started it.
+//!
+//! `worker` without `--child` only supervises. The child installs the
+//! subscriber after the application import, so this file does not.
+
 mod bridge;
 mod child;
 mod cli;

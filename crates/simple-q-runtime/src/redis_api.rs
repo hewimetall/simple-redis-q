@@ -1,3 +1,8 @@
+//! Server side. The only module that opens a Redis connection.
+//!
+//! `install` runs when a producer calls `configure` or a worker starts.
+//! Importing the Python module does not call it.
+
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -32,10 +37,9 @@ pub async fn install_from_env() -> Result<()> {
 }
 
 pub fn connection() -> Result<ConnectionManager> {
-    CONNECTION
-        .get()
-        .cloned()
-        .context("Redis connection is not installed; call simple_q.configure(redis_url=...) before send")
+    CONNECTION.get().cloned().context(
+        "Redis connection is not installed; call simple_q.configure(redis_url=...) before send",
+    )
 }
 
 pub fn queue_config(queue: &str) -> Result<Config> {
@@ -50,10 +54,7 @@ pub fn queue_config(queue: &str) -> Result<Config> {
         .missed_heartbeats(names::missed_heartbeats())
         .emit_events(false)
         .persist_results(true);
-    debug_assert_eq!(
-        config.orphaned_duration().as_secs(),
-        orphan_window_secs()
-    );
+    debug_assert_eq!(config.orphaned_duration().as_secs(), orphan_window_secs());
     Ok(config)
 }
 
@@ -65,8 +66,7 @@ pub async fn enqueue_job(job: Job, delay: Option<Duration>) -> Result<String> {
     if let Some(delay) = delay.filter(|delay| !delay.is_zero()) {
         builder = builder.run_after(delay);
     }
-    let mut storage =
-        RedisStorage::<Job>::new(connection()?).with_config(queue_config(&queue)?);
+    let mut storage = RedisStorage::<Job>::new(connection()?).with_config(queue_config(&queue)?);
     storage
         .push_task(builder.build())
         .await

@@ -13,6 +13,11 @@
 //! thread until it does; spans that arrive while the queue is full are dropped.
 //! Shutdown joins the thread so returned batches are in the Python exporter
 //! before the application's `on_stop` hook. Exit code 2 does not join it.
+//!
+//! Call order: `read_tracing` checks the Python object, `install` builds the
+//! text layer and the OpenTelemetry layer, the batch thread calls `export`,
+//! `shutdown` joins that thread. `parent_context` and `with_span_traceparent`
+//! belong to the process span, not to the exporter.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -61,7 +66,7 @@ fn config(message: impl Into<String>) -> TracingConfigError {
     }
 }
 
-pub fn is_config_error(error: &anyhow::Error) -> bool {
+pub(crate) fn is_config_error(error: &anyhow::Error) -> bool {
     error.downcast_ref::<TracingConfigError>().is_some()
 }
 
@@ -113,11 +118,11 @@ struct ProviderHandle {
 
 /// Text log filter from `RUST_LOG`, defaulting to info. It is not applied to
 /// the OpenTelemetry layer.
-pub fn fmt_env_filter() -> EnvFilter {
+pub(crate) fn fmt_env_filter() -> EnvFilter {
     EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
 }
 
-pub fn otel_targets(targets: &[(String, String)]) -> Result<Targets, TracingConfigError> {
+fn otel_targets(targets: &[(String, String)]) -> Result<Targets, TracingConfigError> {
     if targets.is_empty() {
         return Err(config(
             "tracing targets must name at least one crate; an empty filter exports nothing",
