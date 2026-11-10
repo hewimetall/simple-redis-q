@@ -4,8 +4,11 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use apalis::prelude::*;
 use apalis_redis::RedisStorage;
+use tracing::Instrument;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::bridge;
+use crate::telemetry;
 use simple_q_runtime::ids::worker_name;
 use simple_q_runtime::job::Job;
 use simple_q_runtime::redis_api::{self, connection, queue_config};
@@ -95,6 +98,35 @@ async fn handle(
     worker: WorkerContext,
     state: Data<QueueState>,
 ) -> Result<serde_json::Value, BoxDynError> {
+    let span = tracing::info_span!(
+        "process",
+        otel.name = %format!("process {}", job.actor_name),
+        otel.kind = "consumer",
+        messaging.system = "redis",
+        messaging.destination = %job.queue,
+        messaging.operation = "process",
+        messaging.message.id = %job.message_id,
+        actor_name = %job.actor_name,
+    );
+    if let Some(parent) = telemetry::parent_context(&job.headers) {
+        let _ = span.set_parent(parent);
+    }
+    if let Some(link) = telemetry::link_context(&job.headers) {
+        span.add_link(link);
+    }
+    let dispatched = telemetry::with_span_traceparent(&job, &span);
+    handle_job(job, dispatched, task, worker, state)
+        .instrument(span)
+        .await
+}
+
+async fn handle_job(
+    job: Job,
+    dispatched: Job,
+    task: TaskContext,
+    worker: WorkerContext,
+    state: Data<QueueState>,
+) -> Result<serde_json::Value, BoxDynError> {
     if let Err(error) = job.validate() {
         tracing::warn!(
             message_id = %job.message_id,
@@ -142,7 +174,7 @@ async fn handle(
             std::process::exit(2);
         }
     };
-    let result = bridge::execute(&job, &task_id, deliveries).await;
+    let result = bridge::execute(&dispatched, &task_id, deliveries).await;
 
     let finished = state.shared.completed.fetch_add(1, Ordering::AcqRel) + 1;
     if finished >= state.shared.max_tasks {

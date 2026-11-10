@@ -157,6 +157,14 @@ def test_send_before_configure_fails_clearly():
         raise AssertionError("send without configure succeeded")
 
 
+def test_registry_tracing_defaults_to_none():
+    from simple_q import Tracing
+
+    assert Registry().tracing is None
+    assert Registry(tracing=None).tracing is None
+    assert Tracing is not None
+
+
 def test_import_does_not_open_the_runtime_module_by_itself():
     sys.modules.pop("simple_q_runtime", None)
     import simple_q.backoff as backoff

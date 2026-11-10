@@ -4,34 +4,34 @@ mod cli;
 mod commands;
 mod runtime;
 mod supervisor;
+mod telemetry;
 mod worker;
 
+use std::collections::BTreeMap;
+
 use simple_q_runtime::job::{Job, new_message_id};
-use simple_q_runtime::names::{
-    DEFAULT_MAX_BACKOFF_MS, DEFAULT_MIN_BACKOFF_MS, DEFAULT_TIME_LIMIT_MS, max_deliveries,
-};
+use simple_q_runtime::names::{DEFAULT_TIME_LIMIT_MS, max_deliveries};
 use simple_q_runtime::redis_api;
 
+use anyhow::Context;
 use clap::Parser;
 use cli::{Cli, Command};
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Stubs => commands::stubs::run(),
+        Command::Stubs => {
+            init_log();
+            commands::stubs::run()
+        }
         Command::Execute { app, task, task_id } => {
+            init_log();
             runtime::initialize();
             commands::execute::run(&app, &task, &task_id)
         }
         Command::Admin => {
+            init_log();
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(commands::admin::run())
         }
@@ -39,23 +39,30 @@ fn main() -> anyhow::Result<()> {
             queue,
             task,
             payload,
+            headers,
+            max_retries,
+            min_backoff_ms,
+            max_backoff_ms,
         } => {
+            init_log();
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(async {
                 redis_api::install_from_env().await?;
                 let kwargs = serde_json::from_str(&payload)?;
+                let headers: BTreeMap<String, String> = serde_json::from_str(&headers)
+                    .context("headers must be a JSON object of strings")?;
                 let job = Job {
                     version: simple_q_runtime::MESSAGE_VERSION,
                     message_id: new_message_id(),
                     actor_name: task,
                     queue,
                     kwargs,
-                    headers: Default::default(),
+                    headers,
                     retries: 0,
-                    max_retries: 0,
+                    max_retries,
                     time_limit_ms: DEFAULT_TIME_LIMIT_MS,
-                    min_backoff_ms: DEFAULT_MIN_BACKOFF_MS,
-                    max_backoff_ms: DEFAULT_MAX_BACKOFF_MS,
+                    min_backoff_ms,
+                    max_backoff_ms,
                     max_deliveries: max_deliveries(),
                     lock_key: None,
                     lock_ttl: 30,
@@ -65,6 +72,7 @@ fn main() -> anyhow::Result<()> {
             })
         }
         Command::Metrics => {
+            init_log();
             runtime::initialize();
             commands::metrics::run()
         }
@@ -76,6 +84,7 @@ fn main() -> anyhow::Result<()> {
             concurrency,
             max_tasks_per_process,
         } => {
+            init_log();
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(supervisor::run(
                 app,
@@ -94,4 +103,10 @@ fn main() -> anyhow::Result<()> {
             ..
         } => child::run_child(app, queues, concurrency, max_tasks_per_process),
     }
+}
+
+fn init_log() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(crate::telemetry::fmt_env_filter())
+        .try_init();
 }

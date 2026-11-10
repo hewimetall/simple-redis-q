@@ -202,6 +202,42 @@ def test_long_task_keeps_its_lease_past_the_orphan_window(label, url, tmp_path):
 
 
 @pytest.mark.parametrize("label,url", _redis_urls())
+def test_gil_hold_keeps_the_lease_and_does_not_start_a_second_child(label, url, tmp_path):
+    if not _redis_ok(url):
+        pytest.skip(f"{label} is not reachable or agent-worker is not built")
+    queue = "gilq"
+    _flush(url, queue)
+    touch = tmp_path / "gil.jsonl"
+    process = _start_worker(
+        url,
+        queue,
+        {
+            "GIL_TOUCH": str(touch),
+            "GIL_SECONDS": str(ORPHAN_SECS + 15),
+            "DEAD_LOG": str(tmp_path / "dead.jsonl"),
+        },
+    )
+    try:
+        _enqueue(url, queue, "gil")
+        _wait_for_lines(touch, 1, 30)
+        first_scores = _scores(url, queue)
+        first_locks = _locked_at(url, queue)
+        assert first_scores, "workers did not register"
+        assert first_locks, "locked_at was not recorded"
+        time.sleep(HEARTBEAT_SECS + 2)
+        second_scores = _scores(url, queue)
+        second_locks = _locked_at(url, queue)
+        assert max(second_scores.values()) > max(first_scores.values())
+        assert max(second_locks) > max(first_locks)
+        assert len(_wait_for_lines(touch, 1, 1)) == 1
+        time.sleep(ORPHAN_SECS)
+        assert len(_wait_for_lines(touch, 1, 1)) == 1
+    finally:
+        _stop(process)
+        _flush(url, queue)
+
+
+@pytest.mark.parametrize("label,url", _redis_urls())
 def test_sigkill_redelivers_and_then_poison_calls_on_dead(label, url, tmp_path):
     if not _redis_ok(url):
         pytest.skip(f"{label} is not reachable or agent-worker is not built")

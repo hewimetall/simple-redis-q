@@ -18,6 +18,7 @@ build-backend = "maturin"
 [dependency-groups]
 dev = [
     "maturin>=1.16.0",
+    "opentelemetry-sdk>=1.27",
 ]
 
 [tool.maturin]
