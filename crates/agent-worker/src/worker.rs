@@ -5,7 +5,9 @@
 //! Redis is the server side (`redis_api`). The handler sees a copy of the
 //! message, including the delivery count and this process's worker name.
 //! Retry stores the original job, so the sender's headers stay in Redis.
-//! The delivery key is deleted only after ack.
+//! The delivery key is deleted only after ack. The idempotency key is
+//! deleted only on a terminal outcome: ack, dead, or poison. A retry leaves
+//! it in place, and a crash before that outcome leaves it for the redelivery.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -152,6 +154,7 @@ async fn handle_job(
                 "dead-letter hook failed for an invalid message"
             );
         }
+        release_unique_key(&job).await;
         return Err(Box::new(AbortError::new(error)));
     }
 
@@ -196,6 +199,7 @@ async fn handle_job(
         }
         bridge::note_reject(&job.queue, &job.actor_name);
         note_finished(&state);
+        release_unique_key(&job).await;
         return Err(Box::new(AbortError::new(anyhow::anyhow!("dead: poison"))));
     }
     tracing::info!(
@@ -212,7 +216,10 @@ async fn handle_job(
 
     let value = match result {
         Ok(value) => value,
-        Err(error) => return Err(Box::new(AbortError::new(error))),
+        Err(error) => {
+            release_unique_key(&job).await;
+            return Err(Box::new(AbortError::new(error)));
+        }
     };
     match value.get("outcome").and_then(|item| item.as_str()) {
         Some("retry") => {
@@ -239,17 +246,35 @@ async fn handle_job(
             release_acked(&job).await;
             Ok(value)
         }
-        Some("dead") => Err(Box::new(AbortError::new(anyhow::anyhow!(
-            "dead: {}",
-            value
-                .get("reason")
-                .and_then(|item| item.as_str())
-                .unwrap_or("dead")
-        )))),
+        Some("dead") => {
+            release_unique_key(&job).await;
+            Err(Box::new(AbortError::new(anyhow::anyhow!(
+                "dead: {}",
+                value
+                    .get("reason")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or("dead")
+            ))))
+        }
         _ => {
             release_acked(&job).await;
+            release_unique_key(&job).await;
             Ok(value)
         }
+    }
+}
+
+async fn release_unique_key(job: &Job) {
+    let Some(unique_key) = job.unique_key.as_deref().filter(|key| !key.is_empty()) else {
+        return;
+    };
+    if let Err(error) = redis_api::release_idempotency(&job.queue, unique_key).await {
+        tracing::warn!(
+            message_id = %job.message_id,
+            queue_name = %job.queue,
+            error = %error,
+            "failed to drop the idempotency key after a terminal outcome"
+        );
     }
 }
 

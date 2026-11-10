@@ -33,6 +33,12 @@ pub struct Job {
     pub lock_ttl: u64,
     #[serde(default)]
     pub skip_on_lock: bool,
+    /// Held by apalis-redis while this attempt is outstanding.
+    ///
+    /// Retries carry the same string so the final outcome can drop the key.
+    /// A payload written before this field existed has no key and still parses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unique_key: Option<String>,
 }
 
 fn default_lock_ttl() -> u64 {
@@ -132,6 +138,25 @@ mod tests {
         assert_eq!(job.headers.get("trace").map(String::as_str), Some("abc"));
         assert!(job.kwargs.get("headers").is_none());
         assert!(job.kwargs.get("trace").is_none());
+    }
+
+    #[test]
+    fn a_payload_without_unique_key_still_parses_at_version_one() {
+        let job = Job::parse(sample()).unwrap();
+        assert_eq!(job.version, MESSAGE_VERSION);
+        assert_eq!(job.unique_key, None);
+        let encoded = serde_json::to_value(&job).unwrap();
+        assert!(encoded.get("unique_key").is_none());
+
+        let mut explicit_null = sample();
+        explicit_null["unique_key"] = json!(null);
+        assert_eq!(Job::parse(explicit_null).unwrap().unique_key, None);
+
+        let mut held = sample();
+        held["unique_key"] = json!("recalc:proj-42");
+        let job = Job::parse(held).unwrap();
+        assert_eq!(job.unique_key.as_deref(), Some("recalc:proj-42"));
+        assert_eq!(job.version, MESSAGE_VERSION);
     }
 
     #[test]
