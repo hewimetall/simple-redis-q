@@ -187,6 +187,30 @@ class Config:
 
 The Redis URL is an argument of `Client`. `import simple_q` does not read `REDIS_URL`. The worker command uses the client on the `App`. `agent-worker enqueue` and `agent-worker admin` read `REDIS_URL`. `await client.worker_alive` uses this process's heartbeat window. A client that has not connected yet returns `False`.
 
+## `QueueAdmin`
+
+`import simple_q` does not export this type. Import the module directly.
+
+```python
+from simple_q.admin import QueueAdmin
+
+admin = QueueAdmin(client)
+snap = await admin.snapshot(["default", "quota"])
+snap = await admin.snapshot(["quota"], host="worker-quota-6f8b9c7d4-x2k9p")
+```
+
+`snapshot` is async, runs on the caller's loop, and uses that `Client`'s Redis connection. It reads counters, heartbeats, and inflight tasks. It does not walk the waiting, done, or dead lists. `host` limits supervisors, their children, and orphans. Queue counters stay global for the named queues.
+
+The return value is a frozen `Snapshot`:
+
+- `Snapshot`: `taken_at`, `queues`, `supervisors`, `orphans`
+- `QueueStats`: `name`, `active`, `scheduled`, `inflight`, `done`, `dead`, `workers`, `workers_alive`
+- `SupervisorInfo`: `host`, `pid`, `started_at`, `last_seen`, `version`, `queues`, `processes`, `concurrency`, `max_tasks`, `child_soft`, `child_hard`, `cgroup_current`, `cgroup_max`, `recycled`, `drains`, `kills`, `restarts`, `children`
+- `ProcessInfo`: `host`, `pid`, `ppid`, `slot`, `state`, `reason`, `exit`, `rss`, `started_at`, `ended_at`, `tasks_done`, `max_tasks`, `workers`, `last_seen`, `alive`, `tasks`
+- `HeldTask`: `queue`, `task_id`, `message_id`, `actor_name`, `kwargs`, `retries`, `max_retries`, `time_limit_ms`, `locked_at`, `deliveries`
+
+`agent-worker info --json` prints this same object. How to read `state` and `reason` is on the [tracing and admin](operations.md) page.
+
 A future `Config(metrics_prefix=...)` is not implemented. `dramatiq_*` metric names and labels stay as they are through 1.0. See [Settings](settings.md).
 
 ## `MemoryClient`

@@ -28,4 +28,4 @@ Dramatiq middleware does not plug in. There is no middleware chain to append, no
 
 Poison is `deliveries > max_deliveries`. The first attempt that lands on the limit still runs. That counter is separate from Dramatiq's retry count. `retries` is the handler-failure count. `deliveries` is how many times a worker has started the attempt, including a start after the process died.
 
-The worker is `agent-worker worker --app module:create_app --factory` or `--app module:app`. `--app` is required. Queue names are one lowercase ASCII word of letters and digits. The example is `default`.
+The worker is `agent-worker worker --app module:create_app --factory` or `--app module:app`. `--app` is required unless `SIMPLE_Q_APP` is set. Queue names are one lowercase ASCII word of letters and digits. The example is `default`.

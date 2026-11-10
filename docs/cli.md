@@ -30,7 +30,43 @@ The process without the internal child flag only supervises. It forks one child 
 
 `--child` is internal. The supervisor starts the embedded interpreter only in that mode.
 
-The supervisor also starts the metrics scrape. The worker command does not read `REDIS_URL`. It connects with the URL on the `App`'s `Client`. `enqueue` and `admin` do read `REDIS_URL`.
+The supervisor also starts the metrics scrape. The worker command does not read `REDIS_URL`. It connects with the URL on the `App`'s `Client`. `enqueue` and `admin` do read `REDIS_URL`. `info` uses the same client URL as `worker` and does not write a heartbeat.
+
+`--app` may be omitted when `SIMPLE_Q_APP` is set. `SIMPLE_Q_APP_FACTORY`, when set, is the same as `--factory`.
+
+## `info`
+
+```bash
+agent-worker info
+agent-worker info --queue quota --json
+agent-worker info --all
+```
+
+Read-only. The command loads the application only to take the Redis URL and `Config` from its `Client`. It does not register a worker and it does not heartbeat.
+
+By default it prints the supervisor on this host (`HOSTNAME`, the same value as the worker name), that supervisor's processes and the tasks they hold, and the counters for that supervisor's queues. `--all` prints every supervisor and the orphan processes. `--queue` may be repeated and limits the queues. `--json` prints the same object `QueueAdmin.snapshot` returns.
+
+Exit 0. Exit 1 when `--all` is absent and this host has no live supervisor. The message is `no live supervisor on {host}` on stderr.
+
+```text
+supervisor  worker-quota-6f8b9c7d4-x2k9p  pid 1  up 38m  simple-q 1.0.0rc2
+queues      quota  processes 3/3  concurrency 1  max_tasks 500
+memory      cgroup 2.1G / 4G  child soft 1G / hard 1500M
+counters    recycled 14  soft 2  hard 1  restarts 0
+SLOT  PID  STATE     REASON       RSS    TASKS    HB
+0     31   running                812M   412/500  4s
+1     57   draining  max_tasks    640M   500/500  9s
+2     44   draining  memory_soft  1.02G  212/500  3s
+0     23   killed    memory_hard  1.51G  98/500   41s   held 1, waiting for requeue
+1     12   exited    max_tasks    -      500/500  52s
+PID  QUEUE  ACTOR                        KWARGS                  TRY  DLV  RUN
+31   quota  recalc                       project_id=3f1c0b2a…    0/1  1    212s/1800s
+23   quota  recalc                       project_id=held         0/1  1    212s/1800s
+QUEUE  ACTIVE  SCHEDULED  INFLIGHT  DONE  DEAD
+quota  12      1          4         9873  0
+```
+
+`processes 3/3` is live children over the configured count. `soft` and `hard` in the counters line are soft drains and hard kills since this supervisor started. A killed or exited row that still holds a task says it is waiting for requeue. `simple-q 1.0.0rc2` is the package version; the binary's `--version` still prints the Cargo form `1.0.0-rc2`.
 
 ## `admin`
 

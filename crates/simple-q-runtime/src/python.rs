@@ -314,6 +314,46 @@ async fn enqueue_prepared(state: Arc<ClientState>, prepared: Prepared) -> PyResu
         .map_err(|error| PyRuntimeError::new_err(error.to_string()))
 }
 
+/// Read-only view of queues and supervisor processes for one [`Client`].
+#[pyclass]
+pub struct Admin {
+    state: Arc<ClientState>,
+}
+
+#[pymethods]
+impl Admin {
+    #[new]
+    fn new(client: PyRef<'_, Client>) -> Self {
+        Self {
+            state: client.state(),
+        }
+    }
+
+    /// JSON object for `queues`. `host` limits the process tree to that machine.
+    #[pyo3(signature = (queues, host=None))]
+    fn snapshot<'py>(
+        &self,
+        py: Python<'py>,
+        queues: Vec<String>,
+        host: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let _runtime = ensure_runtime();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut conn = state
+                .connect()
+                .await
+                .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+            let snapshot =
+                crate::admin::snapshot(&mut conn, &state.config, &queues, host.as_deref())
+                    .await
+                    .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+            serde_json::to_string(&snapshot)
+                .map_err(|error| PyRuntimeError::new_err(error.to_string()))
+        })
+    }
+}
+
 #[pyfunction]
 fn execution_snapshot() -> Vec<String> {
     crate::registry::lines()
@@ -328,6 +368,7 @@ pub fn simple_q_runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.setattr("__embedded__", false)?;
     module.add_class::<Config>()?;
     module.add_class::<Client>()?;
+    module.add_class::<Admin>()?;
     module.add_function(wrap_pyfunction!(execution_snapshot, module)?)?;
     Ok(())
 }

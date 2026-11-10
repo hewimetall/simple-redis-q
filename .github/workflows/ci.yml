@@ -70,8 +70,13 @@ jobs:
         env:
           PYO3_PYTHON: python3.12
 
+      - name: Snapshot tests
+        run: cargo test -p simple-q-runtime --test admin -- --test-threads=1
+        env:
+          PYO3_PYTHON: python3.12
+
       - name: Orphan-window tests
-        run: python3 -m pip install pytest prometheus_client && python3 -m pytest python/tests/test_orphan_integration.py -q
+        run: python3 -m pip install pytest prometheus_client && python3 -m pytest python/tests/test_orphan_integration.py python/tests/test_worker_info.py -q
         env:
           AGENT_WORKER_BIN: target/release/agent-worker
           REDIS_URL: redis://127.0.0.1:6379/15

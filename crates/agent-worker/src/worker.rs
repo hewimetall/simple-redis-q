@@ -16,6 +16,8 @@ use anyhow::Result;
 use apalis::prelude::*;
 use apalis_redis::RedisStorage;
 use simple_q_runtime::redis_api::ConnectionManager;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -39,6 +41,9 @@ pub struct Shared {
     pub worker_names: Arc<Mutex<Vec<(String, String)>>>,
     pub redis: ConnectionManager,
     pub config: Config,
+    /// Set before an orderly metadata delete so a heartbeat cannot recreate the hash.
+    pub stop_meta: Arc<watch::Sender<bool>>,
+    pub announces: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 
 impl Shared {
@@ -50,7 +55,28 @@ impl Shared {
     }
 
     /// Delete each metadata hash from an orderly exit. A failed delete is logged.
+    ///
+    /// The tasks-done heartbeat is stopped and joined first, so it cannot
+    /// recreate a hash this delete just removed.
     pub async fn delete_worker_metadata(&self) {
+        let _ = self.stop_meta.send(true);
+        let handles = std::mem::take(&mut *self.announces.lock().expect("announces"));
+        for handle in handles {
+            let _ = handle.await;
+        }
+        let done = self.completed.load(Ordering::Relaxed);
+        let mut conn = self.redis.clone();
+        if let Err(error) = simple_q_runtime::admin::note_child_tasks(
+            &mut conn,
+            &simple_q_runtime::ids::hostname(),
+            std::os::unix::process::parent_id(),
+            std::process::id(),
+            done,
+        )
+        .await
+        {
+            tracing::warn!(%error, "failed to record tasks_done on the supervisor");
+        }
         let noted = self.worker_names.lock().expect("worker names").clone();
         for (queue, name) in noted {
             let mut conn = self.redis.clone();
@@ -114,9 +140,14 @@ pub async fn run(queues: Vec<String>, concurrency: usize, shared: Shared) -> Res
         let pool = shared.pool.clone();
         let worker_name = worker_name(&queue);
         shared.note_worker(&queue, &worker_name);
+        let shared_for_event = shared.clone();
+        let queue_for_event = queue.clone();
 
         monitor = monitor.register(move |_| {
             let pool = pool.clone();
+            let shared_for_event = shared_for_event.clone();
+            let queue_for_event = queue_for_event.clone();
+            let announced = worker_name.clone();
             WorkerBuilder::new(worker_name.clone())
                 .backend(backend.clone())
                 .data(state.clone())
@@ -124,6 +155,22 @@ pub async fn run(queues: Vec<String>, concurrency: usize, shared: Shared) -> Res
                 .on_event(move |worker, event| {
                     if matches!(event, Event::Start) {
                         pool.remember(worker);
+                        let shared = shared_for_event.clone();
+                        let queue_name = queue_for_event.clone();
+                        let name = announced.clone();
+                        let stop = shared_for_event.stop_meta.subscribe();
+                        let handle = tokio::spawn(async move {
+                            if let Err(error) =
+                                announce_worker(shared, queue_name, name, stop).await
+                            {
+                                tracing::warn!(%error, "failed to write worker metadata");
+                            }
+                        });
+                        shared_for_event
+                            .announces
+                            .lock()
+                            .expect("announces")
+                            .push(handle);
                     }
                 })
                 .build(handle)
@@ -135,6 +182,68 @@ pub async fn run(queues: Vec<String>, concurrency: usize, shared: Shared) -> Res
         .await
         .map_err(|error| anyhow::anyhow!("worker monitor failed: {error}"))?;
     Ok(())
+}
+
+async fn announce_worker(
+    shared: Shared,
+    queue: String,
+    name: String,
+    mut stop: watch::Receiver<bool>,
+) -> Result<()> {
+    let ppid = std::os::unix::process::parent_id();
+    let slot = std::env::var("SIMPLE_Q_SLOT")
+        .ok()
+        .and_then(|raw| raw.parse().ok());
+    let mut conn = shared.redis.clone();
+    simple_q_runtime::admin::note_worker_start(
+        &mut conn,
+        &shared.config,
+        &queue,
+        &name,
+        ppid,
+        slot,
+        shared.max_tasks,
+    )
+    .await?;
+    let period = std::time::Duration::from_secs(shared.config.heartbeat_secs.max(1));
+    let mut tick = tokio::time::interval(period);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                if *stop.borrow() {
+                    return Ok(());
+                }
+                let done = shared.completed.load(Ordering::Relaxed);
+                if let Err(error) = simple_q_runtime::admin::note_tasks_done(
+                    &mut conn,
+                    &shared.config,
+                    &queue,
+                    &name,
+                    done,
+                )
+                .await
+                {
+                    tracing::warn!(%error, %name, "failed to write tasks_done");
+                }
+                if let Err(error) = simple_q_runtime::admin::note_child_tasks(
+                    &mut conn,
+                    &simple_q_runtime::ids::hostname(),
+                    std::os::unix::process::parent_id(),
+                    std::process::id(),
+                    done,
+                )
+                .await
+                {
+                    tracing::warn!(%error, %name, "failed to record tasks_done on the supervisor");
+                }
+                if *stop.borrow() {
+                    return Ok(());
+                }
+            }
+            _ = stop.changed() => return Ok(()),
+        }
+    }
 }
 
 async fn handle(

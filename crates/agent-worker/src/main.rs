@@ -89,6 +89,19 @@ fn main() -> anyhow::Result<()> {
             runtime::initialize();
             commands::metrics::run()
         }
+        Command::Info {
+            app,
+            factory,
+            all,
+            queue,
+            json,
+        } => {
+            init_log();
+            runtime::initialize();
+            let factory = cli::factory_enabled(factory);
+            let runtime = tokio::runtime::Runtime::new()?;
+            runtime.block_on(commands::info::run(app, factory, all, queue, json))
+        }
         Command::Worker {
             child: false,
             app,
@@ -102,7 +115,8 @@ fn main() -> anyhow::Result<()> {
         } => {
             init_log();
             runtime::initialize();
-            let settings = bridge::read_config(&app, factory)?;
+            let factory = cli::factory_enabled(factory);
+            let (url, settings) = bridge::read_client(&app, factory)?;
             let limits = match supervisor::load_child_memory_limits(
                 settings.child_memory_soft,
                 settings.child_memory_hard,
@@ -128,6 +142,8 @@ fn main() -> anyhow::Result<()> {
                 limits,
                 settings.memory_soft_ratio,
                 settings.memory_hard_ratio,
+                url,
+                settings,
             ))
         }
         Command::Worker {
@@ -138,7 +154,13 @@ fn main() -> anyhow::Result<()> {
             concurrency,
             max_tasks_per_process,
             ..
-        } => child::run_child(app, factory, queues, concurrency, max_tasks_per_process),
+        } => child::run_child(
+            app,
+            cli::factory_enabled(factory),
+            queues,
+            concurrency,
+            max_tasks_per_process,
+        ),
     }
 }
 

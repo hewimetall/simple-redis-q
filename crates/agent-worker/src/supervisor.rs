@@ -23,7 +23,14 @@ use tokio::process::{Child, Command};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 
+use simple_q_runtime::admin::{
+    ChildTrack, Counters, DrainCause, KillCause, SentSignal, SupervisorRecord, prune_finished,
+    publish_supervisor, supervisor_ttl_secs,
+};
+use simple_q_runtime::config::Config;
+use simple_q_runtime::ids::hostname;
 use simple_q_runtime::names::validate_queue;
+use simple_q_runtime::redis_api::{self, ConnectionManager};
 use simple_q_runtime::slots::{reset_slot_gauges, wipe_db_files};
 
 pub async fn run(
@@ -36,6 +43,8 @@ pub async fn run(
     limits: ChildMemoryLimits,
     memory_soft_ratio: f64,
     memory_hard_ratio: f64,
+    redis_url: String,
+    settings: Config,
 ) -> Result<()> {
     if processes == 0 {
         anyhow::bail!("--processes must be greater than zero");
@@ -62,7 +71,20 @@ pub async fn run(
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
     let live = LivePids::default();
+    let roster = Roster::default();
     let mut pressure = Pressure::default();
+    spawn_supervisor_heartbeat(
+        redis_url,
+        settings,
+        hostname(),
+        std::process::id(),
+        queues.clone(),
+        processes,
+        concurrency as u64,
+        max_tasks,
+        limits,
+        roster.clone(),
+    );
 
     let mut slots = tokio::task::JoinSet::new();
     for index in 0..processes {
@@ -72,6 +94,7 @@ pub async fn run(
         let shutdown_tx = shutdown_tx.clone();
         let prom_dir = prom_dir.clone();
         let live = live.clone();
+        let roster = roster.clone();
         slots.spawn(async move {
             supervise_slot(
                 index,
@@ -84,6 +107,7 @@ pub async fn run(
                 shutdown_tx,
                 prom_dir,
                 live,
+                roster,
             )
             .await
         });
@@ -100,6 +124,7 @@ pub async fn run(
                 memory_soft_ratio,
                 memory_hard_ratio,
                 &memory_metrics,
+                &roster,
             );
             }
             _ = terminate.recv() => {
@@ -156,6 +181,7 @@ async fn supervise_slot(
     shutdown_tx: watch::Sender<bool>,
     prom_dir: std::path::PathBuf,
     live: LivePids,
+    roster: Roster,
 ) -> Result<()> {
     let mut backoff = Duration::from_secs(1);
 
@@ -176,23 +202,33 @@ async fn supervise_slot(
         )?;
         let pid = child.id().context("child process has no pid")?;
         tracing::info!(index, pid, "worker process started");
+        roster.start(index, pid);
 
         let status = {
             let _registered = LiveGuard::insert(live.clone(), index, pid);
             tokio::select! {
                 changed = shutdown.changed() => {
                     changed.context("shutdown watch closed")?;
-                    request_drain(pid);
-                    let _ = child.wait().await;
+                    if request_drain(pid) {
+                        roster.signal(pid, SentSignal::Usr1(DrainCause::Shutdown));
+                    }
+                    if let Ok(status) = child.wait().await {
+                        let (code, term) = exit_parts(&status);
+                        roster.finish(pid, code, term);
+                    }
                     return Ok(());
                 }
                 status = child.wait() => status,
             }
         };
+        let code = status.context("failed to wait for the worker process")?;
+        let (exit_code, term_signal) = exit_parts(&code);
+        // Shutdown can win the race with this wait. Record the exit before
+        // returning, or the roster keeps the child as running.
+        roster.finish(pid, exit_code, term_signal);
         if *shutdown.borrow() {
             return Ok(());
         }
-        let code = status.context("failed to wait for the worker process")?;
         match classify_child_exit(code.success(), code.code()) {
             ChildExit::Recycle => {
                 tracing::info!(index, pid, "worker process recycled");
@@ -253,11 +289,7 @@ fn spawn_child(
 ) -> Result<Child> {
     let executable = std::env::current_exe().context("failed to resolve the worker executable")?;
     let mut command = Command::new(executable);
-    command
-        .arg("worker")
-        .arg("--child")
-        .arg("--app")
-        .arg(app);
+    command.arg("worker").arg("--child").arg("--app").arg(app);
     if factory {
         command.arg("--factory");
     }
@@ -319,8 +351,8 @@ fn note_shutdown_join(
     }
 }
 
-fn request_drain(pid: u32) {
-    let _ = signal_child(pid, libc::SIGUSR1);
+fn request_drain(pid: u32) -> bool {
+    signal_child(pid, libc::SIGUSR1)
 }
 
 fn signal_child(pid: u32, signal: i32) -> bool {
@@ -760,6 +792,7 @@ fn apply_memory_pressure(
     memory_soft_ratio: f64,
     memory_hard_ratio: f64,
     metrics: &ChildMemoryMetrics,
+    roster: &Roster,
 ) {
     let pids: Vec<u32> = live.lock().expect("live pids").values().copied().collect();
     pressure.drained.retain(|pid| pids.contains(pid));
@@ -768,6 +801,9 @@ fn apply_memory_pressure(
         .copied()
         .filter_map(|pid| resident_bytes(pid).map(|rss| (pid, rss)))
         .collect();
+    for (pid, rss) in &children {
+        roster.set_rss(*pid, *rss);
+    }
 
     let mut killed = Vec::new();
     for (pid, action) in byte_limit_targets(&children, limits.soft, limits.hard) {
@@ -777,6 +813,7 @@ fn apply_memory_pressure(
                 tracing::error!(reason = "memory hard", pid, rss, "killing child");
                 if signal_child(pid, libc::SIGKILL) {
                     metrics.record_kill();
+                    roster.signal(pid, SentSignal::Kill(KillCause::MemoryHard));
                 }
                 killed.push(pid);
             }
@@ -785,6 +822,7 @@ fn apply_memory_pressure(
                     tracing::warn!(reason = "memory soft", pid, rss, "draining child");
                     if signal_child(pid, libc::SIGUSR1) {
                         metrics.record_drain();
+                        roster.signal(pid, SentSignal::Usr1(DrainCause::MemorySoft));
                     }
                 }
             }
@@ -806,6 +844,7 @@ fn apply_memory_pressure(
                 usage,
                 limit,
                 metrics,
+                roster,
             );
         }
         MemoryAction::Kill => {
@@ -825,6 +864,7 @@ fn apply_memory_pressure(
                 );
                 if signal_child(pid, libc::SIGKILL) {
                     metrics.record_kill();
+                    roster.signal(pid, SentSignal::Kill(KillCause::MemoryRatio));
                 }
             } else {
                 drain_one_for_ratio(
@@ -835,6 +875,7 @@ fn apply_memory_pressure(
                     usage,
                     limit,
                     metrics,
+                    roster,
                 );
             }
         }
@@ -854,6 +895,7 @@ fn drain_one_for_ratio(
     usage: u64,
     limit: u64,
     metrics: &ChildMemoryMetrics,
+    roster: &Roster,
 ) {
     let mut skip: Vec<u32> = pressure.drained.iter().copied().collect();
     skip.extend_from_slice(killed);
@@ -880,7 +922,182 @@ fn drain_one_for_ratio(
     }
     if signal_child(pid, libc::SIGUSR1) {
         metrics.record_drain();
+        roster.signal(pid, SentSignal::Usr1(DrainCause::MemoryRatio));
     }
+}
+
+fn exit_parts(status: &std::process::ExitStatus) -> (Option<i32>, Option<i32>) {
+    use std::os::unix::process::ExitStatusExt;
+    if let Some(signal) = status.signal() {
+        (None, Some(signal))
+    } else {
+        (status.code(), None)
+    }
+}
+
+#[derive(Clone, Default)]
+struct Roster {
+    inner: Arc<Mutex<RosterInner>>,
+}
+
+#[derive(Default)]
+struct RosterInner {
+    children: HashMap<u32, ChildTrack>,
+    counters: Counters,
+}
+
+impl Roster {
+    fn start(&self, slot: u32, pid: u32) {
+        let mut inner = self.inner.lock().expect("roster");
+        inner
+            .children
+            .entry(pid)
+            .or_insert_with(|| ChildTrack::start(slot));
+    }
+
+    fn signal(&self, pid: u32, signal: SentSignal) {
+        let mut inner = self.inner.lock().expect("roster");
+        let Some(mut child) = inner.children.get(&pid).copied() else {
+            return;
+        };
+        child.apply_signal(signal, &mut inner.counters);
+        inner.children.insert(pid, child);
+    }
+
+    fn finish(&self, pid: u32, code: Option<i32>, term: Option<i32>) {
+        let mut inner = self.inner.lock().expect("roster");
+        let Some(mut child) = inner.children.get(&pid).copied() else {
+            return;
+        };
+        // `ended_at` 0 means the exit is recorded and the next Redis `TIME`
+        // supplies the timestamp. A local clock here can land before `started_at`
+        // and make `prune_finished` drop the row on that same publish.
+        child.apply_exit(code, term, 0, &mut inner.counters);
+        inner.children.insert(pid, child);
+    }
+
+    fn set_rss(&self, pid: u32, rss: u64) {
+        if let Some(child) = self.inner.lock().expect("roster").children.get_mut(&pid) {
+            child.rss = Some(rss);
+        }
+    }
+
+    fn snapshot(
+        &self,
+        now: u64,
+        retain: u64,
+    ) -> (Vec<simple_q_runtime::admin::ChildRecord>, Counters) {
+        let mut inner = self.inner.lock().expect("roster");
+        for child in inner.children.values_mut() {
+            stamp_child_clocks(child, now);
+        }
+        let mut children: Vec<_> = inner
+            .children
+            .iter()
+            .map(|(pid, track)| {
+                let mut record = track.record();
+                record.pid = *pid;
+                record
+            })
+            .collect();
+        prune_finished(&mut children, now, retain);
+        let keep: HashSet<u32> = children.iter().map(|child| child.pid).collect();
+        inner.children.retain(|pid, _| keep.contains(pid));
+        (children, inner.counters)
+    }
+}
+
+fn stamp_child_clocks(child: &mut ChildTrack, now: u64) {
+    if child.started_at == 0 {
+        child.started_at = now;
+    }
+    if child.ended_at == Some(0) {
+        child.ended_at = Some(now);
+    }
+}
+
+fn spawn_supervisor_heartbeat(
+    redis_url: String,
+    settings: Config,
+    host: String,
+    pid: u32,
+    queues: Vec<String>,
+    processes: u32,
+    concurrency: u64,
+    max_tasks: u64,
+    limits: ChildMemoryLimits,
+    roster: Roster,
+) {
+    tokio::spawn(async move {
+        let period = Duration::from_secs(settings.heartbeat_secs.max(1));
+        let mut tick = tokio::time::interval(period);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut conn: Option<ConnectionManager> = None;
+        let mut started_at = 0u64;
+        let version = env!("CARGO_PKG_VERSION").to_owned();
+        loop {
+            tick.tick().await;
+            if conn.is_none() {
+                match redis_api::connect(&redis_url).await {
+                    Ok(connected) => conn = Some(connected),
+                    Err(error) => {
+                        tracing::warn!(%error, "supervisor redis connect failed");
+                        continue;
+                    }
+                }
+            }
+            let Some(connection) = conn.as_mut() else {
+                continue;
+            };
+            let now = match redis_seconds(connection).await {
+                Ok(now) => now,
+                Err(error) => {
+                    tracing::warn!(%error, "supervisor heartbeat failed");
+                    conn = None;
+                    continue;
+                }
+            };
+            if started_at == 0 {
+                started_at = now;
+            }
+            let (cgroup_current, cgroup_max) = match container_memory() {
+                Some((current, max)) => (Some(current), Some(max)),
+                None => (None, None),
+            };
+            let (children, counters) = roster.snapshot(now, supervisor_ttl_secs(&settings));
+            let record = SupervisorRecord {
+                host: host.clone(),
+                pid,
+                started_at,
+                version: version.clone(),
+                queues: queues.clone(),
+                processes,
+                concurrency,
+                max_tasks,
+                child_soft: limits.soft,
+                child_hard: limits.hard,
+                cgroup_current,
+                cgroup_max,
+                recycled: counters.recycled,
+                drains: counters.drains,
+                kills: counters.kills,
+                restarts: counters.restarts,
+                children,
+            };
+            if let Err(error) = publish_supervisor(connection, &settings, &record).await {
+                tracing::warn!(%error, "supervisor heartbeat failed");
+                conn = None;
+            }
+        }
+    });
+}
+
+async fn redis_seconds(conn: &mut ConnectionManager) -> Result<u64> {
+    let (secs, _micros): (u64, u64) = redis::cmd("TIME")
+        .query_async(conn)
+        .await
+        .context("failed to read Redis time")?;
+    Ok(secs)
 }
 
 fn rss_of(children: &[(u32, u64)], pid: u32) -> u64 {
@@ -894,6 +1111,22 @@ fn rss_of(children: &[(u32, u64)], pid: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_exit_before_the_first_heartbeat_shares_one_redis_clock() {
+        let mut child = ChildTrack::start(0);
+        let mut counters = Counters::default();
+        child.apply_exit(Some(0), None, 0, &mut counters);
+        let redis_now = 1_700_000_000;
+        stamp_child_clocks(&mut child, redis_now);
+        assert_eq!(child.started_at, redis_now);
+        assert_eq!(child.ended_at, Some(redis_now));
+        assert!(!simple_q_runtime::admin::finished_row_expired(
+            child.ended_at,
+            redis_now,
+            40
+        ));
+    }
 
     #[test]
     fn exit_code_3_is_fatal_and_other_codes_restart() {
@@ -988,8 +1221,9 @@ mod tests {
         let limits = load_child_memory_limits(Some(1), Some(2), Some("512K"), Some("1G")).unwrap();
         assert_eq!(limits.soft, Some(512 * 1024));
         assert_eq!(limits.hard, Some(1024 * 1024 * 1024));
-        let configured = load_child_memory_limits(Some(512 * 1024), Some(1024 * 1024 * 1024), None, None)
-            .unwrap();
+        let configured =
+            load_child_memory_limits(Some(512 * 1024), Some(1024 * 1024 * 1024), None, None)
+                .unwrap();
         assert_eq!(configured.soft, Some(512 * 1024));
         assert_eq!(configured.hard, Some(1024 * 1024 * 1024));
         assert!(load_child_memory_limits(Some(2_000), Some(1_000), None, None).is_err());

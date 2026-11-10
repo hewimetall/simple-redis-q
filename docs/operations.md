@@ -75,3 +75,25 @@ Open the board once as `/?token=...`. A matching token on `GET`, outside `/api/`
 Publishing the board port on a host interface still requires `BOARD_TOKEN`. The process inside a container listens on the container network, which is not the host's loopback, even when Docker publishes `127.0.0.1:8080:8080`.
 
 The board is a view of the Redis queue. It does not replace the Prometheus scrape on port 9191.
+
+## Reading `state` and `reason`
+
+`agent-worker info` and `QueueAdmin.snapshot` show each child the supervisor still remembers. `state` is `running`, `draining`, `exited`, or `killed`. `reason` is why the supervisor last touched that process.
+
+| `state` | `reason` | What happened |
+| --- | --- | --- |
+| `running` | empty | The child is up. The supervisor has not signaled it. |
+| `draining` | `memory_soft` | `SIGUSR1` because that process crossed its soft RSS limit. |
+| `draining` | `memory_ratio` | `SIGUSR1` because the container working set crossed the soft ratio, or the hard ratio when no child owned the usage. A child that does own it is `killed` / `memory_ratio` instead. |
+| `draining` | `shutdown` | `SIGUSR1` because the supervisor got `SIGTERM` or `SIGINT`. |
+| `draining` | `max_tasks` | The child row still says running, and `tasks_done` has reached `max_tasks`. The snapshot shows the drain before the process exits. |
+| `exited` | `max_tasks` | Exit 0 and the supervisor had not sent a signal. The child finished its task budget. |
+| `exited` | the drain reason | Exit 0 after the supervisor's `SIGUSR1`. A soft drain becomes `exited` / `memory_soft`. |
+| `killed` | `memory_hard` | This supervisor sent `SIGKILL` because the process crossed its hard RSS limit. |
+| `killed` | `memory_ratio` | This supervisor sent `SIGKILL` because the container crossed the hard ratio and that child owned the usage. |
+| `killed` | `ping_budget` | The child exited 2. The Python loop stayed silent past the ping budget. |
+| `killed` | `sigkill` | `SIGKILL` arrived and this supervisor did not send it. |
+| `killed` | `crash` | Any other exit code or signal. |
+| `killed` | empty | The metadata hash is still there, the worker heartbeat is stale, and no live supervisor record exists. The supervisor itself is gone, including when `memory.oom.group` kills the whole container. |
+
+`killed` with no reason is not `killed` / `memory_hard`. `memory_hard` means this supervisor recorded the signal it sent. An empty reason means there is no supervisor left to record one. A row that is `killed` and still lists a task is waiting for a live neighbor to requeue it.
