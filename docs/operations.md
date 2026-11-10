@@ -66,7 +66,7 @@ Each delivery opens a process span named `process {actor_name}`. A `traceparent`
 agent-worker admin
 ```
 
-The board reads Redis and does not start a worker. The Redis URL is the one the application passed to `Client`. The library does not read `REDIS_URL`. `QUEUE` selects the queue and defaults to `default`.
+The board reads Redis and does not start a worker. `agent-worker admin` reads `REDIS_URL` and does not load the application. `QUEUE` selects the queue and defaults to `default`.
 
 The listen address is `BOARD_ADDR`, default `127.0.0.1:8080`. `BOARD_TOKEN` is required on every address, including loopback. The token is at least 16 characters from `A-Z`, `a-z`, `0-9`, `.`, `_`, `~`, and `-`. `BOARD_INSECURE=1` omits the token only for a loopback address.
 

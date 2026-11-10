@@ -1,6 +1,6 @@
 # API
 
-These pages describe simple-q 1.0. The signatures below are the supported surface. `Config.from_env()` is the only environment read. An invalid value raises. There is no silent default.
+These pages describe simple-q 1.0. The signatures below are the supported surface. `Config.from_env()` reads `SIMPLE_Q_*` only. An invalid value raises. There is no silent default.
 
 ## `@actor`
 
@@ -167,26 +167,25 @@ class Config:
     dead_ttl_secs: int
     unique_ttl_secs: int
     max_deliveries: int
-    child_memory_soft: str | None
-    child_memory_hard: str | None
+    child_memory_soft: int | None
+    child_memory_hard: int | None
     memory_soft_ratio: float
     memory_hard_ratio: float
-    prom_host: str
-    prom_port: int
-    prom_db: str | None
 
     @classmethod
     def from_env(cls) -> "Config":
-        """Read the process environment once and return it.
+        """Read ``SIMPLE_Q_*`` once and return it.
 
-        This is the only environment read. An invalid value raises.
-        There is no silent default: a bad number, a zero where the
-        setting must be positive, or a ratio outside ``(0, 1)`` raises.
-        An omitted variable uses the default in the settings table.
+        An invalid value raises. There is no silent default: a bad
+        number, a zero where the setting must be positive, or a ratio
+        outside ``(0, 1)`` raises. An omitted variable uses the default
+        in the settings table. Scrape bind address, board address, and
+        ``REDIS_URL`` are not fields of this object.
+        ``child_memory_soft`` and ``child_memory_hard`` are bytes.
         """
 ```
 
-The Redis URL is an argument of `Client`. The library does not read `REDIS_URL`. Pass the same `Config` into that client. The worker uses the client on the `App`. `await client.worker_alive` uses this process's heartbeat window.
+The Redis URL is an argument of `Client`. `import simple_q` does not read `REDIS_URL`. The worker command uses the client on the `App`. `agent-worker enqueue` and `agent-worker admin` read `REDIS_URL`. `await client.worker_alive` uses this process's heartbeat window. A client that has not connected yet returns `False`.
 
 A future `Config(metrics_prefix=...)` is not implemented. `dramatiq_*` metric names and labels stay as they are through 1.0. See [Settings](settings.md).
 
@@ -206,8 +205,10 @@ class MemoryClient:
         """Run every queued message through ``app``.
 
         Messages sent by a handler are included. The unique key is
-        released after each message returns, including when the handler
-        raises. The call ends when the in-process queue is empty.
+        released when dispatch returns an outcome other than ``retry``,
+        and when dispatch raises. A ``retry`` outcome leaves the key
+        held and does not put the message back on the in-process queue.
+        The call ends when that queue is empty.
         """
 ```
 

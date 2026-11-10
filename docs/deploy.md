@@ -10,7 +10,7 @@ The worker command in every example is:
 agent-worker worker --app module:create_app --factory --queues default
 ```
 
-`module:app` is the same command without `--factory`, when the attribute is already an `App`. `--app` is required. The factory passes the Redis URL to `Client`. The library does not read `REDIS_URL`.
+`module:app` is the same command without `--factory`, when the attribute is already an `App`. `--app` is required. The factory passes the Redis URL to `Client`. The worker command does not read `REDIS_URL`. It connects with the URL on the `App`'s `Client`. `enqueue` and `admin` do read `REDIS_URL`.
 
 ## How OOM differs
 
