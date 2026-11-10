@@ -4,12 +4,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use pyo3::prelude::*;
-use pyo3::types::{PyCFunction, PyDict, PyList, PyTuple};
+use pyo3::types::{PyCFunction, PyDict, PyTuple};
 use pyo3_async_runtimes::TaskLocals;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
-use crate::job::Job;
-use crate::registry;
+use simple_q_runtime::job::Job;
+use simple_q_runtime::registry;
 
 static LOCALS: OnceLock<TaskLocals> = OnceLock::new();
 static APP: OnceLock<Py<PyAny>> = OnceLock::new();
@@ -60,35 +60,68 @@ pub fn load_controller<'py>(py: Python<'py>, app_path: &str) -> PyResult<Bound<'
         })?;
 
     let app = py.import(module_name)?.getattr(attribute)?;
-    if !app.is_instance_of::<crate::controller::Controller>() {
+    if app.getattr("dispatch").is_err() {
         return Err(pyo3::exceptions::PyTypeError::new_err(format!(
-            "{app_path} must be an instance of Controller"
+            "{app_path} must be a Registry with dispatch"
         )));
     }
     Ok(app)
 }
 
-pub async fn execute(queue: &str, job: &Job, task_id: &str) -> Result<Value> {
-    let execution_id = format!("agent-worker:{queue}:{task_id}:{}", job.task);
-    registry::insert(execution_id.clone(), job.task.clone(), queue.to_owned());
-    let result = execute_tracked(&execution_id, job).await;
+pub async fn call_hook(name: &str) -> Result<()> {
+    let locals = LOCALS.get().context("Python loop is not running")?;
+    let name = name.to_owned();
+    let awaitable: Py<PyAny> = Python::attach(|py| -> PyResult<Py<PyAny>> {
+        let app = APP
+            .get()
+            .context("registry is not loaded")
+            .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
+        let app = app.bind(py);
+        if app.getattr(&name).is_err() {
+            return Ok(py.None());
+        }
+        let coroutine = app.call_method0(name)?;
+        if coroutine.is_none() {
+            return Ok(py.None());
+        }
+        Ok(coroutine.unbind())
+    })?;
+    if Python::attach(|py| awaitable.bind(py).is_none()) {
+        return Ok(());
+    }
+    let future = Python::attach(|py| {
+        pyo3_async_runtimes::into_future_with_locals(locals, awaitable.into_bound(py))
+    })?;
+    future.await.context("registry hook failed")?;
+    Ok(())
+}
+
+pub async fn execute(job: &Job, task_id: &str, deliveries: u64) -> Result<Value> {
+    let execution_id = format!("agent-worker:{}:{task_id}:{}", job.queue, job.actor_name);
+    registry::insert(
+        execution_id.clone(),
+        job.actor_name.clone(),
+        job.queue.clone(),
+    );
+    let result = execute_tracked(&execution_id, job, deliveries).await;
     registry::remove(&execution_id);
     result
 }
 
-async fn execute_tracked(execution_id: &str, job: &Job) -> Result<Value> {
+async fn execute_tracked(execution_id: &str, job: &Job, deliveries: u64) -> Result<Value> {
     let locals = LOCALS.get().context("Python loop is not running")?;
     let execution_id = execution_id.to_owned();
-    let task = job.task.clone();
-    let payload = job.payload.clone();
+    let mut message = serde_json::to_value(job).context("message is not JSON")?;
+    message["deliveries"] = Value::from(deliveries);
+    let message_json = serde_json::to_string(&message).context("message is not JSON")?;
 
     let awaitable: Py<PyAny> = Python::attach(|py| -> PyResult<Py<PyAny>> {
         let app = APP
             .get()
-            .context("controller is not loaded")
+            .context("registry is not loaded")
             .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
-        let dict = json_to_dict(py, &payload)?;
-        let coroutine = app.bind(py).call_method1("execute", (task, dict))?;
+        let parsed = py.import("json")?.call_method1("loads", (message_json,))?;
+        let coroutine = app.bind(py).call_method1("dispatch", (parsed,))?;
         let tracked = py
             .import("simple_q.tracking")?
             .call_method1("tracked", (coroutine, execution_id))?;
@@ -180,62 +213,6 @@ fn cancel_named(py: Python<'_>, name: &str) -> PyResult<()> {
     Ok(())
 }
 
-fn json_to_dict<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyDict>> {
-    let object = match value {
-        Value::Object(entries) => entries,
-        _ => {
-            return Err(pyo3::exceptions::PyTypeError::new_err(
-                "task payload must be a JSON object",
-            ));
-        }
-    };
-    let dict = PyDict::new(py);
-    for (key, item) in object {
-        dict.set_item(key, json_to_py(py, item)?)?;
-    }
-    Ok(dict)
-}
-
-fn json_to_py<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
-    match value {
-        Value::Null => Ok(py.None().into_bound(py)),
-        Value::Bool(value) => Ok(pyo3::types::PyBool::new(py, *value).to_owned().into_any()),
-        Value::Number(value) => {
-            if let Some(value) = value.as_i64() {
-                Ok(value.into_pyobject(py)?.into_any())
-            } else if let Some(value) = value.as_u64() {
-                Ok(value.into_pyobject(py)?.into_any())
-            } else if let Some(value) = value.as_f64() {
-                Ok(value.into_pyobject(py)?.into_any())
-            } else {
-                Err(pyo3::exceptions::PyTypeError::new_err(
-                    "unsupported JSON number",
-                ))
-            }
-        }
-        Value::String(value) => Ok(value.into_pyobject(py)?.into_any()),
-        Value::Array(values) => {
-            let list = PyList::empty(py);
-            for value in values {
-                list.append(json_to_py(py, value)?)?;
-            }
-            Ok(list.into_any())
-        }
-        Value::Object(entries) => Ok(json_object_to_dict(py, entries)?.into_any()),
-    }
-}
-
-fn json_object_to_dict<'py>(
-    py: Python<'py>,
-    entries: &Map<String, Value>,
-) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new(py);
-    for (key, value) in entries {
-        dict.set_item(key, json_to_py(py, value)?)?;
-    }
-    Ok(dict)
-}
-
 fn py_to_json(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Value> {
     if value.is_none() {
         return Ok(Value::Null);
@@ -252,8 +229,4 @@ fn py_to_json(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Value> {
     serde_json::from_str(&encoded).map_err(|error| {
         pyo3::exceptions::PyValueError::new_err(format!("task result is not JSON: {error}"))
     })
-}
-
-pub fn snapshot_lines() -> Vec<String> {
-    registry::lines()
 }

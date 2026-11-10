@@ -6,9 +6,10 @@ use apalis::prelude::*;
 use apalis_redis::RedisStorage;
 
 use crate::bridge;
-use crate::job::Job;
-use crate::redis_api::{connection, queue_config};
-use crate::registry;
+use simple_q_runtime::ids::worker_name;
+use simple_q_runtime::job::Job;
+use simple_q_runtime::redis_api::{self, connection, queue_config};
+use simple_q_runtime::registry;
 
 #[derive(Clone)]
 pub struct Shared {
@@ -52,7 +53,6 @@ impl WorkerPool {
 
 #[derive(Clone)]
 struct QueueState {
-    queue: String,
     shared: Shared,
 }
 
@@ -62,11 +62,10 @@ pub async fn run(queues: Vec<String>, concurrency: usize, shared: Shared) -> Res
     for queue in queues {
         let backend = RedisStorage::<Job>::new(connection()?).with_config(queue_config(&queue)?);
         let state = QueueState {
-            queue: queue.clone(),
             shared: shared.clone(),
         };
         let pool = shared.pool.clone();
-        let worker_name = format!("agent-worker.{queue}.{}", std::process::id());
+        let worker_name = worker_name(&queue);
 
         monitor = monitor.register(move |_| {
             let pool = pool.clone();
@@ -103,7 +102,28 @@ async fn handle(
     }
 
     let task_id = task.task_id().to_owned();
-    let result = bridge::execute(&state.queue, &job, &task_id).await;
+    tracing::info!(
+        message_id = %job.message_id,
+        actor_name = %job.actor_name,
+        queue_name = %job.queue,
+        retries = job.retries,
+        "running actor"
+    );
+    let deliveries = match redis_api::incr_delivery(&job.message_id, job.retries).await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(
+                message_id = %job.message_id,
+                actor_name = %job.actor_name,
+                queue_name = %job.queue,
+                retries = job.retries,
+                error = %error,
+                "delivery count failed"
+            );
+            std::process::exit(2);
+        }
+    };
+    let result = bridge::execute(&job, &task_id, deliveries).await;
 
     let finished = state.shared.completed.fetch_add(1, Ordering::AcqRel) + 1;
     if finished >= state.shared.max_tasks {
@@ -117,12 +137,34 @@ async fn handle(
         );
     }
 
-    match result {
-        // apalis-redis 1.0.0 reschedules every Failed result while attempt < 25
-        // and ignores TaskBuilder::max_attempts. A finished Python error is
-        // dead-lettered as Killed so max_retries=0 is not turned into 25 retries.
-        // A process crash still leaves the message inflight for orphan redelivery.
-        Ok(value) => Ok(value),
-        Err(error) => Err(Box::new(AbortError::new(error))),
+    let value = match result {
+        Ok(value) => value,
+        Err(error) => return Err(Box::new(AbortError::new(error))),
+    };
+    match value.get("outcome").and_then(|item| item.as_str()) {
+        Some("retry") => {
+            let delay_ms = value.get("delay_ms").and_then(|item| item.as_u64()).unwrap_or(0);
+            let mut next = job.clone();
+            next.retries = next.retries.saturating_add(1);
+            if let Err(error) =
+                redis_api::enqueue_job(next, Some(std::time::Duration::from_millis(delay_ms))).await
+            {
+                tracing::error!(
+                    message_id = %job.message_id,
+                    actor_name = %job.actor_name,
+                    queue_name = %job.queue,
+                    retries = job.retries,
+                    error = %error,
+                    "retry enqueue failed; leaving the attempt inflight"
+                );
+                std::process::exit(2);
+            }
+            Ok(value)
+        }
+        Some("dead") => Err(Box::new(AbortError::new(anyhow::anyhow!(
+            "dead: {}",
+            value.get("reason").and_then(|item| item.as_str()).unwrap_or("dead")
+        )))),
+        _ => Ok(value),
     }
 }

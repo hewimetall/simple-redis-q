@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "agent-worker",
     version,
-    about = "Rust runtime for Python task controllers"
+    about = "Rust runtime for registered Python async tasks"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -34,13 +34,16 @@ pub enum Command {
     /// Serve the Apalis board. Loopback by default; other addresses require BOARD_TOKEN.
     Admin,
 
+    /// Serve the multiprocess metrics scrape on dramatiq_prom_host:dramatiq_prom_port.
+    Metrics,
+
     /// Enqueue one JSON payload. Fails immediately when Redis is unavailable.
     Enqueue {
-        /// Queue name. A lowercase word such as `control` or `fanout`.
+        /// Queue name. A lowercase word such as `default` or `quota`.
         #[arg(long)]
         queue: String,
 
-        /// Task name registered on the controller.
+        /// Actor name registered on the application.
         #[arg(long)]
         task: String,
 
@@ -51,12 +54,12 @@ pub enum Command {
 
     /// Run queue workers. Without `--child` this process only supervises children.
     Worker {
-        /// Python controller in module:attribute format.
+        /// Python registry in module:attribute format.
         #[arg(long, default_value = "simple_q.app:app")]
         app: String,
 
         /// Queues assigned to this process, comma-separated.
-        #[arg(long, value_delimiter = ',', default_value = "control")]
+        #[arg(long, value_delimiter = ',', default_value = "default")]
         queues: Vec<String>,
 
         /// Child processes. Ignored when `--child` is set.
@@ -64,7 +67,7 @@ pub enum Command {
         processes: u32,
 
         /// In-flight tasks per child process.
-        #[arg(long, default_value_t = 8)]
+        #[arg(long, default_value_t = 1)]
         concurrency: usize,
 
         /// Completed tasks after which a child drains and is replaced.

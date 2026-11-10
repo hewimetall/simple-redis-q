@@ -2,13 +2,6 @@ from __future__ import annotations
 
 import logging
 
-from simple_q_runtime import (
-    Controller as RuntimeController,
-    acquire_lock,
-    enqueue,
-    release_lock,
-)
-
 
 class Task:
     """One registered controller method. This is the facade, not an Apalis API."""
@@ -49,6 +42,8 @@ class Task:
         owner = None
         try:
             if self.lock_key is not None:
+                from simple_q_runtime import acquire_lock
+
                 owner = await acquire_lock(self.lock_key, self.lock_ttl)
                 if owner is None:
                     if self.skip_on_lock:
@@ -69,6 +64,8 @@ class Task:
         if owner is None or self.lock_key is None:
             return
         try:
+            from simple_q_runtime import release_lock
+
             await release_lock(self.lock_key, owner)
         except Exception:
             # The handler outcome is already decided. Renewal has stopped once
@@ -101,8 +98,23 @@ class BoundTask:
     async def send(self, **payload):
         import json
 
+        from simple_q.registry import build_message
+        from simple_q_runtime import enqueue, is_configured
+
+        if not is_configured():
+            raise RuntimeError("call simple_q.configure(redis_url=...) before send")
         queue = self.task.queue or self.controller.queue
-        await enqueue(queue, self.task.name, json.dumps(payload))
+        message = build_message(
+            actor_name=self.task.name,
+            queue=queue,
+            kwargs=payload,
+            headers={},
+            max_retries=self.task.max_retries,
+            lock_key=self.task.lock_key,
+            lock_ttl=self.task.lock_ttl,
+            skip_on_lock=self.task.skip_on_lock,
+        )
+        return await enqueue(json.dumps(message), None)
 
 
 def task(
@@ -119,14 +131,11 @@ def task(
     """Register a controller method.
 
     ``next`` and ``err`` are required. Pass ``None`` when the hook is absent.
-    ``max_retries`` other than 0 is rejected: apalis-redis 1.0.0 reschedules a
-    Failed result while ``attempt < 25`` and does not read ``max_attempts``.
+    ``max_retries`` is the number of extra attempts after the first failure.
     """
 
-    if max_retries != 0:
-        raise ValueError(
-            "only max_retries=0 is supported until the Redis backend honors max_attempts"
-        )
+    if max_retries < 0:
+        raise ValueError("max_retries must be zero or greater")
     if lock_ttl <= 0:
         raise ValueError("lock_ttl must be greater than zero")
     if lock_key is not None and (
@@ -152,16 +161,17 @@ def task(
     return decorate
 
 
-class Controller(RuntimeController):
-    """Controller connected to the embedded runtime.
+class Controller:
+    """Python controller facade.
 
     The queue on the class is the default. A task may override it.
+    The worker application is a ``Registry``; this class keeps the lock
+    boundary used by a local call.
     """
 
-    queue = "control"
+    queue = "default"
 
     def __init__(self):
-        super().__init__()
         tasks: dict[str, Task] = {}
         for cls in reversed(type(self).mro()):
             for name, value in vars(cls).items():

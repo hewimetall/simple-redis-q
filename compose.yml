@@ -31,7 +31,7 @@ services:
       - --app
       - simple_q.app:app
       - --queues
-      - control
+      - default
       - --processes
       - "1"
       - --concurrency
@@ -57,7 +57,7 @@ services:
     restart: unless-stopped
     environment:
       REDIS_URL: redis://redis:6379/0
-      QUEUE: control
+      QUEUE: default
       BOARD_ADDR: "0.0.0.0:8080"
       BOARD_TOKEN: ${BOARD_TOKEN:?set BOARD_TOKEN to at least 16 letters or digits before starting the board}
       RUST_LOG: info

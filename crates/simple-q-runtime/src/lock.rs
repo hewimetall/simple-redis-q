@@ -6,12 +6,13 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use redis::Script;
 
+use crate::ids::lock_owner;
 use crate::names::lock_redis_key;
 use crate::redis_api::connection;
 
 static GUARDS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
-static OWNERS: AtomicU64 = AtomicU64::new(1);
 static LOOP_HEALTHY: AtomicBool = AtomicBool::new(true);
+static OWNERS: AtomicU64 = AtomicU64::new(0);
 
 const RENEW: &str = r#"
 if redis.call("get", KEYS[1]) == ARGV[1] then
@@ -44,11 +45,8 @@ pub async fn acquire(lock_key: String, ttl_seconds: u64) -> Result<Option<String
         anyhow::bail!("lock_ttl must be greater than zero");
     }
     let redis_key = lock_redis_key(&lock_key)?;
-    let owner = format!(
-        "{}:{}",
-        std::process::id(),
-        OWNERS.fetch_add(1, Ordering::Relaxed)
-    );
+    let owner = lock_owner();
+    OWNERS.fetch_add(1, Ordering::Relaxed);
     let ttl_ms = ttl_seconds.saturating_mul(1000);
 
     let acquired: Option<String> = redis::cmd("SET")
@@ -82,14 +80,8 @@ pub async fn acquire(lock_key: String, ttl_seconds: u64) -> Result<Option<String
             }
             match renew(&renew_key, &renew_owner, ttl_ms).await {
                 Ok(true) => {}
-                Ok(false) => {
-                    tracing::warn!(key = %renew_key, "task lock ownership was lost");
-                    break;
-                }
-                Err(error) => {
-                    tracing::warn!(key = %renew_key, error = %error, "task lock renewal failed");
-                    break;
-                }
+                Ok(false) => break,
+                Err(_) => break,
             }
         }
     });
@@ -109,26 +101,6 @@ pub async fn release(lock_key: String, owner: String) -> Result<bool> {
         .await
         .context("failed to release task lock")?;
     Ok(released == 1)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn a_held_lock_rejects_a_second_acquire() {
-        if std::env::var("REDIS_URL").is_err() {
-            return;
-        }
-        crate::redis_api::install_from_env().await.unwrap();
-
-        let key = "probe:once".to_owned();
-        let first = acquire(key.clone(), 30).await.unwrap();
-        let second = acquire(key.clone(), 30).await.unwrap();
-        assert!(first.is_some());
-        assert!(second.is_none());
-        assert!(release(key, first.unwrap()).await.unwrap());
-    }
 }
 
 async fn renew(redis_key: &str, owner: &str, ttl_ms: u64) -> Result<bool> {

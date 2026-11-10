@@ -22,15 +22,17 @@ RUN pip install --no-cache-dir uv
 WORKDIR /build
 
 COPY Cargo.toml Cargo.lock pyproject.toml ./
-COPY src ./src
+COPY crates ./crates
 COPY python ./python
 
+# The binary links libpython. The wheel is an extension module and does not.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    uv tool run maturin build \
+    cargo build --release --locked -p agent-worker \
+    && uv tool run maturin build \
       --release \
       --locked \
-      --bindings bin \
+      --features extension-module \
       --compatibility linux \
       --out /wheels \
       -v
@@ -45,6 +47,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 COPY --from=builder /wheels /wheels
+COPY --from=builder /build/target/release/agent-worker /usr/local/bin/agent-worker
 
 RUN pip install --no-cache-dir /wheels/*.whl \
     && rm -rf /wheels \

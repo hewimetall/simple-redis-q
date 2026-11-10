@@ -16,7 +16,7 @@ use apalis_board::actix::{
 use apalis_redis::{Config, RedisStorage, connect};
 use serde_json::Value;
 
-const DEFAULT_QUEUE: &str = "control";
+const DEFAULT_QUEUE: &str = "default";
 const DEFAULT_BOARD_ADDR: &str = "127.0.0.1:8080";
 const TOKEN_NAME: &str = "board_token";
 
@@ -274,7 +274,7 @@ mod tests {
     async fn missing_token_cannot_push_a_task() {
         let response = call(
             Some("local-only-board-token".to_owned()),
-            actix_web::test::TestRequest::put().uri("/api/v1/queues/control/tasks"),
+            actix_web::test::TestRequest::put().uri("/api/v1/queues/default/tasks"),
         )
         .await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -285,7 +285,7 @@ mod tests {
         let response = call(
             Some("local-only-board-token".to_owned()),
             actix_web::test::TestRequest::put()
-                .uri("/api/v1/queues/control/tasks")
+                .uri("/api/v1/queues/default/tasks")
                 .insert_header((header::AUTHORIZATION, "Bearer local-only-board-token")),
         )
         .await;
@@ -311,7 +311,7 @@ mod tests {
         request: actix_web::test::TestRequest,
     ) -> ServiceResponse<impl MessageBody> {
         let service = actix_web::test::init_service(App::new().wrap(board_guard(token)).route(
-            "/api/v1/queues/control/tasks",
+            "/api/v1/queues/default/tasks",
             web::put().to(|| async { "queued" }),
         ))
         .await;

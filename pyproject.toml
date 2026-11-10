@@ -2,7 +2,7 @@
 name = "simple-q"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["prometheus_client>=0.21"]
 
 [build-system]
 requires = ["maturin>=1.8,<2"]
@@ -14,7 +14,8 @@ dev = [
 ]
 
 [tool.maturin]
-bindings = "bin"
+manifest-path = "crates/simple-q-runtime/Cargo.toml"
+features = ["extension-module"]
 python-source = "python"
 python-packages = ["simple_q"]
-module-name = "simple_q"
+module-name = "simple_q_runtime"

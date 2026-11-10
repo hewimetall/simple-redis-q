@@ -40,7 +40,7 @@ from simple_q.controller import Controller, task
 
 
 class App(Controller):
-    queue = "control"
+    queue = "default"
 
     @task(
         entrypoint=False,

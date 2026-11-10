@@ -4,7 +4,7 @@ use pyo3::types::PyDict;
 use tokio::runtime::Builder;
 
 use crate::bridge::load_controller;
-use crate::redis_api;
+use simple_q_runtime::redis_api;
 
 pub fn run(app_path: &str, task_name: &str, task_id: &str) -> Result<()> {
     if std::env::var("REDIS_URL").is_ok() {
