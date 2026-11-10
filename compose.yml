@@ -1,5 +1,6 @@
 services:
   redis:
+    # No password. Reachable Redis is the same trust boundary as enqueue.
     image: redis:8-alpine
     restart: unless-stopped
     command:
@@ -26,9 +27,20 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    command:
+      - worker
+      - --app
+      - simple_q.app:app
+      - --queues
+      - default
+      - --processes
+      - "1"
+      - --concurrency
+      - "2"
+      - --max-tasks-per-process
+      - "20"
     environment:
       REDIS_URL: redis://redis:6379/0
-      QUEUE: simple-q
       RUST_LOG: info
       RUST_BACKTRACE: "1"
     depends_on:
@@ -46,8 +58,9 @@ services:
     restart: unless-stopped
     environment:
       REDIS_URL: redis://redis:6379/0
-      QUEUE: simple-q
+      QUEUE: default
       BOARD_ADDR: "0.0.0.0:8080"
+      BOARD_TOKEN: ${BOARD_TOKEN:?set BOARD_TOKEN to at least 16 letters or digits before starting the board}
       RUST_LOG: info
       RUST_BACKTRACE: "1"
     depends_on:
