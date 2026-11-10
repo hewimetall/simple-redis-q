@@ -7,7 +7,7 @@ scope_element_id = "simple-q"
 context = '''
 The worker and the importable module already share one library. Splitting business logic, Redis, and the Python adapter into more crates would rename the same modules and add a wheel boundary.'''
 decision = '''
-simple-q-runtime stays one crate. job, names, and ping do not open Redis or call Python. redis_api, lock, cleanup, and slots are the server side. The python module and the agent-worker binary are the user side and depend inward. The map is docs/model.toml.'''
+simple-q-runtime stays one crate. job.decide buries a poison delivery before Python runs. Retry and timeout stay in Python, because they need the exception. The lock-key template stays in Python and is filled from kwargs at dispatch. redis_api, lock, cleanup, and slots are the server side. A second crate is not required. The test the_message_module_does_not_open_redis fails if job.rs imports redis, pyo3, tokio, or apalis.'''
 consequences = '''
-A new I/O dependency in job, names, or ping is a layering mistake. The JSON seam in the Python bridge stays until a native argument list replaces it. The long-form decision remains docs/adr/0001-minimal-rust-runtime-instead-of-dramatiq.md.'''
+A handler that holds the GIL is not entered again once the delivery count passes max_deliveries. The next child calls on_dead with reason poison and leaves the message dead. A new I/O import in job.rs fails the unit test. The JSON seam in the Python bridge stays. The long-form decision remains docs/adr/0001-minimal-rust-runtime-instead-of-dramatiq.md.'''
 path = "docs/adr/0002-layers-are-modules.toml"

@@ -290,9 +290,9 @@ Reconcile не вызывает бизнес-recovery и не меняет pipel
 
 ## 11. Длительное исполнение и ошибки
 
-80 минут допустимы как длительность задачи, если её собственный лимит это позволяет. Lease сообщения не равен лимиту исполнения. Лимит по умолчанию — 30 минут (`1_800_000` мс), как прежний глобальный timeout Dramatiq. Истечение отменяет coroutine и считается неудачной попыткой: при оставшихся повторах сообщение ставится снова, на последней попытке вызывается `on_dead` с причиной `timeout`. Обычное исключение на последней попытке тоже вызывает `on_dead`, с причиной `retries`. Незарегистрированный актор вызывает `on_dead` с причиной `unknown_actor`. Сообщение, которое не проходит `Job::validate`, вызывает `on_dead` с причиной `invalid`. `on_dead` также вызывается для poison: после `max_deliveries` доставок одного и того же attempt актор не запускается. Хук получает `actor_name`, `kwargs`, `reason`, `message_id` и `retries`.
+80 минут допустимы как длительность задачи, если её собственный лимит это позволяет. Lease сообщения не равен лимиту исполнения. Лимит по умолчанию — 30 минут (`1_800_000` мс), как прежний глобальный timeout Dramatiq. Истечение отменяет coroutine и считается неудачной попыткой: при оставшихся повторах сообщение ставится снова, на последней попытке вызывается `on_dead` с причиной `timeout`. Обычное исключение на последней попытке тоже вызывает `on_dead`, с причиной `retries`. Незарегистрированный актор вызывает `on_dead` с причиной `unknown_actor`. Сообщение, которое не проходит `Job::validate`, вызывает `on_dead` с причиной `invalid`. Poison решает Rust-функция `decide` после `INCR` и до `bridge::execute`: если счётчик доставок больше `max_deliveries`, сообщение хоронится, `on_dead` вызывается с причиной `poison`, и handler не стартует. Так зависший в native-коде или держащий GIL handler не получает следующую доставку. Повтор и timeout остаются в Python: им нужно исключение. Прямой `dispatch` и очередь в памяти по-прежнему хоронят poison сами, потому что до worker они не доходят. Хук получает `actor_name`, `kwargs`, `reason`, `message_id` и `retries`.
 
-`Registry.on_send` вызывается в задаче отправителя до перехода в Rust и может дописать заголовки, видя `contextvars` вызывающего кода. `Registry.around_dispatch` оборачивает handler вместе с решением retry или dead; к началу хука уже доступен `current_message()`. Шаблон `lock_key` вида `cache:calc:{project_name}` раскрывается из kwargs в момент dispatch. После подстановки ключ состоит только из латинских букв, цифр и знаков `:._-` и не начинается с `lock:`. `simple_q.enable_memory` подменяет постановку очередью в памяти, а `drain` прогоняет её через `dispatch` до опустошения, включая сообщения, отправленные из handler.
+`Registry.on_send` вызывается в задаче отправителя до перехода в Rust и может дописать заголовки, видя `contextvars` вызывающего кода. `Registry.around_dispatch` оборачивает handler вместе с решением retry или dead; к началу хука уже доступен `current_message()`. Шаблон `lock_key` вида `cache:calc:{project_name}` остаётся в Python и раскрывается из kwargs в момент dispatch. После подстановки ключ состоит только из латинских букв, цифр и знаков `:._-` и не начинается с `lock:`. `simple_q.enable_memory` подменяет постановку очередью в памяти, а `drain` прогоняет её через `dispatch` до опустошения, включая сообщения, отправленные из handler.
 
 Параметры heartbeat прототипа заданы явно, потому что `Default` у `apalis_redis::Config` ставит `missed_heartbeats = 10`, тогда как комментарий и serde-функция рядом задают 2:
 
@@ -419,13 +419,13 @@ Rust
 ├── main.rs            # команды; supervisor не инициализирует Python
 ├── supervisor.rs      # процессы, SIGTERM, перезапуск
 ├── child.rs           # CPython, ping, drain, код 2
-├── worker.rs          # Apalis + Redis, pause/stop
+├── worker.rs          # Apalis + Redis; poison до входа в Python
 ├── bridge.rs          # execute, реестр, ping, cancel
 crates/simple-q-runtime   # сообщение, очередь, lock, постановка; rlib и cdylib
 crates/agent-worker       # supervisor, child, bridge, доска, scrape
 
 Python
-├── simple_q/registry.py     # регистрация акторов, повтор, timeout, poison
+├── simple_q/registry.py     # регистрация акторов, повтор, timeout, шаблон lock_key
 ├── simple_q/metrics.py      # семь метрик Dramatiq
 ├── simple_q/controller.py   # локальный @task и lock
 └── simple_q/app.py          # демонстрационный реестр
@@ -526,7 +526,7 @@ Apalis и Redis backend — основа прототипа, не доказат
 - Нет прогона на производственном окне orphan в 60 секунд и нет прогона на 80 минут. Интеграционный тест CI сжимает окно (`SIMPLE_Q_HEARTBEAT_SECS=5`, `SIMPLE_Q_MISSED_HEARTBEATS=2`) и на Redis 7 и Redis 8 проверяет, что задача длиннее этого окна не выдаётся второму child, а score worker и `locked_at` растут.
 - Нет упаковки, в которой HTTP-процесс и worker вызывают один и тот же lock и один и тот же `enqueue`.
 - Нет сверки `/metrics`: имена, labels, типы и значения.
-- Не пройдены сценарии зависшего native-кода и закрытия цикла при отмене. SIGKILL child в середине handler покрыт тем же сжатым тестом: после окна счётчик доставок растёт, и при `SIMPLE_Q_MAX_DELIVERIES=1` один раз вызывается `on_dead` с причиной `poison`.
+- Не пройдены сценарии зависшего native-кода на производственном окне и закрытия цикла при отмене. Сжатый тест SIGKILL покрывает повторную выдачу: после окна счётчик доставок растёт, и при `SIMPLE_Q_MAX_DELIVERIES=1` Rust один раз вызывает `on_dead` с причиной `poison`, не входя в handler.
 
 Расширение runtime бизнес-правилами, чтобы обойти любой из этих пунктов, решением не является.
 
