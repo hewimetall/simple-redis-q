@@ -4,6 +4,14 @@ Rust supervisor and embedded CPython 3.12 runtime for registered Python async ta
 
 The binary is `agent-worker`. The importable Python package is `simple_q`. The Rust module, embedded in the worker and also built as a wheel, is `simple_q_runtime`.
 
+## Install
+
+```bash
+pip install simple-q-runtime
+```
+
+The wheel ships `simple_q` and the `simple_q_runtime` extension for a process that only enqueues work. `agent-worker` stays a separate binary. A `v*` tag builds CPython 3.12 wheels for Linux x86_64 and Linux aarch64 and publishes them; the steps are in [docs/dev/PUBLISH.md](docs/dev/PUBLISH.md).
+
 Importing `simple_q` does not open Redis. Call `simple_q.configure(redis_url=...)` after the process is the one that will send, including after a gunicorn fork. `send` before that call fails.
 
 Product queues are `default` and `quota`. The decision for replacing Dramatiq is recorded in [docs/adr/0001-minimal-rust-runtime-instead-of-dramatiq.md](docs/adr/0001-minimal-rust-runtime-instead-of-dramatiq.md).

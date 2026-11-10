@@ -24,7 +24,7 @@ wheels = [
 ]
 
 [[package]]
-name = "simple-q"
+name = "simple-q-runtime"
 version = "0.1.0"
 source = { editable = "." }
 
