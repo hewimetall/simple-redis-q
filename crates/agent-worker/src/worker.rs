@@ -103,6 +103,14 @@ async fn handle(
             error = %error,
             "rejected an invalid message"
         );
+        if let Err(hook_error) = bridge::note_dead(&job, "invalid").await {
+            tracing::warn!(
+                message_id = %job.message_id,
+                actor_name = %job.actor_name,
+                error = %hook_error,
+                "dead-letter hook failed for an invalid message"
+            );
+        }
         return Err(Box::new(AbortError::new(error)));
     }
 
@@ -154,7 +162,10 @@ async fn handle(
     };
     match value.get("outcome").and_then(|item| item.as_str()) {
         Some("retry") => {
-            let delay_ms = value.get("delay_ms").and_then(|item| item.as_u64()).unwrap_or(0);
+            let delay_ms = value
+                .get("delay_ms")
+                .and_then(|item| item.as_u64())
+                .unwrap_or(0);
             let mut next = job.clone();
             next.retries = next.retries.saturating_add(1);
             if let Err(error) =
@@ -175,7 +186,10 @@ async fn handle(
         }
         Some("dead") => Err(Box::new(AbortError::new(anyhow::anyhow!(
             "dead: {}",
-            value.get("reason").and_then(|item| item.as_str()).unwrap_or("dead")
+            value
+                .get("reason")
+                .and_then(|item| item.as_str())
+                .unwrap_or("dead")
         )))),
         _ => Ok(value),
     }

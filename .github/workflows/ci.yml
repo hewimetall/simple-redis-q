@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "cursor/**"
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Unit tests
+        run: |
+          python3 -m pip install pytest prometheus_client
+          python3 -m pytest python/tests/test_runtime_contract.py python/tests/test_lock_release.py -q
+          cargo test --workspace
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      redis7:
+        image: redis:7
+        ports:
+          - 6379:6379
+      redis8:
+        image: redis:8
+        ports:
+          - 6380:6379
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python headers
+        run: sudo apt-get update && sudo apt-get install -y python3.12-dev pkg-config libssl-dev redis-tools
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build agent-worker
+        run: cargo build -p agent-worker --release
+        env:
+          PYO3_PYTHON: python3.12
+
+      - name: Orphan-window tests
+        run: python3 -m pip install pytest prometheus_client && python3 -m pytest python/tests/test_orphan_integration.py -q
+        env:
+          AGENT_WORKER_BIN: target/release/agent-worker
+          REDIS_URL: redis://127.0.0.1:6379/15
+          REDIS_URL_8: redis://127.0.0.1:6380/15
+          PYTHONPATH: python
+
+  worker-wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build the runtime wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x86_64
+          args: --release --out dist -i python3.12
+          manylinux: auto
+
+      - name: Build and install the worker wheel
+        run: bash scripts/build-worker-wheel.sh linux/amd64

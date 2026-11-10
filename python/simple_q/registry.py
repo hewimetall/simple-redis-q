@@ -34,6 +34,7 @@ class Actor:
         lock_ttl: int,
         skip_on_lock: bool,
         max_deliveries: int,
+        registry: Registry | None = None,
     ):
         self.function = function
         self.name = name
@@ -46,6 +47,7 @@ class Actor:
         self.lock_ttl = lock_ttl
         self.skip_on_lock = skip_on_lock
         self.max_deliveries = max_deliveries
+        self.registry = registry
 
     async def send(self, **kwargs) -> str:
         return await self.send_with_options(kwargs=kwargs)
@@ -57,15 +59,15 @@ class Actor:
         delay: int | None = None,
         headers: dict | None = None,
     ) -> str:
-        from simple_q_runtime import enqueue, is_configured
-
-        if not is_configured():
-            raise RuntimeError("call simple_q.configure(redis_url=...) before send")
+        kwargs = dict(kwargs or {})
+        headers = dict(headers or {})
+        if self.registry is not None:
+            headers = self.registry.apply_on_send(self.name, kwargs, headers)
         payload = build_message(
             actor_name=self.name,
             queue=self.queue,
-            kwargs=kwargs or {},
-            headers=headers or {},
+            kwargs=kwargs,
+            headers=headers,
             max_retries=self.max_retries,
             time_limit_ms=self.time_limit,
             min_backoff_ms=self.min_backoff,
@@ -75,6 +77,15 @@ class Actor:
             lock_ttl=self.lock_ttl,
             skip_on_lock=self.skip_on_lock,
         )
+        from simple_q.memory import enabled, push
+
+        if enabled():
+            push(payload)
+            return payload["message_id"]
+        from simple_q_runtime import enqueue, is_configured
+
+        if not is_configured():
+            raise RuntimeError("call simple_q.configure(redis_url=...) before send")
         import json
 
         return await enqueue(json.dumps(payload), delay)
@@ -128,6 +139,8 @@ class Registry:
         self._on_start = []
         self._on_stop = []
         self._on_dead = []
+        self._on_send = []
+        self._around_dispatch = []
 
     def actor(
         self,
@@ -157,6 +170,7 @@ class Registry:
                 lock_ttl=lock_ttl,
                 skip_on_lock=skip_on_lock,
                 max_deliveries=max_deliveries,
+                registry=self,
             )
             self.actors[actor.name] = actor
             return actor
@@ -177,6 +191,40 @@ class Registry:
         self._on_dead.append(fn)
         return fn
 
+    def on_send(self, fn):
+        """Adjust headers before enqueue, on the caller's task.
+
+        The hook is synchronous and runs before the Rust boundary, so a
+        ``contextvars.ContextVar`` set by the caller is visible here.
+        Return the headers mapping to store on the message.
+        """
+
+        self._on_send.append(fn)
+        return fn
+
+    def around_dispatch(self, fn):
+        """Wrap handler execution, including retry and dead decisions.
+
+        ``fn`` is ``async fn(message, call_next)``. ``current_message()`` is
+        already bound when the hook starts.
+        """
+
+        self._around_dispatch.append(fn)
+        return fn
+
+    def apply_on_send(self, actor_name: str, kwargs: dict, headers: dict) -> dict:
+        current = dict(headers)
+        for hook in self._on_send:
+            updated = hook(actor_name, kwargs, current)
+            if updated is None:
+                continue
+            if not isinstance(updated, dict):
+                raise TypeError("on_send hook must return a headers dict")
+            current = dict(updated)
+        if any(not isinstance(key, str) or not isinstance(value, str) for key, value in current.items()):
+            raise TypeError("headers must be dict[str, str]")
+        return current
+
     async def startup(self) -> None:
         await self._run_hooks(self._on_start, "start")
 
@@ -188,34 +236,70 @@ class Registry:
         return await actor.function(**(payload or {}))
 
     async def dispatch(self, message: dict) -> dict:
-        actor_name = message["actor_name"]
+        actor_name = str(message.get("actor_name") or "")
         actor = self.actors.get(actor_name)
+        queue = message.get("queue") or (actor.queue if actor is not None else "default")
+        kwargs = message.get("kwargs") if isinstance(message.get("kwargs"), dict) else {}
+        current = CurrentMessage(
+            message_id=str(message.get("message_id") or ""),
+            retries=int(message.get("retries") or 0),
+            max_retries=int(message.get("max_retries", actor.max_retries if actor else 0)),
+            queue_name=str(queue),
+            actor_name=actor_name,
+            kwargs=dict(kwargs),
+            headers={
+                str(key): str(value) for key, value in (message.get("headers") or {}).items()
+            },
+        )
+        token = bind_message(current)
+        try:
+
+            async def call_next():
+                return await self._dispatch_bound(message, actor, current)
+
+            return await self._run_around(message, call_next)
+        finally:
+            reset_message(token)
+
+    async def note_dead(
+        self,
+        actor_name: str,
+        kwargs: dict,
+        reason: str,
+        message_id: str,
+        retries: int,
+    ) -> None:
+        """Record a dead-letter from the worker when Python dispatch did not run."""
+
+        await self._dead(actor_name, dict(kwargs or {}), reason, str(message_id), int(retries))
+
+    async def _dispatch_bound(self, message: dict, actor: Actor | None, current: CurrentMessage) -> dict:
+        actor_name = current.actor_name
         if actor is None:
-            raise KeyError(actor_name)
-        queue = message.get("queue") or actor.queue
-        message_id = message["message_id"]
+            await self._dead(
+                actor_name,
+                current.kwargs,
+                "unknown_actor",
+                current.message_id,
+                current.retries,
+            )
+            return {"outcome": "dead", "reason": "unknown_actor"}
+
+        queue = current.queue_name
+        message_id = current.message_id
         deliveries = int(message.get("deliveries") or 1)
         if deliveries > int(message.get("max_deliveries") or actor.max_deliveries):
-            await self._dead(actor_name, message.get("kwargs") or {}, "poison")
+            await self._dead(actor_name, current.kwargs, "poison", message_id, current.retries)
             reject(queue, actor_name)
             return {"outcome": "dead", "reason": "poison"}
 
         start_attempt(message_id, queue, actor_name)
-        current = CurrentMessage(
-            message_id=message_id,
-            retries=int(message.get("retries") or 0),
-            max_retries=int(message.get("max_retries", actor.max_retries)),
-            queue_name=queue,
-            actor_name=actor_name,
-            kwargs=dict(message.get("kwargs") or {}),
-            headers={str(key): str(value) for key, value in (message.get("headers") or {}).items()},
-        )
-        token = bind_message(current)
         owner = None
-        lock_key = message.get("lock_key") or actor.lock_key
+        lock_key = None
         error = None
         rejected = False
         try:
+            lock_key = resolve_lock_key(message.get("lock_key") or actor.lock_key, current.kwargs)
             if lock_key:
                 from simple_q_runtime import acquire_lock
 
@@ -231,13 +315,14 @@ class Registry:
                 error = caught
                 if current.retries >= current.max_retries:
                     rejected = True
-                    await self._dead(actor_name, current.kwargs, "timeout")
+                    await self._dead(actor_name, current.kwargs, "timeout", message_id, current.retries)
                     return {"outcome": "dead", "reason": "timeout"}
                 return await self._retry(message, actor, current)
             except Exception as caught:
                 error = caught
                 if current.retries >= current.max_retries:
                     rejected = True
+                    await self._dead(actor_name, current.kwargs, "retries", message_id, current.retries)
                     return {"outcome": "dead", "reason": "retries"}
                 return await self._retry(message, actor, current)
             else:
@@ -252,7 +337,12 @@ class Registry:
                 error=error is not None,
                 rejected=rejected,
             )
-            reset_message(token)
+
+    async def _run_around(self, message: dict, call_next):
+        chain = call_next
+        for hook in reversed(self._around_dispatch):
+            chain = _bind_around(hook, message, chain)
+        return await chain()
 
     async def _retry(self, message: dict, actor: Actor, current: CurrentMessage) -> dict:
         delay_ms = compute_backoff(
@@ -262,10 +352,17 @@ class Registry:
         )
         return {"outcome": "retry", "delay_ms": delay_ms}
 
-    async def _dead(self, actor_name: str, kwargs: dict, reason: str) -> None:
+    async def _dead(
+        self,
+        actor_name: str,
+        kwargs: dict,
+        reason: str,
+        message_id: str,
+        retries: int,
+    ) -> None:
         for hook in self._on_dead:
             try:
-                result = hook(actor_name, kwargs, reason)
+                result = hook(actor_name, kwargs, reason, message_id, retries)
                 if inspect.isawaitable(result):
                     await result
             except Exception:
@@ -288,6 +385,48 @@ async def _release(lock_key: str, owner: str) -> None:
         await release_lock(lock_key, owner)
     except Exception:
         log.warning("lock release failed for %s; the task result stands", lock_key, exc_info=True)
+
+
+class _FormatKwargs(dict):
+    def __missing__(self, key):
+        raise KeyError(key)
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        if isinstance(value, str):
+            return value
+        return str(value)
+
+
+def resolve_lock_key(template: str | None, kwargs: dict) -> str | None:
+    """Fill ``{field}`` placeholders in a lock key from the message kwargs."""
+
+    if not template:
+        return None
+    resolved = template
+    if "{" in template:
+        try:
+            resolved = template.format_map(_FormatKwargs(kwargs))
+        except KeyError as error:
+            missing = error.args[0]
+            raise KeyError(f"lock_key placeholder {missing} is missing from kwargs") from error
+    if (
+        not resolved
+        or resolved.startswith("lock:")
+        or any(character.isspace() for character in resolved)
+    ):
+        raise ValueError(f"lock_key {resolved!r} is not a usable server key")
+    return resolved
+
+
+def _bind_around(hook, message: dict, inner):
+    async def wrapped():
+        result = hook(message, inner)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    return wrapped
 
 
 def configure(redis_url: str) -> None:
