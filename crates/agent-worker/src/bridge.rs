@@ -113,23 +113,34 @@ pub async fn call_hook(name: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn execute(job: &Job, task_id: &str, deliveries: u64) -> Result<Value> {
+pub async fn execute(
+    job: &Job,
+    task_id: &str,
+    deliveries: u64,
+    worker_name: &str,
+) -> Result<Value> {
     let execution_id = format!("agent-worker:{}:{task_id}:{}", job.queue, job.actor_name);
     registry::insert(
         execution_id.clone(),
         job.actor_name.clone(),
         job.queue.clone(),
     );
-    let result = execute_tracked(&execution_id, job, deliveries).await;
+    let result = execute_tracked(&execution_id, job, deliveries, worker_name).await;
     registry::remove(&execution_id);
     result
 }
 
-async fn execute_tracked(execution_id: &str, job: &Job, deliveries: u64) -> Result<Value> {
+async fn execute_tracked(
+    execution_id: &str,
+    job: &Job,
+    deliveries: u64,
+    worker_name: &str,
+) -> Result<Value> {
     let locals = LOCALS.get().context("Python loop is not running")?;
     let execution_id = execution_id.to_owned();
     let mut message = serde_json::to_value(job).context("message is not JSON")?;
     message["deliveries"] = Value::from(deliveries);
+    message["worker_name"] = Value::String(worker_name.to_owned());
     let message_json = serde_json::to_string(&message).context("message is not JSON")?;
 
     let awaitable: Py<PyAny> = Python::attach(|py| -> PyResult<Py<PyAny>> {

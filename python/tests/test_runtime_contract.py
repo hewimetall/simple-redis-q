@@ -10,6 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from simple_q.backoff import compute_backoff
+from simple_q import worker_name
 from simple_q.message import current_message
 from simple_q.metrics import (
     DURATION_BUCKETS,
@@ -644,3 +645,51 @@ def test_lock_key_rejects_a_non_canonical_character():
         assert "not a usable server key" in str(error)
     else:
         raise AssertionError("a zero-width lock key was accepted")
+
+
+def test_current_message_carries_deliveries_and_the_worker_name():
+    assert worker_name() is None
+    registry = Registry()
+    seen = {}
+
+    @registry.actor(name="marked", queue="default", max_retries=0)
+    async def marked():
+        seen["name"] = worker_name()
+        seen["deliveries"] = current_message().deliveries
+        seen["field"] = current_message().worker_name
+
+    message = build_message(
+        actor_name="marked",
+        queue="default",
+        kwargs={},
+        headers={},
+        max_retries=0,
+        message_id="marked-1",
+    )
+    message["deliveries"] = 4
+    message["worker_name"] = "agent-worker.default.host.7.abcd"
+    result = asyncio.run(registry.dispatch(message))
+    assert result["outcome"] == "ok"
+    assert seen == {
+        "name": "agent-worker.default.host.7.abcd",
+        "deliveries": 4,
+        "field": "agent-worker.default.host.7.abcd",
+    }
+    assert worker_name() is None
+
+    @registry.actor(name="plain", queue="default", max_retries=0)
+    async def plain():
+        seen["plain_name"] = worker_name()
+        seen["plain_deliveries"] = current_message().deliveries
+
+    plain_message = build_message(
+        actor_name="plain",
+        queue="default",
+        kwargs={},
+        headers={},
+        max_retries=0,
+        message_id="plain-1",
+    )
+    asyncio.run(registry.dispatch(plain_message))
+    assert seen["plain_name"] is None
+    assert seen["plain_deliveries"] == 1

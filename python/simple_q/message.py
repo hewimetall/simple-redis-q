@@ -22,6 +22,8 @@ class CurrentMessage:
     actor_name: str
     kwargs: dict[str, Any]
     headers: dict[str, str]
+    deliveries: int = 1
+    worker_name: str = ""
 
     def asdict(self) -> dict[str, Any]:
         return {
@@ -32,11 +34,26 @@ class CurrentMessage:
             "actor_name": self.actor_name,
             "kwargs": self.kwargs,
             "headers": self.headers,
+            "deliveries": self.deliveries,
+            "worker_name": self.worker_name,
         }
 
 
 def current_message() -> CurrentMessage | None:
     return _CURRENT.get()
+
+
+def worker_name() -> str | None:
+    """Name of the worker process that is running the current handler.
+
+    Empty outside a handler. The name is the Apalis worker id, so a caller
+    can match a stream consumer to this process.
+    """
+
+    message = current_message()
+    if message is None or not message.worker_name:
+        return None
+    return message.worker_name
 
 
 def bind_message(message: CurrentMessage):
