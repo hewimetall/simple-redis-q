@@ -38,7 +38,7 @@ Restarting a child does not change poison. A delivery that already passed `max_d
 
 ## Memory
 
-The supervisor checks memory about once a second. It does not take messages and it does not call Redis.
+The supervisor checks memory about once a second. It does not take messages. The Redis record it publishes for `agent-worker info` is on the [architecture](architecture.md) page.
 
 ### Per-child RSS
 
