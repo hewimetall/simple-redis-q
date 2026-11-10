@@ -30,7 +30,7 @@ The process without the internal child flag only supervises. It forks one child 
 
 `--child` is internal. The supervisor starts the embedded interpreter only in that mode.
 
-The supervisor also starts the metrics scrape. The Redis URL is the one on the `App`'s `Client`. The library does not read `REDIS_URL`.
+The supervisor also starts the metrics scrape. The worker command does not read `REDIS_URL`. It connects with the URL on the `App`'s `Client`. `enqueue` and `admin` do read `REDIS_URL`.
 
 ## `admin`
 
@@ -38,7 +38,7 @@ The supervisor also starts the metrics scrape. The Redis URL is the one on the `
 agent-worker admin
 ```
 
-Serves the admin board. It does not run a worker. The Redis URL is the one the application passed to `Client`. `QUEUE` selects the queue and defaults to `default`. Details are on the [tracing and admin](operations.md) page.
+Serves the admin board. It does not run a worker and it does not load an `App`. The Redis URL is `REDIS_URL`. `QUEUE` selects the queue and defaults to `default`. Details are on the [tracing and admin](operations.md) page.
 
 ## `metrics`
 
@@ -54,7 +54,7 @@ Serves the multiprocess Prometheus scrape. The supervisor starts this itself for
 agent-worker enqueue --queue default --task recalc --payload '{"project_id": "42"}'
 ```
 
-Enqueue one JSON object. Fails immediately when Redis is unavailable. `--headers` is a JSON object of strings. `--max-retries` defaults to 0. Backoff defaults are 15000 ms and 7 days. The time limit stored on this path is 30 minutes. This command does not set a lock or a unique key. Application code should use `Client.send_with_options` for `unique_key="recalc:42"`.
+Enqueue one JSON object. The command reads `REDIS_URL` and `Config.from_env()`. It does not load an `App`. It fails immediately when Redis is unavailable. `--headers` is a JSON object of strings. `--max-retries` defaults to 0. Backoff defaults are 15000 ms and 7 days. The time limit stored on this path is 30 minutes. This command does not set a lock or a unique key. Application code should use `Client.send_with_options` for `unique_key="recalc:42"`.
 
 ## `execute`
 
