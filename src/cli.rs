@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "simple-q",
+    name = "agent-worker",
     version,
     about = "Rust runtime for Python task controllers"
 )]
@@ -33,4 +33,46 @@ pub enum Command {
 
     /// Serve the Apalis board admin UI over the Redis backend.
     Admin,
+
+    /// Enqueue one JSON payload. Fails immediately when Redis is unavailable.
+    Enqueue {
+        /// Queue name. A lowercase word such as `control` or `fanout`.
+        #[arg(long)]
+        queue: String,
+
+        /// Task name registered on the controller.
+        #[arg(long)]
+        task: String,
+
+        /// JSON object passed to the task.
+        #[arg(long, default_value = "{}")]
+        payload: String,
+    },
+
+    /// Run queue workers. Without `--child` this process only supervises children.
+    Worker {
+        /// Python controller in module:attribute format.
+        #[arg(long, default_value = "simple_q.app:app")]
+        app: String,
+
+        /// Queues assigned to this process, comma-separated.
+        #[arg(long, value_delimiter = ',', default_value = "control")]
+        queues: Vec<String>,
+
+        /// Child processes. Ignored when `--child` is set.
+        #[arg(long, default_value_t = 1)]
+        processes: u32,
+
+        /// In-flight tasks per child process.
+        #[arg(long, default_value_t = 8)]
+        concurrency: usize,
+
+        /// Completed tasks after which a child drains and is replaced.
+        #[arg(long, default_value_t = 500)]
+        max_tasks_per_process: u64,
+
+        /// Internal. The supervisor starts the embedded interpreter only in this mode.
+        #[arg(long, hide = true)]
+        child: bool,
+    },
 }

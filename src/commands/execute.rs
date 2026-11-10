@@ -1,11 +1,20 @@
 use anyhow::{Context, Result};
-use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use tokio::runtime::Builder;
 
-use crate::controller::Controller;
+use crate::bridge::load_controller;
+use crate::redis_api;
 
 pub fn run(app_path: &str, task_name: &str, task_id: &str) -> Result<()> {
+    if std::env::var("REDIS_URL").is_ok() {
+        let runtime = Builder::new_multi_thread().enable_all().build()?;
+        let runtime: &'static tokio::runtime::Runtime = Box::leak(Box::new(runtime));
+        pyo3_async_runtimes::tokio::init_with_runtime(runtime)
+            .map_err(|_| anyhow::anyhow!("Tokio runtime was already installed"))?;
+        runtime.block_on(redis_api::install_from_env())?;
+    }
+
     let result = Python::attach(|py| -> PyResult<()> {
         let app = load_controller(py, app_path)?;
 
@@ -27,21 +36,4 @@ pub fn run(app_path: &str, task_name: &str, task_id: &str) -> Result<()> {
             anyhow::anyhow!(error.to_string())
         })
         .context("Controller execution failed")
-}
-
-fn load_controller<'py>(py: Python<'py>, app_path: &str) -> PyResult<Bound<'py, PyAny>> {
-    let (module_name, attribute) = app_path
-        .split_once(':')
-        .filter(|(module, attribute)| !module.is_empty() && !attribute.is_empty())
-        .ok_or_else(|| PyValueError::new_err("Expected application path: module:attribute"))?;
-
-    let app = py.import(module_name)?.getattr(attribute)?;
-
-    if !app.is_instance_of::<Controller>() {
-        return Err(PyTypeError::new_err(format!(
-            "{app_path} must be an instance of Controller"
-        )));
-    }
-
-    Ok(app)
 }

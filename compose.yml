@@ -26,9 +26,20 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    command:
+      - worker
+      - --app
+      - simple_q.app:app
+      - --queues
+      - control
+      - --processes
+      - "1"
+      - --concurrency
+      - "2"
+      - --max-tasks-per-process
+      - "20"
     environment:
       REDIS_URL: redis://redis:6379/0
-      QUEUE: simple-q
       RUST_LOG: info
       RUST_BACKTRACE: "1"
     depends_on:
@@ -46,7 +57,7 @@ services:
     restart: unless-stopped
     environment:
       REDIS_URL: redis://redis:6379/0
-      QUEUE: simple-q
+      QUEUE: control
       BOARD_ADDR: "0.0.0.0:8080"
       RUST_LOG: info
       RUST_BACKTRACE: "1"

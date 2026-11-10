@@ -9,15 +9,13 @@ use apalis_board::actix::{
 use apalis_redis::{Config, RedisStorage, connect};
 use serde_json::Value;
 
-const DEFAULT_QUEUE: &str = "simple-q";
+const DEFAULT_QUEUE: &str = "control";
 
 /// Serve the Apalis board over Redis without starting a worker.
 pub async fn run() -> Result<()> {
-    let redis_url =
-        env::var("REDIS_URL").context("REDIS_URL is required for the admin board")?;
+    let redis_url = env::var("REDIS_URL").context("REDIS_URL is required for the admin board")?;
 
-    let board_addr =
-        env::var("BOARD_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_owned());
+    let board_addr = env::var("BOARD_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_owned());
 
     let queue = env::var("QUEUE").unwrap_or_else(|_| DEFAULT_QUEUE.to_owned());
 
@@ -27,8 +25,7 @@ pub async fn run() -> Result<()> {
         .await
         .context("Failed to connect to Redis")?;
 
-    let store = RedisStorage::<Value>::new(conn)
-        .with_config(Config::default().queue(&queue));
+    let store = RedisStorage::<Value>::new(conn).with_config(Config::default().queue(&queue));
 
     let server = HttpServer::new(move || {
         let api = <ApiBuilder<_> as RegisterRoute<RedisStorage<Value>, Value>>::register(
@@ -38,19 +35,14 @@ pub async fn run() -> Result<()> {
         )
         .build();
 
-        App::new()
-            .service(api)
-            .service(ServeUI::new())
+        App::new().service(api).service(ServeUI::new())
     })
     .bind(&board_addr)
     .with_context(|| format!("Failed to bind board on {board_addr}"))?;
 
     tracing::info!("Apalis board on http://{board_addr}");
 
-    server
-        .run()
-        .await
-        .context("Board server crashed")?;
+    server.run().await.context("Board server crashed")?;
 
     Ok(())
 }
