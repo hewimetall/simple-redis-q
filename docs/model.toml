@@ -14,7 +14,7 @@ id = "cgroup"
 workspace_id = "sidecar"
 kind = "external"
 name = "cgroup"
-description = "Container memory.current and memory.max."
+description = "Container memory.current, memory.stat, and memory.max."
 technology = "filesystem"
 
 [[elements]]
@@ -59,7 +59,7 @@ workspace_id = "sidecar"
 kind = "component"
 parent_id = "crate-worker"
 name = "Process"
-description = "Supervisor, one child, and the container memory watch."
+description = "Supervisor, one child, per-child RSS limits, and the container memory watch."
 technology = "rust"
 
 [[elements]]
@@ -206,7 +206,7 @@ workspace_id = "sidecar"
 kind = "code"
 parent_id = "cmp-process"
 name = "supervisor"
-description = "Forks children and watches container memory. Does not take messages."
+description = "Forks children, limits each child's RSS, and watches container memory. Does not take messages."
 technology = "module"
 
 [[elements]]
@@ -316,14 +316,14 @@ id = "sup-cgroup"
 workspace_id = "sidecar"
 from_id = "supervisor"
 to_id = "cgroup"
-description = "Reads memory.current and memory.max. No Redis."
+description = "Reads memory.current, inactive_file, and memory.max. No Redis."
 
 [[relationships]]
 id = "sup-child"
 workspace_id = "sidecar"
 from_id = "supervisor"
 to_id = "child"
-description = "Forks a child. Soft memory drains it. Hard memory SIGKILLs the largest child."
+description = "Forks a child. That child's RSS limit drains or kills that pid. The soft container ratio drains the largest child."
 
 [[relationships]]
 id = "tel-exp"

@@ -90,6 +90,20 @@ pub enum Command {
         #[arg(long, default_value_t = 500)]
         max_tasks_per_process: u64,
 
+        /// Soft RSS limit for one child, such as `512K`, `1500M`, or `1G`.
+        /// `K`, `M`, and `G` are powers of 1024. A bare number is bytes.
+        /// When this flag is omitted, `SIMPLE_Q_CHILD_MEMORY_SOFT` is used.
+        /// The flag wins when both are set.
+        #[arg(long)]
+        child_memory_soft: Option<String>,
+
+        /// Hard RSS limit for one child, such as `512K`, `1500M`, or `1G`.
+        /// `K`, `M`, and `G` are powers of 1024. A bare number is bytes.
+        /// When this flag is omitted, `SIMPLE_Q_CHILD_MEMORY_HARD` is used.
+        /// The flag wins when both are set.
+        #[arg(long)]
+        child_memory_hard: Option<String>,
+
         /// Internal. The supervisor starts the embedded interpreter only in this mode.
         #[arg(long, hide = true)]
         child: bool,
