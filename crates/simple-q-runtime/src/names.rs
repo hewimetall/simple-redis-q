@@ -95,10 +95,12 @@ pub fn lock_redis_key(lock_key: &str) -> Result<String> {
 }
 
 pub fn validate_lock_key(lock_key: &str) -> Result<()> {
-    if lock_key.is_empty()
-        || lock_key.starts_with(LOCK_PREFIX)
-        || lock_key.bytes().any(|byte| byte.is_ascii_whitespace())
-    {
+    let canonical = !lock_key.is_empty()
+        && !lock_key.starts_with(LOCK_PREFIX)
+        && lock_key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'.' | b'_' | b'-'));
+    if !canonical {
         bail!(
             "lock_key `{lock_key}` must be a non-empty server key such as `cache:discovery` without the `{LOCK_PREFIX}` prefix"
         );
@@ -129,6 +131,7 @@ mod tests {
         assert!(lock_redis_key("lock:cache:discovery").is_err());
         assert!(lock_redis_key("").is_err());
         assert!(lock_redis_key("cache discovery").is_err());
+        assert!(lock_redis_key("cache:acme\u{200b}").is_err());
     }
 
     #[test]

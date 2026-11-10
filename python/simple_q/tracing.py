@@ -9,6 +9,12 @@ from __future__ import annotations
 
 from typing import Any
 
+DEFAULT_TARGETS = {
+    "agent_worker": "info",
+    "simple_q_runtime": "info",
+    "apalis": "debug",
+}
+
 
 class Tracing:
     def __init__(
@@ -24,7 +30,9 @@ class Tracing:
     ):
         self.exporter = exporter
         self.resource = resource
-        self.targets = dict(targets or {})
+        # None uses the product crates. An explicit empty dict stays empty
+        # and the child rejects it, because an empty filter would export nothing.
+        self.targets = dict(DEFAULT_TARGETS if targets is None else targets)
         self.max_queue_size = max_queue_size
         self.max_export_batch_size = max_export_batch_size
         self.scheduled_delay_ms = scheduled_delay_ms

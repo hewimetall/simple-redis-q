@@ -616,3 +616,31 @@ def test_lock_key_template_rejects_a_missing_placeholder():
         assert "project_name" in str(error)
     else:
         raise AssertionError("missing lock_key placeholder was accepted")
+
+
+def test_lock_key_rejects_a_non_canonical_character():
+    from simple_q.registry import usable_lock_key
+
+    assert usable_lock_key("cache:calc:alpha")
+    assert not usable_lock_key("cache:acme\u200b")
+    registry = Registry()
+
+    @registry.actor(name="calc", queue="default", lock_key="cache:calc:{project_name}", max_retries=0)
+    async def calc(project_name: str):
+        return project_name
+
+    message = build_message(
+        actor_name="calc",
+        queue="default",
+        kwargs={"project_name": "acme\u200b"},
+        headers={},
+        max_retries=0,
+        lock_key="cache:calc:{project_name}",
+        message_id="lock-zwsp",
+    )
+    try:
+        asyncio.run(registry.dispatch(message))
+    except ValueError as error:
+        assert "not a usable server key" in str(error)
+    else:
+        raise AssertionError("a zero-width lock key was accepted")

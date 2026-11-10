@@ -96,12 +96,7 @@ pub async fn run(
     }
 
     while let Some(joined) = slots.join_next().await {
-        if let Ok(Err(error)) = joined {
-            tracing::warn!(%error, "worker slot stopped during supervisor shutdown");
-            if fatal.is_none() {
-                fatal = Some(error);
-            }
-        }
+        note_shutdown_join(joined, &mut fatal);
     }
     drop(metrics);
     match fatal {
@@ -247,6 +242,26 @@ fn spawn_metrics(prom_dir: &std::path::Path) -> Result<Child> {
         .context("failed to spawn the metrics process")
 }
 
+fn note_shutdown_join(
+    joined: Result<Result<()>, tokio::task::JoinError>,
+    fatal: &mut Option<anyhow::Error>,
+) {
+    let error = match joined {
+        Ok(Ok(())) => return,
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "worker slot stopped during supervisor shutdown");
+            error
+        }
+        Err(error) => {
+            tracing::error!(%error, "worker slot panicked during supervisor shutdown");
+            anyhow::anyhow!("supervisor slot panicked: {error}")
+        }
+    };
+    if fatal.is_none() {
+        *fatal = Some(error);
+    }
+}
+
 fn request_drain(pid: u32) {
     let result = unsafe { libc::kill(pid as i32, libc::SIGUSR1) };
     if result != 0 {
@@ -265,5 +280,17 @@ mod tests {
         assert_eq!(classify_child_exit(false, Some(1)), ChildExit::Restart);
         assert_eq!(classify_child_exit(false, Some(2)), ChildExit::Restart);
         assert_eq!(classify_child_exit(false, None), ChildExit::Restart);
+    }
+
+    #[tokio::test]
+    async fn a_panicked_slot_fails_supervisor_shutdown() {
+        let joined = tokio::spawn(async {
+            panic!("slot");
+        })
+        .await;
+        let mut fatal = None;
+        note_shutdown_join(joined, &mut fatal);
+        let error = fatal.expect("a panicked slot was treated as success");
+        assert!(error.to_string().contains("panicked"));
     }
 }

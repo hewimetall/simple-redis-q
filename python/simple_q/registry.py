@@ -416,13 +416,17 @@ def resolve_lock_key(template: str | None, kwargs: dict) -> str | None:
         except KeyError as error:
             missing = error.args[0]
             raise KeyError(f"lock_key placeholder {missing} is missing from kwargs") from error
-    if (
-        not resolved
-        or resolved.startswith("lock:")
-        or any(character.isspace() for character in resolved)
-    ):
+    if not usable_lock_key(resolved):
         raise ValueError(f"lock_key {resolved!r} is not a usable server key")
     return resolved
+
+
+def usable_lock_key(key: str) -> bool:
+    """A lock key is ASCII letters, digits, and ``:._-``, without a ``lock:`` prefix."""
+
+    if not key or key.startswith("lock:"):
+        return False
+    return all(character.isascii() and (character.isalnum() or character in ":._-") for character in key)
 
 
 def _bind_around(hook, message: dict, inner):

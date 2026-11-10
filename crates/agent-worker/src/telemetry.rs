@@ -118,6 +118,11 @@ pub fn fmt_env_filter() -> EnvFilter {
 }
 
 pub fn otel_targets(targets: &[(String, String)]) -> Result<Targets, TracingConfigError> {
+    if targets.is_empty() {
+        return Err(config(
+            "tracing targets must name at least one crate; an empty filter exports nothing",
+        ));
+    }
     let mut parsed = Targets::new();
     for (target, level) in targets {
         let level: LevelFilter = level.parse().map_err(|_| {
@@ -1029,6 +1034,20 @@ bad_exporter = NotCallable()
                 panic!("invalid target level was accepted");
             };
             assert!(error.to_string().contains("verbose"), "{error}");
+
+            let empty_targets = RawTracing {
+                exporter: bad_level.exporter.clone_ref(py),
+                resource: py.None(),
+                targets: Vec::new(),
+                max_queue_size: 8,
+                max_export_batch_size: 4,
+                scheduled_delay: Duration::from_millis(10),
+                export_timeout: Duration::from_millis(10),
+            };
+            let Err(error) = parse_tracing(py, &empty_targets) else {
+                panic!("empty targets were accepted");
+            };
+            assert!(error.to_string().contains("empty filter"), "{error}");
         });
     }
 
