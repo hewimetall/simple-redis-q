@@ -5,6 +5,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from simple_q.backoff import compute_backoff
@@ -22,6 +24,18 @@ from simple_q.metrics import (
     value,
 )
 from simple_q.registry import MESSAGE_VERSION, Registry, build_message
+
+
+@pytest.fixture(autouse=True)
+def _restore_embedded_runtime_module():
+    previous = sys.modules.get("simple_q_runtime")
+    try:
+        yield
+    finally:
+        if previous is None:
+            sys.modules.pop("simple_q_runtime", None)
+        else:
+            sys.modules["simple_q_runtime"] = previous
 
 
 def test_backoff_matches_dramatiq_1_18_ranges():
@@ -203,10 +217,14 @@ def test_retry_then_success_keeps_one_message_id_and_reports_retries():
     assert "actor_name" in seen[0][1] and "kwargs" in seen[0][1]
 
 
-def test_last_exception_is_dead_without_the_dead_hook():
+def test_last_exception_calls_on_dead_once():
     registry, _seen = _registry()
-    reasons = []
-    registry.on_dead(lambda actor, kwargs, reason: reasons.append(reason))
+    calls = []
+
+    def hook(actor, kwargs, reason, message_id, retries):
+        calls.append((actor, kwargs, reason, message_id, retries))
+
+    registry.on_dead(hook)
     message = build_message(
         actor_name="discover",
         queue="quota",
@@ -217,13 +235,17 @@ def test_last_exception_is_dead_without_the_dead_hook():
     )
     result = asyncio.run(registry.dispatch(message))
     assert result == {"outcome": "dead", "reason": "retries"}
-    assert reasons == []
+    assert calls == [("discover", {"value": "boom"}, "retries", "dead-1", 0)]
 
 
 def test_timeout_on_the_last_attempt_calls_on_dead():
     registry, _seen = _registry()
     reasons = []
-    registry.on_dead(lambda actor, kwargs, reason: reasons.append((actor, reason, kwargs)))
+    registry.on_dead(
+        lambda actor, kwargs, reason, message_id, retries: reasons.append(
+            (actor, reason, kwargs, message_id, retries)
+        )
+    )
     message = build_message(
         actor_name="discover",
         queue="default",
@@ -236,13 +258,17 @@ def test_timeout_on_the_last_attempt_calls_on_dead():
     result = asyncio.run(registry.dispatch(message))
     assert result["outcome"] == "dead"
     assert result["reason"] == "timeout"
-    assert reasons == [("discover", "timeout", {"value": "slow"})]
+    assert reasons == [("discover", "timeout", {"value": "slow"}, "slow-1", 0)]
 
 
 def test_poison_delivery_calls_on_dead_and_rejects():
     registry, seen = _registry()
     reasons = []
-    registry.on_dead(lambda actor, kwargs, reason: reasons.append(reason))
+    registry.on_dead(
+        lambda actor, kwargs, reason, message_id, retries: reasons.append(
+            (reason, message_id, retries)
+        )
+    )
     before = value("rejects", "quota", "discover")
     message = build_message(
         actor_name="discover",
@@ -256,7 +282,7 @@ def test_poison_delivery_calls_on_dead_and_rejects():
     message["deliveries"] = 3
     result = asyncio.run(registry.dispatch(message))
     assert result == {"outcome": "dead", "reason": "poison"}
-    assert reasons == ["poison"]
+    assert reasons == [("poison", "poison-1", 0)]
     assert seen == []
     assert value("rejects", "quota", "discover") == before + 1
 
@@ -298,7 +324,7 @@ def test_lock_skip_counts_as_a_processed_message_without_an_error():
 
 
 def test_release_failure_keeps_a_successful_result():
-    runtime = sys.modules["simple_q_runtime"]
+    runtime = types.ModuleType("simple_q_runtime")
 
     async def acquire_lock(key, ttl):
         return "owner-1"
@@ -308,6 +334,7 @@ def test_release_failure_keeps_a_successful_result():
 
     runtime.acquire_lock = acquire_lock
     runtime.release_lock = release_lock
+    sys.modules["simple_q_runtime"] = runtime
     registry = Registry()
 
     @registry.actor(name="gated", queue="default", lock_key="demo:gate")
@@ -369,3 +396,215 @@ def test_scrape_reaps_a_dead_slot_and_keeps_a_live_one():
         assert os.path.exists(live)
         assert not os.path.exists(dead)
         assert not os.path.exists(os.path.join(directory, "slot_9.pid"))
+
+
+def _dead_hook(calls):
+    def hook(actor, kwargs, reason, message_id, retries):
+        calls.append((actor, kwargs, reason, message_id, retries))
+
+    return hook
+
+
+def test_unknown_actor_calls_on_dead_once():
+    registry, _seen = _registry()
+    calls = []
+    registry.on_dead(_dead_hook(calls))
+    message = build_message(
+        actor_name="missing",
+        queue="quota",
+        kwargs={"value": 1},
+        headers={},
+        max_retries=0,
+        message_id="missing-1",
+        retries=2,
+    )
+    result = asyncio.run(registry.dispatch(message))
+    assert result == {"outcome": "dead", "reason": "unknown_actor"}
+    assert calls == [("missing", {"value": 1}, "unknown_actor", "missing-1", 2)]
+
+
+def test_invalid_message_hook_is_called_once():
+    registry = Registry()
+    calls = []
+    registry.on_dead(_dead_hook(calls))
+    asyncio.run(registry.note_dead("discover", {"value": 1}, "invalid", "bad-1", 0))
+    assert calls == [("discover", {"value": 1}, "invalid", "bad-1", 0)]
+
+
+def test_each_dead_reason_notifies_the_hook_once_per_event():
+    registry, _seen = _registry()
+    calls = []
+    registry.on_dead(_dead_hook(calls))
+
+    retry_message = build_message(
+        actor_name="discover",
+        queue="quota",
+        kwargs={"value": "boom"},
+        headers={},
+        max_retries=0,
+        message_id="once-retries",
+    )
+    timeout_message = build_message(
+        actor_name="discover",
+        queue="quota",
+        kwargs={"value": "slow"},
+        headers={},
+        max_retries=0,
+        time_limit_ms=20,
+        message_id="once-timeout",
+    )
+    poison_message = build_message(
+        actor_name="discover",
+        queue="quota",
+        kwargs={"value": "ok"},
+        headers={},
+        max_retries=0,
+        max_deliveries=1,
+        message_id="once-poison",
+    )
+    poison_message["deliveries"] = 2
+    unknown_message = build_message(
+        actor_name="missing",
+        queue="quota",
+        kwargs={},
+        headers={},
+        max_retries=0,
+        message_id="once-unknown",
+    )
+    asyncio.run(registry.dispatch(retry_message))
+    asyncio.run(registry.dispatch(timeout_message))
+    asyncio.run(registry.dispatch(poison_message))
+    asyncio.run(registry.dispatch(unknown_message))
+    asyncio.run(registry.note_dead("discover", {}, "invalid", "once-invalid", 4))
+    reasons = [call[2] for call in calls]
+    assert reasons == ["retries", "timeout", "poison", "unknown_actor", "invalid"]
+    assert len(calls) == len(set((call[2], call[3]) for call in calls))
+
+
+def test_traceparent_set_at_send_is_visible_in_the_handler():
+    import contextvars
+
+    from simple_q import disable_memory, drain, enable_memory
+
+    traceparent = contextvars.ContextVar("traceparent", default="")
+    registry = Registry()
+    seen = {}
+
+    def stamp(actor_name, kwargs, headers):
+        assert traceparent.get() == "00-from-caller"
+        updated = dict(headers)
+        updated["traceparent"] = traceparent.get()
+        return updated
+
+    async def around(message, call_next):
+        seen["around"] = current_message().headers["traceparent"]
+        return await call_next()
+
+    registry.on_send(stamp)
+    registry.around_dispatch(around)
+
+    @registry.actor(name="traced", queue="default", max_retries=0)
+    async def traced():
+        seen["handler"] = current_message().headers["traceparent"]
+        return "ok"
+
+    enable_memory()
+    try:
+        token = traceparent.set("00-from-caller")
+        try:
+            asyncio.run(traced.send())
+        finally:
+            traceparent.reset(token)
+        asyncio.run(drain("default", registry))
+    finally:
+        disable_memory()
+    assert seen == {"around": "00-from-caller", "handler": "00-from-caller"}
+
+
+def test_memory_drain_runs_messages_sent_by_a_handler():
+    from simple_q import disable_memory, drain, enable_memory
+
+    registry = Registry()
+    seen = []
+
+    @registry.actor(name="parent", queue="default", max_retries=0)
+    async def parent():
+        seen.append("parent")
+        await child.send(value=2)
+
+    @registry.actor(name="child", queue="default", max_retries=0)
+    async def child(value: int):
+        seen.append(value)
+
+    enable_memory()
+    try:
+        asyncio.run(parent.send())
+        asyncio.run(drain("default", registry))
+    finally:
+        disable_memory()
+    assert seen == ["parent", 2]
+
+
+def test_lock_key_template_is_filled_from_kwargs():
+    runtime = types.ModuleType("simple_q_runtime")
+    seen = {}
+
+    async def acquire_lock(key, ttl):
+        seen["key"] = key
+        return "owner"
+
+    async def release_lock(key, owner):
+        return True
+
+    runtime.acquire_lock = acquire_lock
+    runtime.release_lock = release_lock
+    previous = sys.modules.get("simple_q_runtime")
+    sys.modules["simple_q_runtime"] = runtime
+    try:
+        registry = Registry()
+
+        @registry.actor(name="calc", queue="default", lock_key="cache:calc:{project_name}", max_retries=0)
+        async def calc(project_name: str):
+            return project_name
+
+        message = build_message(
+            actor_name="calc",
+            queue="default",
+            kwargs={"project_name": "alpha"},
+            headers={},
+            max_retries=0,
+            lock_key="cache:calc:{project_name}",
+            message_id="lock-1",
+        )
+        result = asyncio.run(registry.dispatch(message))
+        assert result["outcome"] == "ok"
+        assert seen["key"] == "cache:calc:alpha"
+    finally:
+        if previous is None:
+            sys.modules.pop("simple_q_runtime", None)
+        else:
+            sys.modules["simple_q_runtime"] = previous
+
+
+def test_lock_key_template_rejects_a_missing_placeholder():
+    registry = Registry()
+
+    @registry.actor(name="calc", queue="default", lock_key="cache:calc:{project_name}", max_retries=0)
+    async def calc(project_name: str = "x"):
+        return project_name
+
+    message = build_message(
+        actor_name="calc",
+        queue="default",
+        kwargs={},
+        headers={},
+        max_retries=0,
+        lock_key="cache:calc:{project_name}",
+        message_id="lock-missing",
+    )
+    try:
+        asyncio.run(registry.dispatch(message))
+    except KeyError as error:
+        assert "project_name" in str(error)
+    else:
+        raise AssertionError("missing lock_key placeholder was accepted")

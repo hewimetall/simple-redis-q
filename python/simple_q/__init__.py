@@ -4,7 +4,16 @@ Importing this package does not open Redis and does not start a Tokio runtime.
 Call ``configure(redis_url=...)`` before ``send``.
 """
 
+from simple_q.memory import disable_memory, drain, enable_memory
 from simple_q.message import current_message
 from simple_q.registry import Registry, build_message, configure
 
-__all__ = ["Registry", "build_message", "configure", "current_message"]
+__all__ = [
+    "Registry",
+    "build_message",
+    "configure",
+    "current_message",
+    "disable_memory",
+    "drain",
+    "enable_memory",
+]

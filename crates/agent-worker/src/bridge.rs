@@ -196,6 +196,38 @@ pub fn note_retry(queue: &str, actor: &str) {
     }
 }
 
+pub async fn note_dead(job: &Job, reason: &str) -> Result<()> {
+    let locals = LOCALS.get().context("Python loop is not running")?;
+    let reason = reason.to_owned();
+    let actor_name = job.actor_name.clone();
+    let message_id = job.message_id.clone();
+    let retries = job.retries;
+    let kwargs = if job.kwargs.is_object() {
+        job.kwargs.clone()
+    } else {
+        Value::Object(Default::default())
+    };
+    let awaitable: Py<PyAny> = Python::attach(|py| -> PyResult<Py<PyAny>> {
+        let app = APP
+            .get()
+            .context("registry is not loaded")
+            .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
+        let payload = json_to_py(py, &kwargs)?;
+        let coroutine = app.bind(py).call_method1(
+            "note_dead",
+            (actor_name, payload, reason, message_id, retries),
+        )?;
+        Ok(coroutine.unbind())
+    })
+    .context("failed to build the dead-letter hook")?;
+    let future = Python::attach(|py| {
+        pyo3_async_runtimes::into_future_with_locals(locals, awaitable.into_bound(py))
+    })
+    .context("failed to schedule the dead-letter hook")?;
+    future.await.context("dead-letter hook failed")?;
+    Ok(())
+}
+
 pub fn request_cancel(execution_id: &str) {
     let execution_id = execution_id.to_owned();
     let _ = Python::attach(|py| -> PyResult<()> {
@@ -224,6 +256,41 @@ fn cancel_named(py: Python<'_>, name: &str) -> PyResult<()> {
         }
     }
     Ok(())
+}
+
+fn json_to_py<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
+    use pyo3::types::{PyBool, PyFloat, PyInt, PyList, PyString};
+
+    match value {
+        Value::Null => Ok(py.None().into_bound(py)),
+        Value::Bool(item) => Ok(PyBool::new(py, *item).to_owned().into_any()),
+        Value::Number(number) => {
+            if let Some(item) = number.as_i64() {
+                Ok(PyInt::new(py, item).into_any())
+            } else if let Some(item) = number.as_u64() {
+                Ok(PyInt::new(py, item).into_any())
+            } else if let Some(item) = number.as_f64() {
+                Ok(PyFloat::new(py, item).into_any())
+            } else {
+                Ok(PyString::new(py, &number.to_string()).into_any())
+            }
+        }
+        Value::String(item) => Ok(PyString::new(py, item).into_any()),
+        Value::Array(items) => {
+            let list = PyList::empty(py);
+            for item in items {
+                list.append(json_to_py(py, item)?)?;
+            }
+            Ok(list.into_any())
+        }
+        Value::Object(items) => {
+            let dict = PyDict::new(py);
+            for (key, item) in items {
+                dict.set_item(key, json_to_py(py, item)?)?;
+            }
+            Ok(dict.into_any())
+        }
+    }
 }
 
 fn py_to_json(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Value> {

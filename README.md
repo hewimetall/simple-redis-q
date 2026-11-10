@@ -13,3 +13,13 @@ Metrics keep the Dramatiq names and the accounting of the fixed Prometheus middl
 `agent-worker admin` listens on `127.0.0.1:8080` and requires `BOARD_TOKEN` (at least 16 letters or digits), including on loopback. `BOARD_INSECURE=1` omits the token only for a loopback address. Open the board once as `/?token=...`; the token is then kept in an HttpOnly cookie. The compose file publishes that port on the host loopback and still requires `BOARD_TOKEN`, because the process inside the container listens on the container network.
 
 Redis in compose has no password and is published on `127.0.0.1:6379`. Anyone who can reach it can put work on a queue. Set `requirepass` before sharing that port.
+
+## Install
+
+```bash
+uv add simple-q-runtime simple-q-worker
+```
+
+`simple-q-runtime` is the importable package (`import simple_q`). `simple-q-worker` installs the `agent-worker` binary into the virtualenv and depends on the same version of `simple-q-runtime`. The binary is placed at `.venv/bin/agent-worker`. CPython locates that environment from `pyvenv.cfg` one directory above the executable, so the installed package imports without `PYTHONPATH`.
+
+Wheels are Linux only, for x86_64 and aarch64. The extension wheel is a manylinux build. The binary wheel is built in `python:3.12-slim-bookworm` and tagged `manylinux_2_36`, because the binary links `libpython3.12.so.1.0`. Publish steps are in [docs/dev/PUBLISH.md](docs/dev/PUBLISH.md).

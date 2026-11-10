@@ -1,9 +1,12 @@
+use std::ffi::CString;
+use std::path::{Path, PathBuf};
+
 use pyo3::prelude::*;
 use simple_q_runtime::python::simple_q_runtime as embedded_runtime;
 
 pub fn initialize() {
     pyo3::append_to_inittab!(embedded_runtime);
-    Python::initialize();
+    init_interpreter();
     Python::attach(|py| {
         let module = py
             .import("simple_q_runtime")
@@ -20,4 +23,95 @@ pub fn initialize() {
             .setattr("__embedded__", true)
             .expect("mark the inittab module");
     });
+}
+
+fn init_interpreter() {
+    // PyO3's Python::initialize calls Py_InitializeEx, which does not point
+    // sys.executable at this binary. site.py only adds a virtualenv's
+    // site-packages when pyvenv.cfg sits next to that executable or one
+    // directory above it. Set the config path from the launch path when that
+    // file is present, and leave the default config alone otherwise so the
+    // shared libpython still finds the standard library.
+    let venv_executable = venv_executable();
+    unsafe {
+        if pyo3::ffi::Py_IsInitialized() != 0 {
+            return;
+        }
+        if let Some(executable) = venv_executable.as_deref() {
+            if init_from_executable(executable) {
+                return;
+            }
+        }
+        pyo3::ffi::Py_InitializeEx(0);
+        pyo3::ffi::PyEval_SaveThread();
+    }
+}
+
+fn init_from_executable(executable: &str) -> bool {
+    let Ok(executable) = CString::new(executable) else {
+        return false;
+    };
+    unsafe {
+        let mut config = std::mem::zeroed();
+        pyo3::ffi::PyConfig_InitPythonConfig(&mut config);
+        config.install_signal_handlers = 0;
+        let named = pyo3::ffi::PyConfig_SetBytesString(
+            &mut config,
+            &mut config.program_name,
+            executable.as_ptr(),
+        );
+        if pyo3::ffi::PyStatus_Exception(named) != 0 {
+            pyo3::ffi::PyConfig_Clear(&mut config);
+            return false;
+        }
+        let located = pyo3::ffi::PyConfig_SetBytesString(
+            &mut config,
+            &mut config.executable,
+            executable.as_ptr(),
+        );
+        if pyo3::ffi::PyStatus_Exception(located) != 0 {
+            pyo3::ffi::PyConfig_Clear(&mut config);
+            return false;
+        }
+        let status = pyo3::ffi::Py_InitializeFromConfig(&config);
+        pyo3::ffi::PyConfig_Clear(&mut config);
+        if pyo3::ffi::PyStatus_Exception(status) != 0 {
+            return false;
+        }
+        pyo3::ffi::PyEval_SaveThread();
+    }
+    true
+}
+
+fn venv_executable() -> Option<String> {
+    let mut candidates = Vec::new();
+    if let Some(argv0) = std::env::args().next() {
+        let path = PathBuf::from(&argv0);
+        if path.is_absolute() {
+            candidates.push(path);
+        } else if path.components().nth(1).is_some() {
+            if let Ok(cwd) = std::env::current_dir() {
+                candidates.push(cwd.join(path));
+            }
+        }
+    }
+    if let Ok(path) = std::env::current_exe() {
+        candidates.push(path);
+    }
+    candidates
+        .into_iter()
+        .find(|path| pyvenv_near(path))
+        .and_then(|path| path.into_os_string().into_string().ok())
+}
+
+fn pyvenv_near(executable: &Path) -> bool {
+    let Some(directory) = executable.parent() else {
+        return false;
+    };
+    if directory.join("pyvenv.cfg").is_file() {
+        return true;
+    }
+    directory
+        .parent()
+        .is_some_and(|parent| parent.join("pyvenv.cfg").is_file())
 }

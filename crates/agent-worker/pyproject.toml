@@ -1,0 +1,19 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "simple-q-worker"
+version = "0.1.1"
+description = "agent-worker supervisor binary for simple-q-runtime"
+requires-python = ">=3.12"
+dependencies = ["simple-q-runtime==0.1.1"]
+
+[project.urls]
+Homepage = "https://github.com/hewimetall/simple-redis-q"
+Repository = "https://github.com/hewimetall/simple-redis-q"
+Issues = "https://github.com/hewimetall/simple-redis-q/issues"
+
+[tool.maturin]
+bindings = "bin"
+manifest-path = "Cargo.toml"
