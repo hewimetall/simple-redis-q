@@ -106,13 +106,6 @@ pub fn validate_lock_key(lock_key: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn canonical_queue(queue: &str) -> &str {
-    queue
-        .strip_suffix(".DQ")
-        .or_else(|| queue.strip_suffix(".XQ"))
-        .unwrap_or(queue)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,9 +118,6 @@ mod tests {
         assert!(validate_queue("fan_out").is_err());
         assert!(validate_queue("simple-q").is_err());
         assert!(validate_queue("").is_err());
-        assert_eq!(canonical_queue("quota.DQ"), "quota");
-        assert_eq!(canonical_queue("default.XQ"), "default");
-        assert_eq!(canonical_queue("default"), "default");
     }
 
     #[test]

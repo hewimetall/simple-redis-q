@@ -6,8 +6,9 @@ use anyhow::Result;
 use tokio::runtime::Builder;
 use tokio::signal::unix::{SignalKind, signal};
 
+use simple_q_runtime::cleanup::sweep_queue;
 use simple_q_runtime::lock;
-use simple_q_runtime::names::ping_budget;
+use simple_q_runtime::names::{self, ping_budget};
 use simple_q_runtime::ping::PingWatch;
 use simple_q_runtime::redis_api;
 use simple_q_runtime::registry;
@@ -49,6 +50,31 @@ pub fn run_child(
         let terminate = signal(SignalKind::terminate())?;
         let user = signal(SignalKind::user_defined1())?;
         let lifecycle = lifecycle(shared.clone(), terminate, user);
+        let sweep_queues = queues.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(60));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_secs() as i64)
+                    .unwrap_or(0);
+                for queue in &sweep_queues {
+                    if let Err(error) = sweep_queue(
+                        queue,
+                        now,
+                        names::done_ttl_secs(),
+                        names::dead_ttl_secs(),
+                        names::SWEEP_BATCH,
+                    )
+                    .await
+                    {
+                        tracing::warn!(%error, %queue, "queue sweep failed");
+                    }
+                }
+            }
+        });
         let workers = run(queues, concurrency, shared);
 
         tokio::pin!(lifecycle);

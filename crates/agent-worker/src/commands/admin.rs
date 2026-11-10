@@ -15,8 +15,8 @@ use apalis_board::actix::{
 };
 use apalis_redis::{Config, RedisStorage, connect};
 use serde_json::Value;
+use simple_q_runtime::names::DEFAULT_QUEUE;
 
-const DEFAULT_QUEUE: &str = "default";
 const DEFAULT_BOARD_ADDR: &str = "127.0.0.1:8080";
 const TOKEN_NAME: &str = "board_token";
 

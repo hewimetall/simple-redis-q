@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::names::{self, MESSAGE_VERSION, validate_queue};
@@ -76,17 +76,6 @@ impl Job {
 
 pub fn new_message_id() -> String {
     Uuid::new_v4().to_string()
-}
-
-pub fn object_headers(headers: &Map<String, Value>) -> Result<BTreeMap<String, String>> {
-    let mut parsed = BTreeMap::new();
-    for (key, value) in headers {
-        let Some(text) = value.as_str() else {
-            bail!("header `{key}` must be a string");
-        };
-        parsed.insert(key.clone(), text.to_owned());
-    }
-    Ok(parsed)
 }
 
 #[cfg(test)]
