@@ -5,7 +5,9 @@
 //! Redis is the server side (`redis_api`). The handler sees a copy of the
 //! message, including the delivery count and this process's worker name.
 //! Retry stores the original job, so the sender's headers stay in Redis.
-//! The delivery key is deleted only after ack.
+//! The delivery key is deleted only after ack. The idempotency key is
+//! deleted only on a terminal outcome: ack, dead, or poison. A retry leaves
+//! it in place, and a crash before that outcome leaves it for the redelivery.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,6 +20,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::bridge;
 use crate::telemetry;
+use simple_q_runtime::cleanup::delete_worker_metadata;
 use simple_q_runtime::ids::worker_name;
 use simple_q_runtime::job::{Decision, Job, decide};
 use simple_q_runtime::redis_api::{self, connection, queue_config};
@@ -30,6 +33,32 @@ pub struct Shared {
     pub shutdown: Arc<AtomicBool>,
     pub pool: WorkerPool,
     pub max_tasks: u64,
+    /// `(queue, worker_name)` for each name passed to `WorkerBuilder::new`.
+    pub worker_names: Arc<Mutex<Vec<(String, String)>>>,
+}
+
+impl Shared {
+    fn note_worker(&self, queue: &str, worker_name: &str) {
+        self.worker_names
+            .lock()
+            .expect("worker names")
+            .push((queue.to_owned(), worker_name.to_owned()));
+    }
+
+    /// Delete each metadata hash from an orderly exit. A failed delete is logged.
+    pub async fn delete_worker_metadata(&self) {
+        let noted = self.worker_names.lock().expect("worker names").clone();
+        for (queue, name) in noted {
+            if let Err(error) = delete_worker_metadata(&queue, &name).await {
+                tracing::warn!(
+                    %error,
+                    %queue,
+                    %name,
+                    "failed to delete worker metadata"
+                );
+            }
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -78,6 +107,7 @@ pub async fn run(queues: Vec<String>, concurrency: usize, shared: Shared) -> Res
         };
         let pool = shared.pool.clone();
         let worker_name = worker_name(&queue);
+        shared.note_worker(&queue, &worker_name);
 
         monitor = monitor.register(move |_| {
             let pool = pool.clone();
@@ -144,7 +174,7 @@ async fn handle_job(
             error = %error,
             "rejected an invalid message"
         );
-        if let Err(hook_error) = bridge::note_dead(&job, "invalid").await {
+        if let Err(hook_error) = bridge::note_dead(&job, "invalid", None).await {
             tracing::warn!(
                 message_id = %job.message_id,
                 actor_name = %job.actor_name,
@@ -152,6 +182,7 @@ async fn handle_job(
                 "dead-letter hook failed for an invalid message"
             );
         }
+        release_unique_key(&job).await;
         return Err(Box::new(AbortError::new(error)));
     }
 
@@ -186,7 +217,7 @@ async fn handle_job(
             max_deliveries = job.max_deliveries,
             "burying a poison message before the handler"
         );
-        if let Err(hook_error) = bridge::note_dead(&job, "poison").await {
+        if let Err(hook_error) = bridge::note_dead(&job, "poison", None).await {
             tracing::warn!(
                 message_id = %job.message_id,
                 actor_name = %job.actor_name,
@@ -196,6 +227,7 @@ async fn handle_job(
         }
         bridge::note_reject(&job.queue, &job.actor_name);
         note_finished(&state);
+        release_unique_key(&job).await;
         return Err(Box::new(AbortError::new(anyhow::anyhow!("dead: poison"))));
     }
     tracing::info!(
@@ -212,7 +244,10 @@ async fn handle_job(
 
     let value = match result {
         Ok(value) => value,
-        Err(error) => return Err(Box::new(AbortError::new(error))),
+        Err(error) => {
+            release_unique_key(&job).await;
+            return Err(Box::new(AbortError::new(error)));
+        }
     };
     match value.get("outcome").and_then(|item| item.as_str()) {
         Some("retry") => {
@@ -239,17 +274,35 @@ async fn handle_job(
             release_acked(&job).await;
             Ok(value)
         }
-        Some("dead") => Err(Box::new(AbortError::new(anyhow::anyhow!(
-            "dead: {}",
-            value
-                .get("reason")
-                .and_then(|item| item.as_str())
-                .unwrap_or("dead")
-        )))),
+        Some("dead") => {
+            release_unique_key(&job).await;
+            Err(Box::new(AbortError::new(anyhow::anyhow!(
+                "dead: {}",
+                value
+                    .get("reason")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or("dead")
+            ))))
+        }
         _ => {
             release_acked(&job).await;
+            release_unique_key(&job).await;
             Ok(value)
         }
+    }
+}
+
+async fn release_unique_key(job: &Job) {
+    let Some(unique_key) = job.unique_key.as_deref().filter(|key| !key.is_empty()) else {
+        return;
+    };
+    if let Err(error) = redis_api::release_idempotency(&job.queue, unique_key).await {
+        tracing::warn!(
+            message_id = %job.message_id,
+            queue_name = %job.queue,
+            error = %error,
+            "failed to drop the idempotency key after a terminal outcome"
+        );
     }
 }
 

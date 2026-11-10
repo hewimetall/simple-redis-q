@@ -1,6 +1,9 @@
-//! Server side. Delete finished Redis records after their TTL.
+//! Server side. Delete finished Redis records after their TTL, and drop
+//! worker metadata hashes that no longer belong to a live worker.
 
-use anyhow::Result;
+use std::collections::BTreeSet;
+
+use anyhow::{Context, Result};
 use redis::aio::ConnectionManager;
 
 use crate::redis_api::connection;
@@ -15,7 +18,8 @@ pub fn should_delete(done_at: i64, now: i64, ttl_secs: u64) -> bool {
     done_at <= now.saturating_sub(ttl_secs as i64)
 }
 
-/// Delete expired done and dead records in SSCAN / HSCAN batches.
+/// Delete expired done and dead records in SSCAN batches, then drop worker
+/// metadata hashes whose names are no longer in `{queue}:workers`.
 ///
 /// Apalis `vacuum` reads a data hash with `HGETALL` and does not remove ids from
 /// the done and dead sets. This walk uses a cursor and removes the payload,
@@ -30,7 +34,83 @@ pub async fn sweep_queue(
     let mut conn = connection()?;
     let done = sweep_set(&mut conn, queue, "done", now, done_ttl_secs, batch).await?;
     let dead = sweep_set(&mut conn, queue, "dead", now, dead_ttl_secs, batch).await?;
+    sweep_orphan_metadata(&mut conn, queue, batch).await?;
     Ok(SweepStats { done, dead })
+}
+
+/// Drop `{queue}:workers:metadata:{worker_name}` after an orderly exit.
+///
+/// Apalis writes this hash with no TTL. Orphan requeue removes the name from
+/// the workers set and leaves the hash. The caller logs a failed delete.
+pub async fn delete_worker_metadata(queue: &str, worker_name: &str) -> Result<()> {
+    let key = worker_metadata_key(queue, worker_name);
+    let _: i64 = redis::cmd("DEL")
+        .arg(&key)
+        .query_async(&mut connection()?)
+        .await
+        .context("failed to delete worker metadata")?;
+    Ok(())
+}
+
+fn worker_metadata_key(queue: &str, worker_name: &str) -> String {
+    format!("{queue}:workers:metadata:{worker_name}")
+}
+
+/// A metadata hash is deleted when its worker name is absent from the workers set.
+fn should_delete_worker_metadata(worker_name: &str, members: &BTreeSet<&str>) -> bool {
+    !members.contains(worker_name)
+}
+
+async fn sweep_orphan_metadata(
+    conn: &mut ConnectionManager,
+    queue: &str,
+    batch: usize,
+) -> Result<()> {
+    // The board worker list is upstream.
+    let prefix = worker_metadata_key(queue, "");
+    let pattern = format!("{prefix}*");
+    let workers = format!("{queue}:workers");
+    let mut cursor = 0u64;
+    loop {
+        let (next, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(&pattern)
+            .arg("COUNT")
+            .arg(batch.max(1))
+            .query_async(conn)
+            .await
+            .context("failed to scan worker metadata")?;
+        for key in keys {
+            let Some(name) = key.strip_prefix(&prefix).filter(|name| !name.is_empty()) else {
+                continue;
+            };
+            let score: Option<String> = redis::cmd("ZSCORE")
+                .arg(&workers)
+                .arg(name)
+                .query_async(conn)
+                .await
+                .context("failed to score a worker")?;
+            // ZSCORE missing means the name is not a member. A score keeps the hash.
+            let members = if score.is_some() {
+                BTreeSet::from([name])
+            } else {
+                BTreeSet::new()
+            };
+            if should_delete_worker_metadata(name, &members) {
+                let _: i64 = redis::cmd("DEL")
+                    .arg(&key)
+                    .query_async(conn)
+                    .await
+                    .with_context(|| format!("failed to delete orphan worker metadata {key}"))?;
+            }
+        }
+        cursor = next;
+        if cursor == 0 {
+            break;
+        }
+    }
+    Ok(())
 }
 
 async fn sweep_set(
@@ -80,15 +160,6 @@ async fn sweep_set(
                 .await?;
             deleted += 1;
         }
-        // One data-hash page per set page, so a large hash is never read at once.
-        let _: (u64, Vec<String>) = redis::cmd("HSCAN")
-            .arg(&data)
-            .arg(0)
-            .arg("COUNT")
-            .arg(batch.max(1))
-            .query_async(conn)
-            .await
-            .unwrap_or((0, Vec::new()));
         cursor = next;
         if cursor == 0 {
             break;
@@ -110,5 +181,18 @@ mod tests {
         assert!(!should_delete(now - day as i64 + 1, now, day));
         assert!(!should_delete(now - day as i64, now, week));
         assert!(should_delete(now - week as i64, now, week));
+    }
+
+    #[test]
+    fn metadata_absent_from_the_member_set_is_deleted_and_a_present_member_is_kept() {
+        let members = BTreeSet::from(["agent-worker.default.host.1.live"]);
+        assert!(should_delete_worker_metadata(
+            "agent-worker.default.host.1.gone",
+            &members
+        ));
+        assert!(!should_delete_worker_metadata(
+            "agent-worker.default.host.1.live",
+            &members
+        ));
     }
 }

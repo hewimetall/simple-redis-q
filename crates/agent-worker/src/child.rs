@@ -4,8 +4,8 @@
 //! the subscriber exists, then start workers. On a normal return, flush the
 //! exporter and only then call `shutdown` in Python. Exit 2 does not flush.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -64,6 +64,7 @@ pub fn run_child(
             shutdown: Arc::new(AtomicBool::new(false)),
             pool: WorkerPool::default(),
             max_tasks,
+            worker_names: Arc::new(Mutex::new(Vec::new())),
         };
 
         let terminate = signal(SignalKind::terminate())?;
@@ -94,7 +95,7 @@ pub fn run_child(
                 }
             }
         });
-        let workers = run(queues, concurrency, shared);
+        let workers = run(queues, concurrency, shared.clone());
 
         tokio::pin!(lifecycle);
         let worker_result = tokio::select! {
@@ -112,6 +113,9 @@ pub fn run_child(
                 Ok(())
             }
         };
+        // A normal drain deletes the metadata hash. A failed delete is logged
+        // and does not change the exit code. SIGKILL never reaches this path.
+        shared.delete_worker_metadata().await;
         // Push Rust spans into the Python exporter before on_stop. The
         // application's own force_flush stays in that hook.
         crate::telemetry::shutdown().await;

@@ -73,6 +73,7 @@ fn main() -> anyhow::Result<()> {
                     lock_key: None,
                     lock_ttl: 30,
                     skip_on_lock: false,
+                    unique_key: None,
                 };
                 redis_api::enqueue_job(job, None).await.map(|_| ())
             })
@@ -89,8 +90,22 @@ fn main() -> anyhow::Result<()> {
             processes,
             concurrency,
             max_tasks_per_process,
+            child_memory_soft,
+            child_memory_hard,
         } => {
             init_log();
+            let limits = match supervisor::load_child_memory_limits(
+                child_memory_soft.as_deref(),
+                child_memory_hard.as_deref(),
+            ) {
+                Ok(limits) => limits,
+                Err(error) => {
+                    // A bad byte limit is configuration, same exit as a bad
+                    // tracing config. The log line is the reason.
+                    tracing::error!("{error}");
+                    std::process::exit(3);
+                }
+            };
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(supervisor::run(
                 app,
@@ -98,6 +113,7 @@ fn main() -> anyhow::Result<()> {
                 processes,
                 concurrency,
                 max_tasks_per_process,
+                limits,
             ))
         }
         Command::Worker {

@@ -17,6 +17,7 @@ pub const DEFAULT_MIN_BACKOFF_MS: u64 = 15_000;
 pub const DEFAULT_MAX_BACKOFF_MS: u64 = 86_400_000 * 7;
 pub const PING_MARGIN_SECS: u64 = 60;
 pub const DEFAULT_DONE_TTL_SECS: u64 = 24 * 60 * 60;
+pub const DEFAULT_UNIQUE_TTL_SECS: u64 = 24 * 60 * 60;
 pub const DEFAULT_DEAD_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 pub const DEFAULT_MAX_DELIVERIES: u32 = 5;
 pub const SWEEP_BATCH: usize = 100;
@@ -68,6 +69,18 @@ pub fn dead_ttl_secs() -> u64 {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(DEFAULT_DEAD_TTL_SECS)
+}
+
+/// How long a first send may hold `unique_key`.
+///
+/// Zero is not a TTL. The idempotency script treats the string `"0"` as
+/// present and `EXPIRE 0` deletes the key immediately.
+pub fn unique_ttl_secs() -> u64 {
+    std::env::var("SIMPLE_Q_UNIQUE_TTL_SECS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_UNIQUE_TTL_SECS)
 }
 
 pub fn max_deliveries() -> u32 {
@@ -150,5 +163,12 @@ mod tests {
     #[test]
     fn dead_messages_are_kept_for_seven_days() {
         assert_eq!(DEFAULT_DEAD_TTL_SECS, 7 * 24 * 60 * 60);
+    }
+
+    #[test]
+    fn unique_keys_keep_a_positive_ttl() {
+        assert_eq!(DEFAULT_UNIQUE_TTL_SECS, 86_400);
+        assert!(DEFAULT_UNIQUE_TTL_SECS > 0);
+        assert!(unique_ttl_secs() > 0);
     }
 }

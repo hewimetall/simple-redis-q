@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import os
 import random
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -10,7 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from simple_q.backoff import compute_backoff
-from simple_q import worker_name
+from simple_q import worker_alive, worker_name
 from simple_q.message import current_message
 from simple_q.metrics import (
     DURATION_BUCKETS,
@@ -270,6 +272,149 @@ def test_timeout_on_the_last_attempt_calls_on_dead():
     assert reasons == [("discover", "timeout", {"value": "slow"}, "slow-1", 0)]
 
 
+def test_retries_hook_receives_the_exception_text():
+    registry, _seen = _registry()
+    calls = []
+
+    async def hook(actor, kwargs, reason, message_id, retries, *, error=None):
+        calls.append((actor, kwargs, reason, message_id, retries, error))
+
+    registry.on_dead(hook)
+    message = build_message(
+        actor_name="discover",
+        queue="quota",
+        kwargs={"value": "boom"},
+        headers={},
+        max_retries=0,
+        message_id="dead-error",
+    )
+    result = asyncio.run(registry.dispatch(message))
+    assert result == {"outcome": "dead", "reason": "retries"}
+    assert calls == [
+        ("discover", {"value": "boom"}, "retries", "dead-error", 0, "RuntimeError: boom")
+    ]
+
+
+def test_timeout_hook_receives_the_exception_text():
+    registry, _seen = _registry()
+    calls = []
+
+    def hook(actor, kwargs, reason, message_id, retries, error=None):
+        calls.append((actor, reason, message_id, retries, error))
+
+    registry.on_dead(hook)
+    message = build_message(
+        actor_name="discover",
+        queue="default",
+        kwargs={"value": "slow"},
+        headers={},
+        max_retries=0,
+        time_limit_ms=20,
+        message_id="slow-error",
+    )
+    result = asyncio.run(registry.dispatch(message))
+    assert result == {"outcome": "dead", "reason": "timeout"}
+    assert calls == [("discover", "timeout", "slow-error", 0, "TimeoutError: ")]
+
+
+def test_poison_hook_receives_none():
+    registry, _seen = _registry()
+    calls = []
+
+    def hook(actor, kwargs, reason, message_id, retries, *, error=None):
+        calls.append((reason, message_id, retries, error))
+
+    registry.on_dead(hook)
+    message = build_message(
+        actor_name="discover",
+        queue="quota",
+        kwargs={"value": "ok"},
+        headers={},
+        max_retries=0,
+        max_deliveries=2,
+        message_id="poison-error",
+    )
+    message["deliveries"] = 3
+    result = asyncio.run(registry.dispatch(message))
+    assert result == {"outcome": "dead", "reason": "poison"}
+    assert calls == [("poison", "poison-error", 0, None)]
+
+
+def test_unknown_actor_and_invalid_hooks_receive_none():
+    registry, _seen = _registry()
+    calls = []
+
+    def hook(actor, kwargs, reason, message_id, retries, **extra):
+        calls.append((reason, message_id, extra["error"]))
+
+    registry.on_dead(hook)
+    unknown = build_message(
+        actor_name="missing",
+        queue="quota",
+        kwargs={"value": 1},
+        headers={},
+        max_retries=0,
+        message_id="missing-error",
+        retries=2,
+    )
+    asyncio.run(registry.dispatch(unknown))
+    asyncio.run(registry.note_dead("discover", {"value": 1}, "invalid", "bad-error", 0))
+    assert calls == [
+        ("unknown_actor", "missing-error", None),
+        ("invalid", "bad-error", None),
+    ]
+
+
+def test_five_argument_dead_hook_still_runs():
+    registry, _seen = _registry()
+    calls = []
+
+    def hook(actor, kwargs, reason, message_id, retries):
+        calls.append((actor, kwargs, reason, message_id, retries))
+
+    registry.on_dead(hook)
+    message = build_message(
+        actor_name="discover",
+        queue="quota",
+        kwargs={"value": "boom"},
+        headers={},
+        max_retries=0,
+        message_id="dead-five",
+    )
+    result = asyncio.run(registry.dispatch(message))
+    assert result == {"outcome": "dead", "reason": "retries"}
+    assert calls == [("discover", {"value": "boom"}, "retries", "dead-five", 0)]
+
+
+def test_wrapped_five_argument_hook_still_runs_without_error():
+    import functools
+
+    registry, _seen = _registry()
+    calls = []
+
+    def inner(actor, kwargs, reason, message_id, retries):
+        calls.append((reason, message_id))
+
+    @functools.wraps(inner)
+    def hook(*args, **kwargs):
+        if "error" in kwargs:
+            raise AssertionError("five-argument hook was given error")
+        return inner(*args)
+
+    registry.on_dead(hook)
+    message = build_message(
+        actor_name="discover",
+        queue="quota",
+        kwargs={"value": "boom"},
+        headers={},
+        max_retries=0,
+        message_id="dead-wrapped",
+    )
+    result = asyncio.run(registry.dispatch(message))
+    assert result == {"outcome": "dead", "reason": "retries"}
+    assert calls == [("retries", "dead-wrapped")]
+
+
 def test_poison_delivery_calls_on_dead_and_rejects():
     registry, seen = _registry()
     reasons = []
@@ -384,6 +529,30 @@ def test_hook_exceptions_are_logged(caplog=None):
     finally:
         logging.getLogger("simple_q").removeHandler(handler)
     assert any("start hook failed" in record.getMessage() for record in records)
+
+
+def test_child_memory_scrape_is_zero_without_a_file_and_reads_one_when_present(tmp_path):
+    from simple_q.exposition import child_memory_samples
+
+    missing = child_memory_samples(tmp_path).decode()
+    assert "simple_q_child_memory_drains_total 0\n" in missing
+    assert "simple_q_child_memory_kills_total 0\n" in missing
+
+    prom = tmp_path / "simple_q_child_memory.prom"
+    prom.write_text(
+        "# TYPE simple_q_child_memory_drains_total counter\n"
+        "simple_q_child_memory_drains_total 4\n"
+        "simple_q_child_memory_kills_total 2\n",
+        encoding="utf-8",
+    )
+    present = child_memory_samples(tmp_path).decode()
+    assert "simple_q_child_memory_drains_total 4\n" in present
+    assert "simple_q_child_memory_kills_total 2\n" in present
+
+    prom.write_text("not a sample\n", encoding="utf-8")
+    garbage = child_memory_samples(tmp_path).decode()
+    assert "simple_q_child_memory_drains_total 0\n" in garbage
+    assert "simple_q_child_memory_kills_total 0\n" in garbage
 
 
 def test_scrape_reaps_a_dead_slot_and_keeps_a_live_one():
@@ -528,6 +697,44 @@ def test_traceparent_set_at_send_is_visible_in_the_handler():
     finally:
         disable_memory()
     assert seen == {"around": "00-from-caller", "handler": "00-from-caller"}
+
+
+def test_memory_unique_key_blocks_a_second_send_until_drain():
+    from simple_q import disable_memory, drain, enable_memory
+    from simple_q.memory import depth
+
+    registry = Registry()
+    seen = []
+
+    @registry.actor(name="recalc", queue="default", max_retries=0)
+    async def recalc(project: str):
+        seen.append(project)
+        return project
+
+    enable_memory()
+    try:
+        first = asyncio.run(
+            recalc.send_with_options(kwargs={"project": "42"}, unique_key="recalc:proj-42")
+        )
+        second = asyncio.run(
+            recalc.send_with_options(kwargs={"project": "42"}, unique_key="recalc:proj-42")
+        )
+        assert isinstance(first, str)
+        assert second is None
+        assert depth("default") == 1
+        plain = asyncio.run(recalc.send(project="42"))
+        assert isinstance(plain, str)
+        assert depth("default") == 2
+        asyncio.run(drain("default", registry))
+        assert seen == ["42", "42"]
+        assert depth("default") == 0
+        third = asyncio.run(
+            recalc.send_with_options(kwargs={"project": "42"}, unique_key="recalc:proj-42")
+        )
+        assert isinstance(third, str)
+        assert depth("default") == 1
+    finally:
+        disable_memory()
 
 
 def test_memory_drain_runs_messages_sent_by_a_handler():
@@ -693,3 +900,144 @@ def test_current_message_carries_deliveries_and_the_worker_name():
     asyncio.run(registry.dispatch(plain_message))
     assert seen["plain_name"] is None
     assert seen["plain_deliveries"] == 1
+
+
+def test_worker_alive_is_true_in_memory_mode():
+    from simple_q import disable_memory, enable_memory
+
+    runtime = types.ModuleType("simple_q_runtime")
+    runtime.is_configured = lambda: True
+
+    def probe(name):
+        raise AssertionError(f"memory mode must not touch Redis for {name}")
+
+    runtime.worker_alive = probe
+    sys.modules["simple_q_runtime"] = runtime
+    enable_memory()
+    try:
+        assert worker_alive("agent-worker.default.host.1.abcd1234") is True
+        assert worker_alive("not-a-worker") is True
+    finally:
+        disable_memory()
+
+
+def test_worker_alive_rejects_an_unparseable_name():
+    from simple_q import disable_memory
+
+    disable_memory()
+    runtime = types.ModuleType("simple_q_runtime")
+    runtime.is_configured = lambda: True
+
+    def probe(name):
+        raise AssertionError(f"an unparseable name must not touch Redis: {name}")
+
+    runtime.worker_alive = probe
+    sys.modules["simple_q_runtime"] = runtime
+    assert worker_alive("not-a-worker") is False
+    assert worker_alive("agent-worker.default.host.1") is False
+    assert worker_alive("agent-worker.Bad.host.1.abcd1234") is False
+
+
+def test_worker_alive_is_false_when_redis_is_not_configured():
+    from simple_q import disable_memory
+
+    disable_memory()
+    runtime = types.ModuleType("simple_q_runtime")
+    runtime.is_configured = lambda: False
+
+    def probe(name):
+        raise AssertionError(name)
+
+    runtime.worker_alive = probe
+    sys.modules["simple_q_runtime"] = runtime
+    assert worker_alive("agent-worker.default.host.9.abcd1234") is False
+
+
+def _bind_runtime():
+    """Use the built extension under the name ``configure`` imports."""
+
+    import importlib
+
+    sys.modules.pop("simple_q_runtime", None)
+    try:
+        module = importlib.import_module("simple_q_runtime.simple_q_runtime")
+    except ModuleNotFoundError:
+        module = importlib.import_module("simple_q_runtime")
+    sys.modules["simple_q_runtime"] = module
+    return module
+
+
+def _redis_db15():
+    url = "redis://127.0.0.1:6379/15"
+    try:
+        probe = subprocess.run(
+            ["redis-cli", "-u", url, "PING"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        pytest.skip("Redis is down")
+    if probe.returncode != 0 or "PONG" not in probe.stdout:
+        pytest.skip("Redis is down")
+    return url
+
+
+def _liveness_window() -> int:
+    def positive(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        try:
+            value = int(raw)
+        except ValueError:
+            return default
+        return value if value > 0 else default
+
+    return positive("SIMPLE_Q_HEARTBEAT_SECS", 15) * positive("SIMPLE_Q_MISSED_HEARTBEATS", 4)
+
+
+def test_worker_alive_reads_the_heartbeat_on_redis():
+    from simple_q import configure, disable_memory
+
+    url = _redis_db15()
+    disable_memory()
+    _bind_runtime()
+    configure(url)
+    queue = "walive"
+    key = f"{queue}:workers"
+    fresh = "agent-worker.walive.testhost.11.abcd1234"
+    stale = "agent-worker.walive.testhost.12.abcd1234"
+    unknown = "agent-worker.walive.testhost.13.abcd1234"
+    dotted = "agent-worker.walive.host.example.com.14.abcd1234"
+    try:
+        now = subprocess.run(
+            ["redis-cli", "-u", url, "TIME"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+        seconds = int(now[0])
+        window = _liveness_window()
+        subprocess.run(
+            ["redis-cli", "-u", url, "ZADD", key, str(seconds), fresh, str(seconds), dotted],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        subprocess.run(
+            ["redis-cli", "-u", url, "ZADD", key, str(seconds - window - 1), stale],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert worker_alive(fresh) is True
+        assert worker_alive(dotted) is True
+        assert worker_alive(stale) is False
+        assert worker_alive(unknown) is False
+    finally:
+        subprocess.run(
+            ["redis-cli", "-u", url, "DEL", key],
+            capture_output=True,
+            check=False,
+        )
