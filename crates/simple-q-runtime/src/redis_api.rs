@@ -58,6 +58,66 @@ pub fn queue_config(queue: &str) -> Result<Config> {
     Ok(config)
 }
 
+/// Queue encoded in a worker name.
+///
+/// Names are `agent-worker.{queue}.{hostname}.{pid}.{suffix}`. The queue is
+/// one lowercase word, so it is the second field even when the hostname
+/// contains dots. Anything else is not a worker name.
+fn queue_of_worker_name(name: &str) -> Option<&str> {
+    if !name.starts_with("agent-worker.") {
+        return None;
+    }
+    let mut fields = name.split('.');
+    if fields.next() != Some("agent-worker") {
+        return None;
+    }
+    let queue = fields.next()?;
+    if fields.next().is_none() || fields.next().is_none() || fields.next().is_none() {
+        return None;
+    }
+    names::validate_queue(queue).ok()?;
+    Some(queue)
+}
+
+/// A heartbeat score is alive when it is still inside the window.
+///
+/// `score` is unix seconds from `ZSCORE`, or missing when the member is absent.
+/// Alive means the score is present and `score >= now_secs - window_secs`.
+fn heartbeat_is_fresh(score: Option<f64>, now_secs: u64, window_secs: u64) -> bool {
+    let Some(score) = score else {
+        return false;
+    };
+    score.is_finite() && score >= now_secs.saturating_sub(window_secs) as f64
+}
+
+/// Whether `name` still has a fresh entry in `{queue}:workers`.
+///
+/// The clock is Redis `TIME`, so the caller's clock does not matter. The
+/// window is `heartbeat_interval_secs * missed_heartbeats`. An unparseable
+/// name, a missing score, or a connection that was never installed is not alive.
+pub async fn worker_alive(name: &str) -> Result<bool> {
+    let Some(queue) = queue_of_worker_name(name) else {
+        return Ok(false);
+    };
+    if !is_configured() {
+        return Ok(false);
+    }
+    let mut connection = connection()?;
+    let score: Option<f64> = redis::cmd("ZSCORE")
+        .arg(format!("{queue}:workers"))
+        .arg(name)
+        .query_async(&mut connection)
+        .await
+        .context("failed to read a worker heartbeat")?;
+    let (now_secs, _micros): (u64, u64) = redis::cmd("TIME")
+        .query_async(&mut connection)
+        .await
+        .context("failed to read Redis time")?;
+    let window_secs =
+        names::heartbeat_interval_secs().saturating_mul(names::missed_heartbeats() as u64);
+    Ok(heartbeat_is_fresh(score, now_secs, window_secs))
+}
+
 pub async fn enqueue_job(job: Job, delay: Option<Duration>) -> Result<String> {
     job.validate()?;
     let message_id = job.message_id.clone();
@@ -126,6 +186,42 @@ mod tests {
     fn a_fresh_process_has_no_redis_connection() {
         assert!(!is_configured());
         assert!(connection().is_err());
+    }
+
+    #[test]
+    fn a_score_inside_the_window_is_alive_and_an_older_or_missing_score_is_not() {
+        let now = 1_700_000_100;
+        let window = 60;
+        assert!(heartbeat_is_fresh(Some(now as f64), now, window));
+        assert!(heartbeat_is_fresh(
+            Some(now.saturating_sub(window) as f64),
+            now,
+            window
+        ));
+        assert!(!heartbeat_is_fresh(
+            Some(now.saturating_sub(window + 1) as f64),
+            now,
+            window
+        ));
+        assert!(!heartbeat_is_fresh(None, now, window));
+    }
+
+    #[test]
+    fn the_queue_is_the_second_field_of_a_worker_name() {
+        assert_eq!(
+            queue_of_worker_name("agent-worker.default.localhost.7.abcd1234"),
+            Some("default")
+        );
+        assert_eq!(
+            queue_of_worker_name("agent-worker.quota.host.example.com.7.abcd1234"),
+            Some("quota")
+        );
+        assert_eq!(queue_of_worker_name("agent-worker.default.host.7"), None);
+        assert_eq!(queue_of_worker_name("worker.default.host.7.abcd1234"), None);
+        assert_eq!(
+            queue_of_worker_name("agent-worker.NotQueue.host.7.abcd1234"),
+            None
+        );
     }
 
     #[test]
