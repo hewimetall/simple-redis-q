@@ -172,7 +172,7 @@ async fn handle_job(
             error = %error,
             "rejected an invalid message"
         );
-        if let Err(hook_error) = bridge::note_dead(&job, "invalid").await {
+        if let Err(hook_error) = bridge::note_dead(&job, "invalid", None).await {
             tracing::warn!(
                 message_id = %job.message_id,
                 actor_name = %job.actor_name,
@@ -214,7 +214,7 @@ async fn handle_job(
             max_deliveries = job.max_deliveries,
             "burying a poison message before the handler"
         );
-        if let Err(hook_error) = bridge::note_dead(&job, "poison").await {
+        if let Err(hook_error) = bridge::note_dead(&job, "poison", None).await {
             tracing::warn!(
                 message_id = %job.message_id,
                 actor_name = %job.actor_name,

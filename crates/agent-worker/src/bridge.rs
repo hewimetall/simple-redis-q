@@ -237,9 +237,10 @@ pub fn note_retry(queue: &str, actor: &str) {
     }
 }
 
-pub async fn note_dead(job: &Job, reason: &str) -> Result<()> {
+pub async fn note_dead(job: &Job, reason: &str, error: Option<&str>) -> Result<()> {
     let locals = LOCALS.get().context("Python loop is not running")?;
     let reason = reason.to_owned();
+    let error = error.map(str::to_owned);
     let actor_name = job.actor_name.clone();
     let message_id = job.message_id.clone();
     let retries = job.retries;
@@ -254,9 +255,12 @@ pub async fn note_dead(job: &Job, reason: &str) -> Result<()> {
             .context("registry is not loaded")
             .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
         let payload = json_to_py(py, &kwargs)?;
-        let coroutine = app.bind(py).call_method1(
+        let keywords = PyDict::new(py);
+        keywords.set_item("error", error)?;
+        let coroutine = app.bind(py).call_method(
             "note_dead",
             (actor_name, payload, reason, message_id, retries),
+            Some(&keywords),
         )?;
         Ok(coroutine.unbind())
     })
