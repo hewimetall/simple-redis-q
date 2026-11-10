@@ -10,9 +10,9 @@ use simple_q_runtime::cleanup::sweep_queue;
 use simple_q_runtime::lock;
 use simple_q_runtime::names::{self, ping_budget};
 use simple_q_runtime::ping::PingWatch;
+use simple_q_runtime::python::adopt_runtime;
 use simple_q_runtime::redis_api;
 use simple_q_runtime::registry;
-use simple_q_runtime::python::adopt_runtime;
 
 use crate::bridge;
 use crate::runtime;
@@ -34,9 +34,22 @@ pub fn run_child(
         .map_err(|_| anyhow::anyhow!("Tokio runtime was already installed"))?;
 
     adopt_runtime(runtime);
+    let tracing = match bridge::start(&app) {
+        Ok(tracing) => tracing,
+        Err(error) => {
+            if crate::telemetry::is_config_error(&error) {
+                eprintln!("tracing configuration is invalid: {error:#}");
+                std::process::exit(3);
+            }
+            return Err(error);
+        }
+    };
+    if let Err(error) = crate::telemetry::install(tracing) {
+        eprintln!("tracing configuration is invalid: {error:#}");
+        std::process::exit(3);
+    }
     runtime.block_on(async move {
         redis_api::install_from_env().await?;
-        bridge::start(&app)?;
         bridge::call_hook("startup").await?;
 
         let shared = Shared {
@@ -78,18 +91,27 @@ pub fn run_child(
         let workers = run(queues, concurrency, shared);
 
         tokio::pin!(lifecycle);
-        tokio::select! {
-            result = workers => result?,
+        let worker_result = tokio::select! {
+            result = workers => result,
             code = &mut lifecycle => {
                 if code? == 2 {
                     tracing::error!(
                         "Python loop is unresponsive; leaving inflight messages for redelivery"
                     );
+                    // Exit 2 does not flush. The interpreter may still hold the
+                    // GIL, and pyo3 does not call Py_Finalize, so spans buffered
+                    // for a stuck task are dropped.
                     std::process::exit(2);
                 }
+                Ok(())
             }
-        }
-        let _ = bridge::call_hook("shutdown").await;
+        };
+        // Push Rust spans into the Python exporter before on_stop. The
+        // application's own force_flush stays in that hook.
+        crate::telemetry::shutdown().await;
+        let hook = bridge::call_hook("shutdown").await;
+        worker_result?;
+        hook?;
         Ok(())
     })
 }

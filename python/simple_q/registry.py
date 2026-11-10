@@ -9,6 +9,7 @@ from typing import Any
 from simple_q.backoff import compute_backoff
 from simple_q.message import CurrentMessage, bind_message, reset_message
 from simple_q.metrics import finish_attempt, reject, start_attempt
+from simple_q.tracing import Tracing
 
 log = logging.getLogger("simple_q")
 
@@ -132,9 +133,14 @@ def build_message(
 
 
 class Registry:
-    """Actor registry loaded by ``--app module:attribute``."""
+    """Actor registry loaded by ``--app module:attribute``.
 
-    def __init__(self):
+    ``tracing=None`` is the default. The child then does not install an
+    OpenTelemetry layer and does not call into Python to export spans.
+    """
+
+    def __init__(self, tracing: Tracing | None = None):
+        self.tracing = tracing
         self.actors: dict[str, Actor] = {}
         self._on_start = []
         self._on_stop = []

@@ -50,6 +50,22 @@ pub enum Command {
         /// JSON object passed to the task.
         #[arg(long, default_value = "{}")]
         payload: String,
+
+        /// JSON object of string headers stored on the message.
+        #[arg(long, default_value = "{}")]
+        headers: String,
+
+        /// Extra attempts after the first failure. Stored on the message.
+        #[arg(long, default_value_t = 0)]
+        max_retries: u32,
+
+        /// Minimum retry delay in milliseconds. Stored on the message.
+        #[arg(long, default_value_t = simple_q_runtime::names::DEFAULT_MIN_BACKOFF_MS)]
+        min_backoff_ms: u64,
+
+        /// Maximum retry delay in milliseconds. Stored on the message.
+        #[arg(long, default_value_t = simple_q_runtime::names::DEFAULT_MAX_BACKOFF_MS)]
+        max_backoff_ms: u64,
     },
 
     /// Run queue workers. Without `--child` this process only supervises children.

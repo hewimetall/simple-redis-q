@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 
 from simple_q import Registry
 
@@ -21,6 +22,26 @@ async def hold():
     path = os.environ["HOLD_TOUCH"]
     _append(path, {"pid": os.getpid()})
     await asyncio.sleep(int(os.environ.get("HOLD_SECONDS", "25")))
+    return {"ok": True}
+
+
+def _hold_gil(seconds: int) -> None:
+    """Busy Python loop. It holds the GIL except for the clock reads."""
+
+    deadline = time.perf_counter() + seconds
+    total = 0
+    while time.perf_counter() < deadline:
+        for value in range(20_000):
+            total += value
+    if total < 0:
+        raise RuntimeError("unreachable")
+
+
+@app.actor(name="gil", queue="gilq", max_retries=0, time_limit=120_000, max_deliveries=5)
+async def gil():
+    path = os.environ["GIL_TOUCH"]
+    _append(path, {"pid": os.getpid()})
+    _hold_gil(int(os.environ.get("GIL_SECONDS", "20")))
     return {"ok": True}
 
 

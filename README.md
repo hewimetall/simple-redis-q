@@ -14,6 +14,26 @@ Metrics keep the Dramatiq names and the accounting of the fixed Prometheus middl
 
 Redis in compose has no password and is published on `127.0.0.1:6379`. Anyone who can reach it can put work on a queue. Set `requirepass` before sharing that port.
 
+## Tracing
+
+The child does not open an OTLP connection. Pass `Tracing` to `Registry` and Rust spans are handed to that Python exporter on a dedicated thread. `tracing=None` is the default: no OpenTelemetry layer is installed, and Python is not called to export spans.
+
+```python
+from opentelemetry.sdk.resources import Resource
+
+from simple_q import Registry, Tracing
+
+app = Registry(
+    tracing=Tracing(
+        exporter=exporter,  # export(spans) and shutdown()
+        resource=Resource.create({"service.name": "agent-worker"}),
+        targets={"agent_worker": "info", "simple_q_runtime": "info", "apalis": "debug"},
+    )
+)
+```
+
+`RUST_LOG` filters the text log. `targets` filters the OpenTelemetry layer, so `RUST_LOG=warn` still exports the process span.
+
 ## Install
 
 ```bash

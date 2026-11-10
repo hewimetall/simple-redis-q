@@ -15,7 +15,7 @@ static LOCALS: OnceLock<TaskLocals> = OnceLock::new();
 static APP: OnceLock<Py<PyAny>> = OnceLock::new();
 static PING_SCHEDULE_STUCK: AtomicBool = AtomicBool::new(false);
 
-pub fn start(app_path: &str) -> Result<()> {
+pub fn start(app_path: &str) -> Result<Option<crate::telemetry::RawTracing>> {
     let (sender, receiver) = std::sync::mpsc::channel();
     let app_path = app_path.to_owned();
 
@@ -30,25 +30,36 @@ pub fn start(app_path: &str) -> Result<()> {
                     .set(TaskLocals::new(event_loop.clone()))
                     .expect("event loop locals installed once");
                 let app = load_controller(py, &app_path)?;
+                let tracing = match crate::telemetry::read_tracing(py, &app) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        sender
+                            .send(Err(anyhow::Error::new(error)))
+                            .expect("loop start signal");
+                        return Ok(());
+                    }
+                };
                 APP.set(app.unbind()).expect("controller installed once");
-                sender.send(()).expect("loop start signal");
+                sender.send(Ok(tracing)).expect("loop start signal");
                 event_loop.call_method0("run_forever")?;
                 Ok(())
             });
             if let Err(error) = started {
                 Python::attach(|py| error.print(py));
-                let _ = sender.send(());
+                let _ = sender.send(Err(anyhow::anyhow!(
+                    "Python loop did not publish a controller: {error}"
+                )));
             }
         })
         .context("failed to start the Python loop thread")?;
 
-    receiver
+    let tracing = receiver
         .recv()
-        .context("Python loop thread exited before signalling")?;
+        .context("Python loop thread exited before signalling")??;
     if LOCALS.get().is_none() || APP.get().is_none() {
         anyhow::bail!("Python loop did not publish a controller");
     }
-    Ok(())
+    Ok(tracing)
 }
 
 pub fn load_controller<'py>(py: Python<'py>, app_path: &str) -> PyResult<Bound<'py, PyAny>> {

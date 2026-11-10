@@ -37,13 +37,14 @@ pub async fn run(
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
 
-    let mut slots = Vec::with_capacity(processes as usize);
+    let mut slots = tokio::task::JoinSet::new();
     for index in 0..processes {
         let app = app.clone();
         let queues = queues.clone();
         let shutdown = shutdown_rx.clone();
+        let shutdown_tx = shutdown_tx.clone();
         let prom_dir = prom_dir.clone();
-        slots.push(tokio::spawn(async move {
+        slots.spawn(async move {
             supervise_slot(
                 index,
                 app,
@@ -51,38 +52,62 @@ pub async fn run(
                 concurrency,
                 max_tasks,
                 shutdown,
+                shutdown_tx,
                 prom_dir,
             )
             .await
-        }));
+        });
     }
 
-    tokio::select! {
-        _ = terminate.recv() => {
-            tracing::info!("SIGTERM received; draining child processes");
-        }
-        _ = interrupt.recv() => {
-            tracing::info!("SIGINT received; draining child processes");
-        }
-        result = join_slots(&mut slots) => {
-            result?;
-            return Ok(());
+    let mut fatal = None;
+    loop {
+        tokio::select! {
+            _ = terminate.recv() => {
+                tracing::info!("SIGTERM received; draining child processes");
+                let _ = shutdown_tx.send(true);
+                break;
+            }
+            _ = interrupt.recv() => {
+                tracing::info!("SIGINT received; draining child processes");
+                let _ = shutdown_tx.send(true);
+                break;
+            }
+            joined = slots.join_next() => {
+                match joined {
+                    None => {
+                        drop(metrics);
+                        return Ok(());
+                    }
+                    Some(Ok(Ok(()))) => {}
+                    Some(Ok(Err(error))) => {
+                        tracing::error!(%error, "stopping supervisor");
+                        let _ = shutdown_tx.send(true);
+                        fatal = Some(error);
+                        break;
+                    }
+                    Some(Err(error)) => {
+                        let _ = shutdown_tx.send(true);
+                        fatal = Some(anyhow::anyhow!("supervisor slot panicked: {error}"));
+                        break;
+                    }
+                }
+            }
         }
     }
 
-    let _ = shutdown_tx.send(true);
-    for slot in slots {
-        slot.await.context("supervisor slot panicked")??;
+    while let Some(joined) = slots.join_next().await {
+        if let Ok(Err(error)) = joined {
+            tracing::warn!(%error, "worker slot stopped during supervisor shutdown");
+            if fatal.is_none() {
+                fatal = Some(error);
+            }
+        }
     }
     drop(metrics);
-    Ok(())
-}
-
-async fn join_slots(slots: &mut Vec<tokio::task::JoinHandle<Result<()>>>) -> Result<()> {
-    for slot in slots.drain(..) {
-        slot.await.context("supervisor slot panicked")??;
+    match fatal {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 async fn supervise_slot(
@@ -92,6 +117,7 @@ async fn supervise_slot(
     concurrency: usize,
     max_tasks: u64,
     mut shutdown: watch::Receiver<bool>,
+    shutdown_tx: watch::Sender<bool>,
     prom_dir: std::path::PathBuf,
 ) -> Result<()> {
     let mut backoff = Duration::from_secs(1);
@@ -118,17 +144,56 @@ async fn supervise_slot(
                     return Ok(());
                 }
                 let code = status.context("failed to wait for the worker process")?;
-                if code.success() {
-                    tracing::info!(index, pid, "worker process recycled");
-                    backoff = Duration::from_secs(1);
-                    continue;
+                match classify_child_exit(code.success(), code.code()) {
+                    ChildExit::Recycle => {
+                        tracing::info!(index, pid, "worker process recycled");
+                        backoff = Duration::from_secs(1);
+                        continue;
+                    }
+                    ChildExit::Fatal => {
+                        tracing::error!(index, pid, "tracing configuration is invalid");
+                        let _ = shutdown_tx.send(true);
+                        anyhow::bail!("tracing configuration is invalid");
+                    }
+                    ChildExit::Restart => {
+                        tracing::warn!(index, pid, ?code, "worker process exited");
+                        if *shutdown.borrow() {
+                            return Ok(());
+                        }
+                        tokio::select! {
+                            changed = shutdown.changed() => {
+                                changed.context("shutdown watch closed")?;
+                                return Ok(());
+                            }
+                            _ = tokio::time::sleep(backoff) => {}
+                        }
+                        backoff = (backoff * 2).min(Duration::from_secs(30));
+                    }
                 }
-                tracing::warn!(index, pid, ?code, "worker process exited");
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(Duration::from_secs(30));
             }
         }
     }
+}
+
+/// How the supervisor treats one child exit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildExit {
+    /// Planned recycle. Start a replacement immediately.
+    Recycle,
+    /// Crash or signal. Wait out the backoff, then start a replacement.
+    Restart,
+    /// Tracing configuration was rejected. Do not start another child.
+    Fatal,
+}
+
+pub fn classify_child_exit(success: bool, code: Option<i32>) -> ChildExit {
+    if success {
+        return ChildExit::Recycle;
+    }
+    if code == Some(3) {
+        return ChildExit::Fatal;
+    }
+    ChildExit::Restart
 }
 
 fn spawn_child(
@@ -186,5 +251,19 @@ fn request_drain(pid: u32) {
     let result = unsafe { libc::kill(pid as i32, libc::SIGUSR1) };
     if result != 0 {
         tracing::warn!(pid, "failed to send SIGUSR1 to the worker process");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exit_code_3_is_fatal_and_other_codes_restart() {
+        assert_eq!(classify_child_exit(true, Some(0)), ChildExit::Recycle);
+        assert_eq!(classify_child_exit(false, Some(3)), ChildExit::Fatal);
+        assert_eq!(classify_child_exit(false, Some(1)), ChildExit::Restart);
+        assert_eq!(classify_child_exit(false, Some(2)), ChildExit::Restart);
+        assert_eq!(classify_child_exit(false, None), ChildExit::Restart);
     }
 }

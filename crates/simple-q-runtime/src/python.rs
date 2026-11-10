@@ -35,7 +35,10 @@ fn block_on<F>(future: F) -> F::Output
 where
     F: std::future::Future,
 {
-    ensure_runtime().block_on(future)
+    // Callers such as `configure` during app import are outside `block_on`.
+    // Enter the runtime the child adopted, instead of requiring the caller to
+    // already be on a Tokio worker.
+    ensure_runtime().handle().block_on(future)
 }
 
 /// Embedded and wheel entry point.
@@ -55,9 +58,12 @@ pub fn simple_q_runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn install(url: String) -> PyResult<()> {
-    let _guard = INSTALL_LOCK.lock().expect("install lock");
-    block_on(redis_api::install(url)).map_err(|error| PyRuntimeError::new_err(error.to_string()))
+fn install(py: Python<'_>, url: String) -> PyResult<()> {
+    py.detach(|| {
+        let _guard = INSTALL_LOCK.lock().expect("install lock");
+        block_on(redis_api::install(url))
+    })
+    .map_err(|error| PyRuntimeError::new_err(error.to_string()))
 }
 
 #[pyfunction]
