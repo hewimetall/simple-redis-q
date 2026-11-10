@@ -73,6 +73,7 @@ fn main() -> anyhow::Result<()> {
                     lock_key: None,
                     lock_ttl: 30,
                     skip_on_lock: false,
+                    unique_key: None,
                 };
                 redis_api::enqueue_job(job, None).await.map(|_| ())
             })

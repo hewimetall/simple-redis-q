@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use apalis::prelude::{TaskBuilder, TaskSink};
-use apalis_redis::{Config, RedisStorage, connect};
+use apalis_redis::{Config, RedisStorage, connect, queries};
 use redis::aio::ConnectionManager;
 
 use crate::job::Job;
@@ -25,9 +25,9 @@ pub async fn install(url: String) -> Result<()> {
         return Ok(());
     }
     let connection = connect(url).await.context("failed to connect to Redis")?;
-    CONNECTION
-        .set(connection)
-        .map_err(|_| anyhow::anyhow!("Redis connection was already installed"))?;
+    // Two callers can pass the check above together. The loser drops its
+    // connection; the installed one is the one every later call uses.
+    let _ = CONNECTION.set(connection);
     Ok(())
 }
 
@@ -118,8 +118,34 @@ pub async fn worker_alive(name: &str) -> Result<bool> {
     Ok(heartbeat_is_fresh(score, now_secs, window_secs))
 }
 
-pub async fn enqueue_job(job: Job, delay: Option<Duration>) -> Result<String> {
+/// Redis string written by the apalis-redis idempotency script.
+///
+/// The script stores `SETNX {queue}:idempotency:{key}`. That is
+/// `Config::idempotency_key_set()` plus `:` plus the key.
+pub fn idempotency_redis_key(queue: &str, unique_key: &str) -> String {
+    format!("{queue}:idempotency:{unique_key}")
+}
+
+/// A first send claims the key. A retry must not: the attempt still in
+/// progress already holds it, and claiming again would drop the re-enqueue.
+pub fn claims_idempotency(job: &Job) -> bool {
+    job.retries == 0 && job.unique_key.as_deref().is_some_and(|key| !key.is_empty())
+}
+
+/// Enqueue `job`.
+///
+/// `None` means a `unique_key` was already held, so nothing was queued.
+/// Sends without a key, and retries, always return the message id.
+pub async fn enqueue_job(job: Job, delay: Option<Duration>) -> Result<Option<String>> {
     job.validate()?;
+    if claims_idempotency(&job) {
+        enqueue_unique(job, delay).await
+    } else {
+        enqueue_plain(job, delay).await.map(Some)
+    }
+}
+
+async fn enqueue_plain(job: Job, delay: Option<Duration>) -> Result<String> {
     let message_id = job.message_id.clone();
     let queue = job.queue.clone();
     let mut builder = TaskBuilder::new(job).max_attempts(1);
@@ -132,6 +158,54 @@ pub async fn enqueue_job(job: Job, delay: Option<Duration>) -> Result<String> {
         .await
         .map_err(|error| anyhow::anyhow!("enqueue failed: {error}"))?;
     Ok(message_id)
+}
+
+async fn enqueue_unique(job: Job, delay: Option<Duration>) -> Result<Option<String>> {
+    let message_id = job.message_id.clone();
+    let queue = job.queue.clone();
+    let unique_key = job
+        .unique_key
+        .clone()
+        .filter(|key| !key.is_empty())
+        .context("unique enqueue requires unique_key")?;
+    // RedisStorage encodes with JsonCodec<Vec<u8>>, which is serde_json::to_vec.
+    // The worker decodes those bytes back into Job. Retries still carry the
+    // string on the job; only the task builder's idempotency key is omitted.
+    let claim = job.retries == 0;
+    let bytes = serde_json::to_vec(&job).context("failed to encode the job")?;
+    let mut builder = TaskBuilder::new(bytes).max_attempts(1);
+    if let Some(delay) = delay.filter(|delay| !delay.is_zero()) {
+        builder = builder.run_after(delay);
+    }
+    if claim {
+        builder = builder.idempotency_key(unique_key);
+    }
+    // A missing TTL is passed to Lua as 0. The script treats the string "0"
+    // as present and EXPIRE 0 deletes the key, so the TTL is always positive.
+    let config =
+        queue_config(&queue)?.idempotency_ttl(Some(Duration::from_secs(names::unique_ttl_secs())));
+    let (enqueued, scheduled) =
+        queries::push_tasks(&mut connection()?, &config, &[builder.build()])
+            .await
+            .map_err(|error| anyhow::anyhow!("enqueue failed: {error}"))?;
+    if enqueued == 0 && scheduled == 0 {
+        return Ok(None);
+    }
+    Ok(Some(message_id))
+}
+
+/// Drop `{queue}:idempotency:{unique_key}` after a terminal outcome.
+pub async fn release_idempotency(queue: &str, unique_key: &str) -> Result<()> {
+    if unique_key.is_empty() {
+        return Ok(());
+    }
+    let key = idempotency_redis_key(queue, unique_key);
+    let _: i64 = redis::cmd("DEL")
+        .arg(&key)
+        .query_async(&mut connection()?)
+        .await
+        .context("failed to drop an idempotency key")?;
+    Ok(())
 }
 
 pub fn delivery_key(message_id: &str, retries: u32) -> String {
@@ -238,5 +312,47 @@ mod tests {
         assert!(INCR_EXPIRE.contains("INCR"));
         assert!(INCR_EXPIRE.contains("EXPIRE"));
         assert_eq!(INCR_EXPIRE.matches("redis.call").count(), 2);
+    }
+
+    fn sample(retries: u32, unique_key: Option<&str>) -> Job {
+        Job {
+            version: crate::MESSAGE_VERSION,
+            message_id: "m-1".to_owned(),
+            actor_name: "recalc".to_owned(),
+            queue: "default".to_owned(),
+            kwargs: serde_json::json!({"project": "42"}),
+            headers: Default::default(),
+            retries,
+            max_retries: 2,
+            time_limit_ms: 1_800_000,
+            min_backoff_ms: 15_000,
+            max_backoff_ms: 86_400_000,
+            max_deliveries: 5,
+            lock_key: None,
+            lock_ttl: 30,
+            skip_on_lock: false,
+            unique_key: unique_key.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn the_idempotency_key_matches_the_apalis_set_and_a_retry_does_not_claim_it() {
+        let config = queue_config("default").unwrap();
+        assert_eq!(
+            idempotency_redis_key("default", "recalc:proj-42"),
+            format!("{}:recalc:proj-42", config.idempotency_key_set())
+        );
+        assert!(config.idempotency_ttl.is_none());
+        let ttl = config
+            .idempotency_ttl(Some(Duration::from_secs(names::unique_ttl_secs())))
+            .idempotency_ttl
+            .expect("ttl")
+            .as_secs();
+        assert!(ttl > 0);
+
+        assert!(claims_idempotency(&sample(0, Some("recalc:proj-42"))));
+        assert!(!claims_idempotency(&sample(1, Some("recalc:proj-42"))));
+        assert!(!claims_idempotency(&sample(0, None)));
+        assert!(!claims_idempotency(&sample(0, Some(""))));
     }
 }

@@ -699,6 +699,44 @@ def test_traceparent_set_at_send_is_visible_in_the_handler():
     assert seen == {"around": "00-from-caller", "handler": "00-from-caller"}
 
 
+def test_memory_unique_key_blocks_a_second_send_until_drain():
+    from simple_q import disable_memory, drain, enable_memory
+    from simple_q.memory import depth
+
+    registry = Registry()
+    seen = []
+
+    @registry.actor(name="recalc", queue="default", max_retries=0)
+    async def recalc(project: str):
+        seen.append(project)
+        return project
+
+    enable_memory()
+    try:
+        first = asyncio.run(
+            recalc.send_with_options(kwargs={"project": "42"}, unique_key="recalc:proj-42")
+        )
+        second = asyncio.run(
+            recalc.send_with_options(kwargs={"project": "42"}, unique_key="recalc:proj-42")
+        )
+        assert isinstance(first, str)
+        assert second is None
+        assert depth("default") == 1
+        plain = asyncio.run(recalc.send(project="42"))
+        assert isinstance(plain, str)
+        assert depth("default") == 2
+        asyncio.run(drain("default", registry))
+        assert seen == ["42", "42"]
+        assert depth("default") == 0
+        third = asyncio.run(
+            recalc.send_with_options(kwargs={"project": "42"}, unique_key="recalc:proj-42")
+        )
+        assert isinstance(third, str)
+        assert depth("default") == 1
+    finally:
+        disable_memory()
+
+
 def test_memory_drain_runs_messages_sent_by_a_handler():
     from simple_q import disable_memory, drain, enable_memory
 
