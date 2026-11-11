@@ -84,3 +84,7 @@ PYTHONPATH=python python python/examples/alter_option.py
 Poison is `deliveries > max_deliveries`. The first attempt that lands on the limit still runs. That counter is separate from Dramatiq's retry count. `retries` is the handler-failure count. `deliveries` is how many times a worker has started the attempt, including a start after the process died.
 
 The worker is `agent-worker worker --app module:create_app --factory` or `--app module:app`. `--app` is required unless `SIMPLE_Q_APP` is set. Queue names are one lowercase ASCII word of letters and digits. The example is `default`.
+
+## Dead letters written before the index
+
+`QueueAdmin.dead` reads `simple_q:dead:{queue}`. That index starts with 1.0.0rc5. A task that died before the index was written stays in `{queue}:dead` and in the queue counter. `dead` does not return it. The sweeper removes it when its TTL elapses, seven days by default.

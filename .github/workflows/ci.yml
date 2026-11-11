@@ -78,8 +78,18 @@ jobs:
         env:
           PYO3_PYTHON: python3.12
 
+      - name: Install the runtime extension
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install pytest "prometheus_client>=0.26" "maturin>=1.16,<2"
+          maturin develop --release -m crates/simple-q-runtime/Cargo.toml
+
       - name: Orphan-window tests
-        run: python3 -m pip install pytest "prometheus_client>=0.26" && python3 -m pytest python/tests/test_orphan_integration.py python/tests/test_worker_info.py -q
+        run: |
+          . .venv/bin/activate
+          python -m pytest python/tests/test_orphan_integration.py python/tests/test_worker_info.py python/tests/test_queue_admin.py -q
         env:
           AGENT_WORKER_BIN: target/release/agent-worker
           REDIS_URL: redis://127.0.0.1:6379/15
