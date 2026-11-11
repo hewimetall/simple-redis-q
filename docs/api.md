@@ -183,7 +183,7 @@ Several middleware classes share one `App`. Each `install` appends that class's 
 | `outcome` | What the worker does |
 | --- | --- |
 | `retry` | Enqueues the same message after `delay_ms` milliseconds and adds one to `retries`. A missing `delay_ms` waits zero. The idempotency key stays. |
-| `dead` | Releases the idempotency key and records the attempt as killed. `reason` is the abort text. The delivery key stays. |
+| `dead` | Releases the idempotency key and records the attempt as killed. `reason` is the abort text. `error` is the exception text for `retries` and `timeout`, and null for `poison` and `unknown_actor`. The delivery key stays. Rust stores `reason`, `error`, `dead_at`, and `deliveries`. |
 | any other value, including `ok` and `skipped` | Acknowledges the delivery and releases the idempotency key. |
 
 An `around_dispatch` hook can return one of those dicts without calling `call_next`. An exception from `dispatch` releases the idempotency key and kills the attempt. Python does not enqueue a retry for that exception. `on_dead` runs inside the handler path, before the outer `around_dispatch` hook sees the dict. Replacing a `dead` outcome with `retry` after that leaves the dead-letter hook already called.
@@ -233,7 +233,7 @@ snap = await admin.snapshot(["default", "quota"])
 snap = await admin.snapshot(["quota"], host="worker-quota-6f8b9c7d4-x2k9p")
 ```
 
-`snapshot` is async, runs on the caller's loop, and uses that `Client`'s Redis connection. It reads counters, heartbeats, and inflight tasks. It does not walk the waiting, done, or dead lists. `host` limits supervisors, their children, and orphans. Queue counters stay global for the named queues.
+`snapshot` is async, runs on the caller's loop, and uses that `Client`'s Redis connection. It reads counters, heartbeats, and inflight tasks. It does not walk the waiting, done, or dead lists. `host` limits supervisors, their children, and orphans. Queue counters stay limited to the queues in the argument. A process still lists held tasks for every queue stored on its supervisor record, including a queue the caller did not pass. Those extra queues are not added to `Snapshot.queues`.
 
 The return value is a frozen `Snapshot`:
 
@@ -241,9 +241,60 @@ The return value is a frozen `Snapshot`:
 - `QueueStats`: `name`, `active`, `scheduled`, `inflight`, `done`, `dead`, `workers`, `workers_alive`
 - `SupervisorInfo`: `host`, `pid`, `started_at`, `last_seen`, `version`, `queues`, `processes`, `concurrency`, `max_tasks`, `child_soft`, `child_hard`, `cgroup_current`, `cgroup_max`, `recycled`, `drains`, `kills`, `restarts`, `children`
 - `ProcessInfo`: `host`, `pid`, `ppid`, `slot`, `state`, `reason`, `exit`, `rss`, `started_at`, `ended_at`, `tasks_done`, `max_tasks`, `workers`, `last_seen`, `alive`, `tasks`
-- `HeldTask`: `queue`, `task_id`, `message_id`, `actor_name`, `kwargs`, `retries`, `max_retries`, `time_limit_ms`, `locked_at`, `deliveries`
+- `HeldTask`: `queue`, `task_id`, `message_id`, `actor_name`, `kwargs`, `retries`, `max_retries`, `time_limit_ms`, `locked_at`, `started_at`, `deliveries`
 
 `agent-worker info --json` prints this same object. How to read `state` and `reason` is on the [tracing and admin](operations.md) page.
+
+### Field meanings
+
+- `rss` is resident bytes from `/proc/{pid}/statm` (resident pages times the page size). Shared libraries are mapped into every process that loads them, so those pages count in every process.
+- `cgroup_current` is `memory.current` minus `inactive_file`. `cgroup_max` is `memory.max` when that file is a byte count. The value published on the supervisor record is refreshed on the supervisor heartbeat. The one-second read is only the memory-limit check. It does not publish a new `cgroup_current`.
+- `tasks_done` includes poison. The child writes it on its heartbeat, to `tasks_done` on the worker metadata hash and to `tasks:{pid}` on the supervisor hash.
+- While the child row still says running and `tasks_done` has reached `max_tasks`, the snapshot shows `draining` / `max_tasks`. After exit 0 the row is `exited` / `max_tasks`.
+- `recycled` counts every exit 0, including an exit 0 after a drain.
+- `drains` counts `SIGUSR1` for `memory_soft` and `memory_ratio` only. Shutdown does not increment it.
+- `kills` counts only a `SIGKILL` this supervisor sent: the per-child hard limit and the hard cgroup ratio.
+- `restarts` counts that `SIGKILL` immediately. It also counts a later killed `wait` that was not already counted: the ping budget (exit 2), an external `SIGKILL`, and a crash.
+- `alive` is heartbeat freshness. It does not follow `ended_at`.
+- `locked_at` is the absolute lease time Apalis writes on `{queue}:meta:{task_id}` and overwrites on every heartbeat renew. `started_at` is Redis `TIME` seconds when this delivery was taken. Renew does not change it. The next delivery overwrites it.
+
+### `dead`
+
+```python
+page = await admin.dead("default")
+page = await admin.dead("default", limit=50, cursor=page.cursor)
+```
+
+`dead` pages the sorted set `simple_q:dead:{queue}` newest-first. The score is Redis `TIME` seconds and the member is the task id. Apalis still keeps the set `{queue}:dead`. This read does not `SMEMBERS` that set. It loads one page of ids, then those fields of `{queue}:data` and `{queue}:meta:{task_id}`.
+
+`limit` defaults to 50. `0` raises `ValueError`. A larger limit is capped at 200. `cursor` is opaque and exclusive: the task it names is not repeated. Pass the returned `cursor` back to read the next page. `None` means this page is the last.
+
+The cursor text is base64url, without padding, of `d\n{dead_at}\n{task_id}`. `dead_at` is decimal seconds. Equal scores are ordered by task id in reverse lexicographic order, which is the order Redis `ZREVRANGE` uses.
+
+The return value is a frozen `DeadPage`:
+
+- `DeadPage`: `messages`, `cursor`
+- `DeadMessage`: `task_id`, `message_id`, `actor_name`, `kwargs`, `reason`, `error`, `retries`, `deliveries`, `dead_at`
+
+`reason` is `poison`, `invalid`, the Python `dead` reason (`retries`, `timeout`, `unknown_actor`, or another reason the outcome dict carried), or `dispatch` when `dispatch` raises. `error` is the exception text for `retries`, `timeout`, and `dispatch`. It is null for `poison`, `invalid`, and `unknown_actor`. `on_dead` is unchanged: it still receives one `DeadLetter`.
+
+The sweeper removes the index member when it deletes that dead task.
+
+### `peek`
+
+```python
+waiting = await admin.peek("default", "active")
+later = await admin.peek("default", "scheduled", limit=50, cursor=None)
+```
+
+`peek` reads one page of `{queue}:active` with `LRANGE`, or one page of `{queue}:scheduled` with `ZRANGE` and `WITHSCORES`. It then loads only those ids from `{queue}:data`. It does not call apalis `list_tasks`. `state` is `active` or `scheduled`. Any other value raises `ValueError`. `limit` and `cursor` follow the same rules as `dead`.
+
+Active pages follow the list from the head. The cursor is base64url of `a\n{task_id}`. The next page starts after that id. Scheduled pages are soonest-first. The cursor is base64url of `s\n{run_at}\n{task_id}`. Equal scores are lexicographic by task id. `run_at` is the score, in Redis seconds. Active rows leave `run_at` unset.
+
+The return value is a frozen `TaskPage`:
+
+- `TaskPage`: `tasks`, `cursor`
+- `QueuedTask`: `task_id`, `message_id`, `actor_name`, `kwargs`, `retries`, `max_retries`, `time_limit_ms`, `run_at`
 
 A future `Config(metrics_prefix=...)` is not implemented. `dramatiq_*` metric names and labels stay as they are through 1.0. See [Settings](settings.md).
 

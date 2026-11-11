@@ -2,7 +2,8 @@
 //!
 //! Queue key names come from `apalis_redis::Config`. A snapshot reads counters,
 //! heartbeats, inflight sets, and the hashes for tasks those sets are holding.
-//! It does not walk active or scheduled lists.
+//! It does not walk active, scheduled, or dead lists. A process still shows
+//! held tasks for every queue named on its supervisor record.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -615,17 +616,22 @@ pub struct HeldTask {
     pub retries: u32,
     pub max_retries: u32,
     pub time_limit_ms: u64,
+    /// Absolute lease time. Apalis overwrites this on every heartbeat renew.
     pub locked_at: Option<u64>,
+    /// Redis `TIME` seconds when this delivery was taken. Renew does not change it.
+    pub started_at: Option<u64>,
     pub deliveries: u64,
 }
 
 /// Read the admin snapshot.
 ///
 /// Queue counters and heartbeats, then supervisor and worker hashes plus
-/// inflight members, then each held task's payload and lock time. The delivery
-/// counter is read after that payload, because its key needs `message_id` and
-/// `retries`. `host` limits supervisors, their children, and orphans. Queue
-/// counts stay global to each queue. A missing task payload still produces a
+/// inflight members, then each held task's payload, `locked_at`, and
+/// `started_at`. The delivery counter is read after that payload, because its
+/// key needs `message_id` and `retries`. `host` limits supervisors, their
+/// children, and orphans. Queue counts stay limited to `queues`. A process
+/// still shows held tasks for every queue on its supervisor record, including
+/// a queue the caller did not pass. A missing task payload still produces a
 /// [`HeldTask`] and does not fail the snapshot.
 pub async fn snapshot(
     conn: &mut ConnectionManager,
@@ -647,7 +653,7 @@ pub async fn snapshot(
                 && host_selected(&member.host, host)
         })
         .collect();
-    let (sup_fields, drafts) = read_bodies(conn, &prepared, &live, drafts).await?;
+    let (sup_fields, mut drafts) = read_bodies(conn, &prepared, &live, drafts).await?;
     let loaded_sups = live
         .into_iter()
         .zip(sup_fields)
@@ -658,8 +664,10 @@ pub async fn snapshot(
             fields,
         })
         .collect::<Vec<_>>();
+    let mut held_configs = prepared;
+    attach_unrequested_queues(conn, settings, &loaded_sups, &mut held_configs, &mut drafts).await?;
     let held_keys = tree_task_keys(&drafts, host);
-    let held = read_held(conn, &prepared, &held_keys).await?;
+    let held = read_held(conn, &held_configs, &held_keys).await?;
     Ok(build_snapshot(
         now,
         window,
@@ -683,6 +691,8 @@ struct QueueDraft {
     done: u64,
     dead: u64,
     workers: Vec<LoadedWorker>,
+    /// `false` for a queue loaded only so a supervisor's process can show its tasks.
+    counted: bool,
 }
 
 struct LoadedWorker {
@@ -766,6 +776,7 @@ async fn read_overview(
             done: value_u64(&values[done_at]),
             dead: value_u64(&values[dead_at]),
             workers,
+            counted: true,
         });
     }
     Ok((now, members, drafts))
@@ -816,6 +827,129 @@ async fn read_bodies(
     Ok((sup_fields, drafts))
 }
 
+/// Load workers for supervisor queues the caller did not ask to count.
+///
+/// A matching worker is one whose host is the supervisor's host and whose
+/// `ppid` is that supervisor, or whose pid is already a child row. Other
+/// workers on that queue are left out, so they do not become orphans.
+async fn attach_unrequested_queues(
+    conn: &mut ConnectionManager,
+    settings: &Config,
+    supers: &[LoadedSup],
+    configs: &mut Vec<(String, QueueConfig)>,
+    drafts: &mut Vec<QueueDraft>,
+) -> Result<()> {
+    let known: BTreeSet<String> = configs.iter().map(|(name, _)| name.clone()).collect();
+    let mut extra: BTreeMap<String, Vec<QueueOwner>> = BTreeMap::new();
+    for sup in supers {
+        let children = child_pid_set(&sup.fields);
+        for queue in split_queues(sup.fields.get("queues").map(String::as_str).unwrap_or("")) {
+            if known.contains(&queue) {
+                continue;
+            }
+            extra.entry(queue).or_default().push(QueueOwner {
+                host: sup.host.clone(),
+                pid: sup.pid,
+                children: children.clone(),
+            });
+        }
+    }
+    for (queue, owners) in extra {
+        let Ok(config) = redis_api::queue_config(&queue, settings) else {
+            continue;
+        };
+        let workers = load_queue_workers(conn, &config).await?;
+        let workers: Vec<LoadedWorker> = workers
+            .into_iter()
+            .filter(|worker| worker_on_supervisor(worker, &owners))
+            .collect();
+        if workers.is_empty() {
+            continue;
+        }
+        configs.push((queue.clone(), config));
+        drafts.push(QueueDraft {
+            name: queue,
+            active: 0,
+            scheduled: 0,
+            done: 0,
+            dead: 0,
+            workers,
+            counted: false,
+        });
+    }
+    Ok(())
+}
+
+struct QueueOwner {
+    host: String,
+    pid: u32,
+    children: BTreeSet<u32>,
+}
+
+fn child_pid_set(fields: &BTreeMap<String, String>) -> BTreeSet<u32> {
+    child_records(fields)
+        .into_iter()
+        .map(|child| child.pid)
+        .filter(|pid| *pid != 0)
+        .collect()
+}
+
+fn worker_on_supervisor(worker: &LoadedWorker, owners: &[QueueOwner]) -> bool {
+    let Some(parsed) = parse_worker_name(&worker.name) else {
+        return false;
+    };
+    owners.iter().any(|owner| {
+        if owner.host != parsed.host {
+            return false;
+        }
+        let ppid = worker
+            .meta
+            .get("ppid")
+            .and_then(|text| text.parse::<u32>().ok());
+        ppid == Some(owner.pid) || owner.children.contains(&parsed.pid)
+    })
+}
+
+async fn load_queue_workers(
+    conn: &mut ConnectionManager,
+    config: &QueueConfig,
+) -> Result<Vec<LoadedWorker>> {
+    let listed: redis::Value = redis::cmd("ZRANGE")
+        .arg(config.workers_set())
+        .arg(0)
+        .arg(-1)
+        .arg("WITHSCORES")
+        .query_async(conn)
+        .await
+        .context("failed to read workers for task attachment")?;
+    let scored = scored_members(&listed);
+    if scored.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut pipe = redis::pipe();
+    for (name, _) in &scored {
+        pipe.cmd("HGETALL").arg(worker_metadata(config, name));
+        pipe.cmd("SMEMBERS").arg(worker_inflight(config, name));
+    }
+    let values = query_values(
+        conn,
+        &pipe,
+        scored.len() * 2,
+        "failed to read workers for task attachment",
+    )
+    .await?;
+    let mut workers = Vec::with_capacity(scored.len());
+    for (index, (name, score)) in scored.into_iter().enumerate() {
+        workers.push(LoadedWorker {
+            name,
+            score,
+            meta: hash_map(&values[index * 2]),
+            inflight: string_list(&values[index * 2 + 1]),
+        });
+    }
+    Ok(workers)
+}
+
 async fn read_held(
     conn: &mut ConnectionManager,
     prepared: &[(String, QueueConfig)],
@@ -832,15 +966,24 @@ async fn read_held(
         pipe.cmd("HGET").arg(config.job_data_hash()).arg(task_id);
         pipe.cmd("HMGET")
             .arg(format!("{}:{task_id}", config.job_meta_hash()))
-            .arg("locked_at");
+            .arg("locked_at")
+            .arg("started_at");
     }
     let values = query_values(conn, &pipe, keys.len() * 2, "failed to read held tasks").await?;
     let mut tasks = BTreeMap::new();
     let mut deliveries = Vec::new();
     for (index, (queue, task_id)) in keys.iter().enumerate() {
         let payload = value_string(&values[index * 2]);
-        let locked = first_string(&values[index * 2 + 1]);
-        let task = held_task_from_payload(queue, task_id, payload.as_deref(), locked.as_deref(), 0);
+        let locked = nth_string(&values[index * 2 + 1], 0);
+        let started = nth_string(&values[index * 2 + 1], 1);
+        let task = held_task_from_payload(
+            queue,
+            task_id,
+            payload.as_deref(),
+            locked.as_deref(),
+            started.as_deref(),
+            0,
+        );
         if !task.message_id.is_empty() {
             deliveries.push((
                 queue.clone(),
@@ -905,6 +1048,7 @@ fn build_snapshot(
 ) -> Snapshot {
     let queue_stats = queues
         .iter()
+        .filter(|queue| queue.counted)
         .map(|queue| QueueStats {
             name: queue.name.clone(),
             active: queue.active,
@@ -1363,8 +1507,21 @@ fn held_or_default(
             max_retries: 0,
             time_limit_ms: 0,
             locked_at: None,
+            started_at: None,
             deliveries: 0,
         })
+}
+
+pub(crate) fn stored_job(payload: &str) -> Option<Job> {
+    let payload = payload.trim();
+    if payload.is_empty() {
+        return None;
+    }
+    let text = match serde_json::from_str::<serde_json::Value>(payload) {
+        Ok(serde_json::Value::String(inner)) => inner,
+        _ => payload.to_owned(),
+    };
+    serde_json::from_str(&text).ok()
 }
 
 fn held_task_from_payload(
@@ -1372,6 +1529,7 @@ fn held_task_from_payload(
     task_id: &str,
     payload: Option<&str>,
     locked_at: Option<&str>,
+    started_at: Option<&str>,
     deliveries: u64,
 ) -> HeldTask {
     let mut task = HeldTask {
@@ -1384,16 +1542,10 @@ fn held_task_from_payload(
         max_retries: 0,
         time_limit_ms: 0,
         locked_at: locked_at.and_then(parse_u64_loose),
+        started_at: started_at.and_then(parse_u64_loose),
         deliveries,
     };
-    let Some(payload) = payload.map(str::trim).filter(|text| !text.is_empty()) else {
-        return task;
-    };
-    let text = match serde_json::from_str::<serde_json::Value>(payload) {
-        Ok(serde_json::Value::String(inner)) => inner,
-        _ => payload.to_owned(),
-    };
-    let Ok(job) = serde_json::from_str::<Job>(&text) else {
+    let Some(job) = payload.and_then(stored_job) else {
         return task;
     };
     task.message_id = job.message_id;
@@ -1596,10 +1748,11 @@ fn scored_members(value: &redis::Value) -> Vec<(String, f64)> {
     members
 }
 
-fn first_string(value: &redis::Value) -> Option<String> {
+fn nth_string(value: &redis::Value, index: usize) -> Option<String> {
     match value {
-        redis::Value::Array(items) => items.first().and_then(value_string),
-        other => value_string(other),
+        redis::Value::Array(items) => items.get(index).and_then(value_string),
+        other if index == 0 => value_string(other),
+        _ => None,
     }
 }
 
@@ -1994,7 +2147,7 @@ mod tests {
 
     #[test]
     fn a_missing_payload_still_yields_the_task_id() {
-        let missing = held_task_from_payload("holdq", "task-1", None, None, 0);
+        let missing = held_task_from_payload("holdq", "task-1", None, None, None, 0);
         assert_eq!(missing.task_id, "task-1");
         assert_eq!(missing.actor_name, "");
         assert_eq!(missing.kwargs, serde_json::json!({}));
@@ -2019,13 +2172,21 @@ mod tests {
             unique_key: None,
         };
         let payload = serde_json::to_string(&job).unwrap();
-        let task = held_task_from_payload("holdq", "ulid-1", Some(&payload), Some("1700000000"), 4);
+        let task = held_task_from_payload(
+            "holdq",
+            "ulid-1",
+            Some(&payload),
+            Some("1700000000"),
+            Some("1699999000"),
+            4,
+        );
         assert_eq!(task.task_id, "ulid-1");
         assert_eq!(task.message_id, "m-1");
         assert_eq!(task.actor_name, "recalc");
         assert_eq!(task.kwargs, serde_json::json!({"project": "42"}));
         assert_eq!(task.retries, 1);
         assert_eq!(task.locked_at, Some(1_700_000_000));
+        assert_eq!(task.started_at, Some(1_699_999_000));
         assert_eq!(task.deliveries, 4);
     }
 
@@ -2080,6 +2241,7 @@ mod tests {
             scheduled: 0,
             done: 0,
             dead: 0,
+            counted: true,
             workers: vec![
                 worker(
                     worker_name,
@@ -2114,12 +2276,13 @@ mod tests {
                     max_retries: 2,
                     time_limit_ms: 30,
                     locked_at: Some(90),
+                    started_at: Some(80),
                     deliveries: 3,
                 },
             ),
             (
                 ("holdq".to_owned(), "b-task".to_owned()),
-                held_task_from_payload("holdq", "b-task", None, None, 0),
+                held_task_from_payload("holdq", "b-task", None, None, None, 0),
             ),
         ]);
         let snap = build_snapshot(
@@ -2173,6 +2336,7 @@ mod tests {
             scheduled: 0,
             done: 0,
             dead: 0,
+            counted: true,
             workers: vec![
                 worker(
                     "agent-worker.holdq.info-host.11.stale001",
@@ -2238,6 +2402,7 @@ mod tests {
             scheduled: 0,
             done: 0,
             dead: 0,
+            counted: true,
             workers: vec![worker(
                 "agent-worker.holdq.info-host.7.abcd1234",
                 now as f64,
@@ -2263,5 +2428,84 @@ mod tests {
         assert_eq!(shown.reason.as_deref(), Some("max_tasks"));
         assert_eq!(shown.tasks_done, Some(5));
         assert_eq!(shown.max_tasks, Some(5));
+    }
+
+    #[test]
+    fn an_uncounted_queue_adds_tasks_without_a_counter_row() {
+        let now = 1_000u64;
+        let quota_worker = "agent-worker.quota.info-host.7.abcd1234";
+        let default_worker = "agent-worker.default.info-host.7.abcd1234";
+        let queues = vec![
+            QueueDraft {
+                name: "quota".to_owned(),
+                active: 2,
+                scheduled: 0,
+                done: 0,
+                dead: 0,
+                counted: true,
+                workers: vec![worker(
+                    quota_worker,
+                    now as f64,
+                    &[("ppid", "3")],
+                    &["quota-task"],
+                )],
+            },
+            QueueDraft {
+                name: "default".to_owned(),
+                active: 9,
+                scheduled: 4,
+                done: 1,
+                dead: 1,
+                counted: false,
+                workers: vec![worker(
+                    default_worker,
+                    now as f64,
+                    &[("ppid", "3")],
+                    &["default-task"],
+                )],
+            },
+        ];
+        let mut fields = BTreeMap::new();
+        fields.insert("queues".to_owned(), "quota,default".to_owned());
+        let mut child = running_child(7, 0);
+        child.pid = 7;
+        fields.insert("child:7".to_owned(), serde_json::to_string(&child).unwrap());
+        let held = BTreeMap::from([
+            (
+                ("quota".to_owned(), "quota-task".to_owned()),
+                held_task_from_payload("quota", "quota-task", None, None, None, 0),
+            ),
+            (
+                ("default".to_owned(), "default-task".to_owned()),
+                held_task_from_payload("default", "default-task", None, None, None, 0),
+            ),
+        ]);
+        let snap = build_snapshot(
+            now,
+            60,
+            None,
+            queues,
+            vec![LoadedSup {
+                host: "info-host".to_owned(),
+                pid: 3,
+                score: now as f64,
+                fields,
+            }],
+            &held,
+        );
+        assert_eq!(snap.queues.len(), 1);
+        assert_eq!(snap.queues[0].name, "quota");
+        assert_eq!(snap.queues[0].active, 2);
+        assert_eq!(snap.queues[0].inflight, 1);
+        let tasks: Vec<&str> = snap.supervisors[0].children[0]
+            .tasks
+            .iter()
+            .map(|task| task.task_id.as_str())
+            .collect();
+        assert_eq!(tasks, vec!["default-task", "quota-task"]);
+        assert_eq!(
+            snap.supervisors[0].children[0].workers,
+            vec![default_worker.to_owned(), quota_worker.to_owned()]
+        );
     }
 }

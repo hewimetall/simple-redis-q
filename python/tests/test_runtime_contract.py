@@ -279,7 +279,7 @@ def test_last_exception_calls_on_dead_once():
         message_id="dead-1",
     )
     result = asyncio.run(app.dispatch(message))
-    assert result == {"outcome": "dead", "reason": "retries"}
+    assert result == {"outcome": "dead", "reason": "retries", "error": "RuntimeError: boom"}
     assert len(calls) == 1
     letter = calls[0]
     assert letter.actor_name == "discover"
@@ -307,6 +307,7 @@ def test_timeout_on_the_last_attempt_calls_on_dead():
     result = asyncio.run(app.dispatch(message))
     assert result["outcome"] == "dead"
     assert result["reason"] == "timeout"
+    assert result["error"].startswith("TimeoutError:")
     letter = calls[0]
     assert letter.actor_name == "discover"
     assert letter.reason == "timeout"
@@ -332,7 +333,7 @@ def test_poison_hook_receives_none():
     )
     message["deliveries"] = 3
     result = asyncio.run(app.dispatch(message))
-    assert result == {"outcome": "dead", "reason": "poison"}
+    assert result == {"outcome": "dead", "reason": "poison", "error": None}
     letter = calls[0]
     assert letter.reason == "poison"
     assert letter.message_id == "poison-error"
@@ -384,7 +385,7 @@ def test_poison_delivery_calls_on_dead_and_rejects():
     )
     message["deliveries"] = 3
     result = asyncio.run(app.dispatch(message))
-    assert result == {"outcome": "dead", "reason": "poison"}
+    assert result == {"outcome": "dead", "reason": "poison", "error": None}
     assert calls[0].reason == "poison"
     assert calls[0].message_id == "poison-1"
     assert calls[0].error is None
@@ -521,7 +522,7 @@ def test_unknown_actor_calls_on_dead_once():
         retries=2,
     )
     result = asyncio.run(app.dispatch(message))
-    assert result == {"outcome": "dead", "reason": "unknown_actor"}
+    assert result == {"outcome": "dead", "reason": "unknown_actor", "error": None}
     letter = calls[0]
     assert letter.actor_name == "missing"
     assert letter.kwargs == {"value": 1}

@@ -281,6 +281,25 @@ async fn handle_job(
     worker: WorkerContext,
     state: Data<QueueState>,
 ) -> Result<serde_json::Value, BoxDynError> {
+    let task_id = task.task_id().to_owned();
+    let mut conn = state.shared.redis.clone();
+    if let Err(error) = simple_q_runtime::pages::note_delivery_start(
+        &mut conn,
+        &state.shared.config,
+        &job.queue,
+        &task_id,
+    )
+    .await
+    {
+        tracing::warn!(
+            message_id = %job.message_id,
+            actor_name = %job.actor_name,
+            queue_name = %job.queue,
+            %error,
+            "failed to record started_at"
+        );
+    }
+
     if let Err(error) = job.validate() {
         tracing::warn!(
             message_id = %job.message_id,
@@ -297,6 +316,7 @@ async fn handle_job(
                 "dead-letter hook failed for an invalid message"
             );
         }
+        record_dead(&mut conn, &state, &job, &task_id, "invalid", None, 0).await;
         release_unique_key(&state.shared.redis, &job).await;
         return Err(Box::new(AbortError::new(error)));
     }
@@ -307,8 +327,6 @@ async fn handle_job(
         state.shared.pool.pause_all();
     }
 
-    let task_id = task.task_id().to_owned();
-    let mut conn = state.shared.redis.clone();
     let deliveries = match redis_api::incr_delivery(&mut conn, &job.message_id, job.retries).await {
         Ok(value) => value,
         Err(error) => {
@@ -343,6 +361,10 @@ async fn handle_job(
         }
         bridge::note_reject(&job.queue, &job.actor_name);
         note_finished(&state);
+        record_dead(
+            &mut conn, &state, &job, &task_id, "poison", None, deliveries,
+        )
+        .await;
         release_unique_key(&state.shared.redis, &job).await;
         return Err(Box::new(AbortError::new(anyhow::anyhow!("dead: poison"))));
     }
@@ -361,6 +383,17 @@ async fn handle_job(
     let value = match result {
         Ok(value) => value,
         Err(error) => {
+            let text = error.to_string();
+            record_dead(
+                &mut conn,
+                &state,
+                &job,
+                &task_id,
+                "dispatch",
+                Some(&text),
+                deliveries,
+            )
+            .await;
             release_unique_key(&state.shared.redis, &job).await;
             return Err(Box::new(AbortError::new(error)));
         }
@@ -396,20 +429,57 @@ async fn handle_job(
             Ok(value)
         }
         Some("dead") => {
+            let reason = value
+                .get("reason")
+                .and_then(|item| item.as_str())
+                .unwrap_or("dead");
+            let error_text = value
+                .get("error")
+                .and_then(|item| item.as_str())
+                .filter(|text| !text.is_empty());
+            record_dead(
+                &mut conn, &state, &job, &task_id, reason, error_text, deliveries,
+            )
+            .await;
             release_unique_key(&state.shared.redis, &job).await;
-            Err(Box::new(AbortError::new(anyhow::anyhow!(
-                "dead: {}",
-                value
-                    .get("reason")
-                    .and_then(|item| item.as_str())
-                    .unwrap_or("dead")
-            ))))
+            Err(Box::new(AbortError::new(anyhow::anyhow!("dead: {reason}"))))
         }
         _ => {
             release_acked(&state.shared.redis, &job).await;
             release_unique_key(&state.shared.redis, &job).await;
             Ok(value)
         }
+    }
+}
+
+async fn record_dead(
+    conn: &mut ConnectionManager,
+    state: &Data<QueueState>,
+    job: &Job,
+    task_id: &str,
+    reason: &str,
+    error: Option<&str>,
+    deliveries: u64,
+) {
+    if let Err(record_error) = simple_q_runtime::pages::record_dead(
+        conn,
+        &state.shared.config,
+        &job.queue,
+        task_id,
+        reason,
+        error,
+        deliveries,
+    )
+    .await
+    {
+        tracing::warn!(
+            message_id = %job.message_id,
+            actor_name = %job.actor_name,
+            queue_name = %job.queue,
+            %reason,
+            error = %record_error,
+            "failed to record a dead delivery"
+        );
     }
 }
 

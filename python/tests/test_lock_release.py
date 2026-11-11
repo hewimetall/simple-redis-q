@@ -64,7 +64,7 @@ def test_release_error_keeps_a_successful_result():
 def test_release_error_does_not_hide_the_handler_error():
     client.release_error = RuntimeError("redis down")
     result = asyncio.run(_app().dispatch(_message("boom")))
-    assert result == {"outcome": "dead", "reason": "retries"}
+    assert result == {"outcome": "dead", "reason": "retries", "error": "RuntimeError: boom"}
 
 
 def test_lock_ttl_rejects_zero():

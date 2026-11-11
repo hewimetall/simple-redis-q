@@ -6,7 +6,6 @@ use std::collections::BTreeSet;
 use anyhow::{Context, Result};
 use redis::aio::ConnectionManager;
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SweepStats {
     pub done: u64,
@@ -22,7 +21,8 @@ pub fn should_delete(done_at: i64, now: i64, ttl_secs: u64) -> bool {
 ///
 /// Apalis `vacuum` reads a data hash with `HGETALL` and does not remove ids from
 /// the done and dead sets. This walk uses a cursor and removes the payload,
-/// the per-task meta hash, and the set member together.
+/// the per-task meta hash, and the set member together. A dead id is also
+/// removed from `simple_q:dead:{queue}`.
 pub async fn sweep_queue(
     conn: &mut ConnectionManager,
     queue: &str,
@@ -149,7 +149,8 @@ async fn sweep_set(
             if !should_delete(done_at, now, ttl_secs) {
                 continue;
             }
-            let _: () = redis::pipe()
+            let mut delete = redis::pipe();
+            delete
                 .cmd("HDEL")
                 .arg(&data)
                 .arg(&id)
@@ -157,10 +158,14 @@ async fn sweep_set(
                 .arg(&meta)
                 .cmd("SREM")
                 .arg(&set)
-                .arg(&id)
-                .ignore()
-                .query_async(conn)
-                .await?;
+                .arg(&id);
+            if which == "dead" {
+                delete
+                    .cmd("ZREM")
+                    .arg(crate::pages::dead_index_key(queue))
+                    .arg(&id);
+            }
+            let _: () = delete.ignore().query_async(conn).await?;
             deleted += 1;
         }
         cursor = next;

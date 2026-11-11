@@ -201,7 +201,7 @@ def test_dead_hooks_run_in_install_order_when_one_of_them_raises():
         message_id="dead-1",
     )
     result = asyncio.run(app.dispatch(message))
-    assert result == {"outcome": "dead", "reason": "retries"}
+    assert result == {"outcome": "dead", "reason": "retries", "error": "RuntimeError: nope"}
     assert trace == [
         ("enter", "a", "work"),
         ("enter", "b", "work"),

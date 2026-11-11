@@ -44,7 +44,7 @@ agent-worker info --all
 
 Read-only. The command loads the application only to take the Redis URL and `Config` from its `Client`. It does not register a worker and it does not heartbeat.
 
-By default it prints the supervisor on this host (`HOSTNAME`, the same value as the worker name), that supervisor's processes and the tasks they hold, and the counters for that supervisor's queues. `--all` prints every supervisor and the orphan processes. `--queue` may be repeated and limits the queues. `--json` prints the same object `QueueAdmin.snapshot` returns.
+By default it prints the supervisor on this host (`HOSTNAME`, the same value as the worker name), that supervisor's processes and the tasks they hold, and the counters for that supervisor's queues. `--all` prints every supervisor and the orphan processes. `--queue` may be repeated and limits the queue counters. A process still lists held tasks for every queue on its supervisor record, including a queue that was not passed. `--json` prints the same object `QueueAdmin.snapshot` returns.
 
 Exit 0. Exit 1 when `--all` is absent and this host has no live supervisor. The message is `no live supervisor on {host}` on stderr.
 

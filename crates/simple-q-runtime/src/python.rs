@@ -246,7 +246,10 @@ fn prepare(
             .map_err(|_| PyTypeError::new_err("on_send hook must return a headers dict"))?;
         header_map = string_dict(updated)?;
     }
-    let kwargs_json: String = py.import("json")?.call_method1("dumps", (kwargs,))?.extract()?;
+    let kwargs_json: String = py
+        .import("json")?
+        .call_method1("dumps", (kwargs,))?
+        .extract()?;
     let kwargs_value: Value = serde_json::from_str(&kwargs_json)
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
     if !kwargs_value.is_object() {
@@ -351,6 +354,88 @@ impl Admin {
             serde_json::to_string(&snapshot)
                 .map_err(|error| PyRuntimeError::new_err(error.to_string()))
         })
+    }
+
+    /// JSON page of dead messages. `limit` defaults to 50, rejects 0, and caps at 200.
+    #[pyo3(signature = (queue, limit=50, cursor=None))]
+    fn dead<'py>(
+        &self,
+        py: Python<'py>,
+        queue: String,
+        limit: i64,
+        cursor: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let _runtime = ensure_runtime();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut conn = state
+                .connect()
+                .await
+                .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+            let page = crate::pages::dead_page(
+                &mut conn,
+                &state.config,
+                &queue,
+                page_limit(limit)?,
+                cursor.as_deref(),
+            )
+            .await
+            .map_err(page_error)?;
+            serde_json::to_string(&page).map_err(|error| PyRuntimeError::new_err(error.to_string()))
+        })
+    }
+
+    /// JSON page of `active` (`LRANGE`) or `scheduled` (`ZRANGE`) tasks.
+    #[pyo3(signature = (queue, state, limit=50, cursor=None))]
+    fn peek<'py>(
+        &self,
+        py: Python<'py>,
+        queue: String,
+        state: String,
+        limit: i64,
+        cursor: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let runtime_state = Arc::clone(&self.state);
+        let _runtime = ensure_runtime();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut conn = runtime_state
+                .connect()
+                .await
+                .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+            let page = crate::pages::peek_page(
+                &mut conn,
+                &runtime_state.config,
+                &queue,
+                &state,
+                page_limit(limit)?,
+                cursor.as_deref(),
+            )
+            .await
+            .map_err(page_error)?;
+            serde_json::to_string(&page).map_err(|error| PyRuntimeError::new_err(error.to_string()))
+        })
+    }
+}
+
+fn page_limit(limit: i64) -> PyResult<u64> {
+    if limit <= 0 {
+        return Err(PyValueError::new_err("limit must be greater than zero"));
+    }
+    u64::try_from(limit)
+        .map(|limit| limit.min(crate::pages::PAGE_MAX))
+        .map_err(|error| PyValueError::new_err(error.to_string()))
+}
+
+fn page_error(error: anyhow::Error) -> PyErr {
+    let text = error.to_string();
+    if text.contains("limit must")
+        || text.contains("cursor is not valid")
+        || text.contains("cursor is not in the active list")
+        || text.contains("state must")
+    {
+        PyValueError::new_err(text)
+    } else {
+        PyRuntimeError::new_err(text)
     }
 }
 
