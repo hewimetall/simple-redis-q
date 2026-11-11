@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.0rc4
 
 The worker wheel build compiles inside the manylinux container's own cargo target directory. A host `target/` from Ubuntu 24.04 was being executed there, and its build scripts need glibc 2.34.
 
