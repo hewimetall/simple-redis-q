@@ -1,8 +1,10 @@
 """In-memory client with the same awaitable interface as ``Client``.
 
-``drain`` runs queued messages through ``App.dispatch``, including messages
-sent by a handler. A ``unique_key`` stays held until a terminal outcome.
-This client does not open Redis.
+``drain`` runs queued messages through ``App.dispatch``, one at a time,
+including messages sent by a handler. It calls ``startup`` and ``shutdown``.
+A ``retry`` outcome goes back on the queue immediately, without waiting out
+the backoff, and its ``unique_key`` stays held. A terminal outcome releases
+the key. This client does not open Redis.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ class MemoryClient:
         self._held: set[tuple[str, str]] = set()
         self._on_send = []
         self._locks: dict[str, str] = {}
+        self._alive: set[str] = set()
         self._closed = False
 
     def on_send(self, fn):
@@ -76,8 +79,20 @@ class MemoryClient:
             return None
         return payload["message_id"]
 
+    def set_worker_alive(self, name: str, alive: bool = True) -> None:
+        """Record whether ``worker_alive`` should report ``name``.
+
+        A name that was never recorded is not alive. Passing ``False``
+        removes it, so a test can show a dead worker.
+        """
+
+        if alive:
+            self._alive.add(str(name))
+        else:
+            self._alive.discard(str(name))
+
     async def worker_alive(self, name: str) -> bool:
-        return True
+        return str(name) in self._alive
 
     async def close(self) -> None:
         self._closed = True
@@ -95,18 +110,27 @@ class MemoryClient:
         return True
 
     async def drain(self, app) -> None:
-        while True:
-            message = self._pop()
-            if message is None:
-                return
-            try:
-                result = await app.dispatch(message)
-            except Exception:
+        await app.startup()
+        try:
+            while True:
+                message = self._pop()
+                if message is None:
+                    return
+                try:
+                    result = await app.dispatch(message)
+                except Exception:
+                    self._release_unique(message)
+                    raise
+                outcome = result.get("outcome") if isinstance(result, dict) else None
+                if outcome == "retry":
+                    again = dict(message)
+                    again["retries"] = int(again.get("retries") or 0) + 1
+                    again.pop("delay_ms", None)
+                    self._requeue(again)
+                    continue
                 self._release_unique(message)
-                raise
-            outcome = result.get("outcome") if isinstance(result, dict) else None
-            if outcome != "retry":
-                self._release_unique(message)
+        finally:
+            await app.shutdown()
 
     def depth(self, queue: str) -> int:
         return len(self._queues.get(str(queue), ()))
@@ -131,6 +155,9 @@ class MemoryClient:
             if pending:
                 return pending.pop(0)
         return None
+
+    def _requeue(self, message: dict) -> None:
+        self._queues.setdefault(str(message["queue"]), []).append(message)
 
     def _release_unique(self, message: dict) -> None:
         token = self._token(message)

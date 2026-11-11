@@ -18,7 +18,11 @@ A queue name is one lowercase ASCII word of letters and digits. `default` is the
 
 ## Also true in 1.0
 
-Wheels are Linux x86_64 and aarch64 for CPython 3.12.
+Wheels are Linux x86_64 and aarch64 for CPython 3.12. The worker wheel is `manylinux_2_28` (glibc 2.28 or newer). The installed `agent-worker` command is a launcher in front of `agent-worker.bin`, because a uv-managed CPython does not put `libpython3.12.so.1.0` on the default linker path.
+
+`MemoryClient.drain` runs one message at a time. Two handlers are never in flight together, so a test cannot show two tasks holding locks at once. A `retry` outcome is queued again immediately. The backoff delay is not waited out.
+
+A handler time limit is delivered as `CancelledError`. `except Exception` in the handler does not see it. The last attempt is `on_dead` with reason `timeout`.
 
 Messages are version 1. A missing version or any other version is rejected and dead-lettered with reason `invalid`. `error` on that letter is unset.
 

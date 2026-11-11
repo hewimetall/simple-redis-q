@@ -45,7 +45,7 @@ pub enum Command {
         app: String,
 
         /// Call the attribute. It must return an App.
-        /// `SIMPLE_Q_APP_FACTORY`, when set to any value, enables this the same way `--factory` does.
+        /// `SIMPLE_Q_APP_FACTORY` enables this for `1`, `true`, `yes`, or `on`.
         #[arg(long, action = ArgAction::SetTrue)]
         factory: bool,
 
@@ -100,7 +100,7 @@ pub enum Command {
         app: String,
 
         /// Call the attribute. It must return an App.
-        /// `SIMPLE_Q_APP_FACTORY`, when set to any value, enables this the same way `--factory` does.
+        /// `SIMPLE_Q_APP_FACTORY` enables this for `1`, `true`, `yes`, or `on`.
         #[arg(long, action = ArgAction::SetTrue)]
         factory: bool,
 
@@ -138,13 +138,24 @@ pub enum Command {
     },
 }
 
-/// `--factory`, or `SIMPLE_Q_APP_FACTORY` set to any value, including `false`.
+/// `--factory`, or `SIMPLE_Q_APP_FACTORY` set to `1`, `true`, `yes`, or `on`.
 ///
+/// `false`, `0`, `no`, `off`, an empty string, and an unset variable stay off.
 /// The environment variable is not a clap `env` value. Clap would parse
 /// `SetTrue`'s default `"false"` with that parser and turn the flag on when
 /// the variable is unset.
 pub fn factory_enabled(flag: bool) -> bool {
-    flag || std::env::var_os("SIMPLE_Q_APP_FACTORY").is_some()
+    flag || env_flag_enabled(std::env::var("SIMPLE_Q_APP_FACTORY").ok())
+}
+
+pub(crate) fn env_flag_enabled(value: Option<String>) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 #[cfg(test)]
@@ -152,7 +163,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn factory_stays_off_until_the_flag_or_any_env_value() {
+    fn factory_follows_the_flag_or_a_truthy_env_value() {
         let absent = Cli::try_parse_from(["agent-worker", "worker", "--app", "app:create"])
             .expect("worker parses");
         match absent.command {
@@ -168,8 +179,15 @@ mod tests {
             _ => panic!("info"),
         }
 
-        let env_set = std::env::var_os("SIMPLE_Q_APP_FACTORY").is_some();
-        assert_eq!(factory_enabled(false), env_set);
+        let from_env = env_flag_enabled(std::env::var("SIMPLE_Q_APP_FACTORY").ok());
+        assert_eq!(factory_enabled(false), from_env);
         assert!(factory_enabled(true));
+        for value in ["1", "true", "TRUE", "yes", "on"] {
+            assert!(env_flag_enabled(Some(value.into())), "{value}");
+        }
+        for value in ["false", "0", "no", "off", "", " false ", "banana"] {
+            assert!(!env_flag_enabled(Some(value.into())), "{value}");
+        }
+        assert!(!env_flag_enabled(None));
     }
 }

@@ -67,7 +67,7 @@ On `Event::Start` the child calls `note_worker_start`. That `HSET`s `ppid`, `sta
 
 ### Snapshot
 
-`agent-worker info` calls `bridge::read_client`, connects, then `admin::snapshot`. It does not register a worker and it does not write a heartbeat. `QueueAdmin.snapshot` calls the same function on the caller's `Client` connection and loop. `import simple_q` does not export `QueueAdmin`. `--json` and the Python object are the same value.
+`agent-worker info` calls `bridge::read_client`, connects, then `admin::snapshot`. It does not register a worker and it does not write a heartbeat. `QueueAdmin.snapshot` calls the same function on the caller's `Client` connection and loop. `from simple_q import QueueAdmin` loads the extension. `import simple_q` does not. `--json` and the Python object are the same value.
 
 `snapshot` does not walk the waiting, done, or dead lists. It reads three batches. The first is Redis `TIME`, `ZRANGEBYSCORE` on `simple_q:supervisors`, and, per queue, `LLEN` of the active list, `ZCARD` of the scheduled set, `SCARD` of done, `SCARD` of dead, and `ZRANGE` of workers with scores. The second is `HGETALL` for each supervisor still inside the heartbeat window, then `HGETALL` of the metadata hash and `SMEMBERS` of the inflight set for each worker. A queue's inflight count is the sum of those sets for every worker of the queue. A `host` filter limits supervisors, their children, and orphans. It does not limit the queue counters. The third batch, per held task, is `HGET` of the payload, `HMGET` of `locked_at`, then `GET` of `delivery:{message_id}:{retries}`. A missing payload still yields the task id. Queue key names come from the apalis config for that queue.
 

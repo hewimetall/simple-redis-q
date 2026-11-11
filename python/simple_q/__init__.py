@@ -24,6 +24,11 @@ def __getattr__(name: str):
         value = getattr(_runtime, name)
         globals()[name] = value
         return value
+    if name == "QueueAdmin":
+        from simple_q.admin import QueueAdmin
+
+        globals()[name] = QueueAdmin
+        return QueueAdmin
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -34,6 +39,7 @@ __all__ = [
     "Config",
     "DeadLetter",
     "MemoryClient",
+    "QueueAdmin",
     "Tracing",
     "actor",
     "build_message",

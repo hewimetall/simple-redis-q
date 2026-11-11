@@ -56,4 +56,4 @@ Any HTTP path on that address returns the scrape. A missing `simple_q_child_memo
 | `RUST_LOG` | `info` | Text log filter. It does not filter the OpenTelemetry layer. |
 | `HOSTNAME` | `/etc/hostname`, then `localhost` | Host field inside the worker name and the supervisor record. |
 | `SIMPLE_Q_APP` | unset | `module:attribute` for `worker` and `info` when `--app` is omitted. |
-| `SIMPLE_Q_APP_FACTORY` | unset | When set, `worker` and `info` call the attribute, the same as `--factory`. |
+| `SIMPLE_Q_APP_FACTORY` | unset | `1`, `true`, `yes`, or `on` makes `worker` and `info` call the attribute, the same as `--factory`. `false`, `0`, `no`, `off`, and empty do not. |

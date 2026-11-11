@@ -4,7 +4,7 @@ Rust supervisor and queue runtime for Python async tasks. The worker binary is `
 
 ## Install
 
-Supported runtime: CPython 3.12, Linux x86_64 and aarch64.
+Supported runtime: CPython 3.12, Linux x86_64 and aarch64, glibc 2.28 or newer.
 
 ```bash
 uv add simple-q-runtime simple-q-worker
@@ -41,4 +41,4 @@ async def enqueue() -> None:
 
 ## Documentation
 
-These pages describe 1.0: [docs/index.md](docs/index.md). GitHub Pages publishes that site from `main` and from `v*` tags.
+These pages describe 1.0: [docs/index.md](docs/index.md).

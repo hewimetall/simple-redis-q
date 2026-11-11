@@ -1,35 +1,87 @@
 #!/bin/bash
-# Build simple-q-worker inside python:3.12-slim-bookworm.
+# Build simple-q-worker inside manylinux_2_28.
 #
-# The manylinux image used for the extension wheel ships CPython without
-# libpython3.12.so. The supervisor binary links that shared library and must
-# be built where it exists. manylinux_2_36 matches the glibc in Debian 12.
+# The image has glibc 2.28 and CPython 3.12's libpython3.12.so.1.0. A binary
+# linked there runs on Ubuntu 22.04 and RHEL 9. The Debian 12 image is glibc
+# 2.36, which is too new for those hosts. auditwheel stays skipped because the
+# ELF keeps its NEEDED entry for libpython instead of vendoring it.
 set -euo pipefail
 
 platform="${1:-linux/amd64}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$root/dist"
 
+case "$platform" in
+  linux/amd64) image=quay.io/pypa/manylinux_2_28_x86_64 ;;
+  linux/arm64) image=quay.io/pypa/manylinux_2_28_aarch64 ;;
+  *)
+    echo "unsupported platform: $platform" >&2
+    exit 1
+    ;;
+esac
+
 docker run --rm --platform "$platform" -i \
   -v "$root":/io \
   -w /io \
-  python:3.12-slim-bookworm \
+  "$image" \
   bash -s <<'EOF'
 set -euo pipefail
-apt-get update
-apt-get install -y --no-install-recommends build-essential ca-certificates curl pkg-config libssl-dev
+# The image's /opt/python builds are not --enable-shared, so there is no
+# libpython3.12.so to link. Build one here. The container's glibc is 2.28,
+# so this library does not raise the wheel's glibc requirement.
+yum install -y gcc make openssl-devel zlib-devel libffi-devel bzip2-devel xz-devel readline-devel sqlite-devel pkgconf-pkg-config
+python_version=3.12.16
+curl -fsSL "https://www.python.org/ftp/python/${python_version}/Python-${python_version}.tgz" -o /tmp/python.tgz
+tar -C /tmp -xzf /tmp/python.tgz
+(
+  cd "/tmp/Python-${python_version}"
+  ./configure --prefix=/opt/python-shared --enable-shared --with-ensurepip=install
+  make -j"$(nproc)"
+  make install
+)
+echo /opt/python-shared/lib > /etc/ld.so.conf.d/python-shared.conf
+ldconfig
+test -f /opt/python-shared/lib/libpython3.12.so.1.0
 curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
 . "$HOME/.cargo/env"
-python -m pip install --upgrade pip
-python -m pip install "maturin>=1.8,<2" uv
+export PATH="/opt/python-shared/bin:${PATH}"
+export LD_LIBRARY_PATH=/opt/python-shared/lib
+export PYO3_PYTHON=/opt/python-shared/bin/python3.12
+python3.12 -m pip install --upgrade pip
+python3.12 -m pip install "maturin>=1.8,<2" uv
 cd crates/agent-worker
-maturin build --release -b bin -i python3.12 --compatibility manylinux_2_36 --auditwheel skip --out /tmp/wheels
+maturin build --release -b bin -i python3.12 --compatibility manylinux_2_28 --auditwheel skip --out /tmp/wheels
 cd /io
-uv venv /opt/venv
-uv pip install --python /opt/venv/bin/python dist/simple_q_runtime-*.whl /tmp/wheels/simple_q_worker-*.whl
+python3.12 /io/scripts/install_worker_launcher.py /tmp/wheels/simple_q_worker-*.whl /io/scripts/agent-worker-launch.sh
+python3.12 - << 'PY'
+import pathlib, re, subprocess, sys, zipfile
+wheel = next(pathlib.Path("/tmp/wheels").glob("simple_q_worker-*.whl"))
+with zipfile.ZipFile(wheel) as archive:
+    elf = next(name for name in archive.namelist() if name.endswith("scripts/agent-worker.bin"))
+    archive.extract(elf, "/tmp/elf")
+path = pathlib.Path("/tmp/elf") / elf
+text = subprocess.check_output(["objdump", "-T", str(path)], text=True, errors="replace")
+versions = []
+for match in re.findall(r"GLIBC_([0-9]+(?:\.[0-9]+)*)", text):
+    versions.append(tuple(int(part) for part in match.split(".")))
+if not versions:
+    sys.exit("agent-worker.bin has no GLIBC symbols")
+highest = max(versions)
+if highest > (2, 28):
+    sys.exit(f"agent-worker.bin needs GLIBC_{'.'.join(map(str, highest))}, want <= 2.28")
+print("glibc", ".".join(map(str, highest)))
+PY
+ver=$(basename /tmp/wheels/simple_q_worker-*.whl | cut -d- -f2)
+if ! compgen -G "/io/dist/simple_q_runtime-${ver}-"*.whl > /dev/null; then
+  (cd /io && maturin build --release --out dist -i python3.12 --compatibility manylinux_2_28)
+fi
+uv venv --python /opt/python-shared/bin/python3.12 /opt/venv
+uv pip install --python /opt/venv/bin/python \
+  /io/dist/simple_q_runtime-${ver}-*.whl \
+  /tmp/wheels/simple_q_worker-${ver}-*.whl
 bin_ver="$(/opt/venv/bin/agent-worker --version | awk '{print $NF}')"
 py_ver="$(/opt/venv/bin/python -c 'import importlib.metadata as m; print(m.version("simple-q-runtime"))')"
-python - "$bin_ver" "$py_ver" << 'PY'
+python3.12 - "$bin_ver" "$py_ver" << 'PY'
 import re
 import sys
 

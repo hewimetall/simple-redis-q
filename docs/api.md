@@ -189,10 +189,10 @@ The Redis URL is an argument of `Client`. `import simple_q` does not read `REDIS
 
 ## `QueueAdmin`
 
-`import simple_q` does not export this type. Import the module directly.
+`import simple_q` does not load this type. Importing the name does, and that loads the extension.
 
 ```python
-from simple_q.admin import QueueAdmin
+from simple_q import QueueAdmin
 
 admin = QueueAdmin(client)
 snap = await admin.snapshot(["default", "quota"])
@@ -220,19 +220,25 @@ class MemoryClient:
     """In-process stand-in for ``Client``. Sending does not open Redis.
 
     ``send`` and ``send_with_options`` queue in this process.
-    ``worker_alive`` is ``True``. A ``unique_key`` is held while its
-    message is queued or being drained. A second send of that key
-    returns ``None`` until ``drain`` finishes it.
+    ``worker_alive`` is ``False`` until ``set_worker_alive(name)``.
+    A ``unique_key`` is held while its message is queued, retrying, or
+    being drained. A second send of that key returns ``None`` until a
+    terminal outcome releases it.
     """
 
-    async def drain(self, app: App) -> None:
-        """Run every queued message through ``app``.
+    def set_worker_alive(self, name: str, alive: bool = True) -> None:
+        """Mark ``name`` alive, or dead when ``alive`` is ``False``."""
 
-        Messages sent by a handler are included. The unique key is
-        released when dispatch returns an outcome other than ``retry``,
-        and when dispatch raises. A ``retry`` outcome leaves the key
-        held and does not put the message back on the in-process queue.
-        The call ends when that queue is empty.
+    async def drain(self, app: App) -> None:
+        """Run every queued message through ``app``, one at a time.
+
+        Calls ``startup`` before the first message and ``shutdown`` when
+        the queue is empty or dispatch raises. Messages sent by a handler
+        are included. Two handlers are never in flight together.
+        A ``retry`` outcome increments ``retries`` and goes back on the
+        queue immediately. The backoff is not waited out. The unique key
+        stays held across that retry and is released for any other
+        outcome, and when dispatch raises.
         """
 ```
 
@@ -260,5 +266,7 @@ class DeadLetter:
 | `poison` | `deliveries > max_deliveries` before the handler | unset |
 | `invalid` | The stored message failed validation | unset |
 | `unknown_actor` | `actor_name` is not on this `App` | unset |
+
+A time limit cancels the running handler. The handler sees `CancelledError`. That is a `BaseException`, so `except Exception` inside the handler does not run. Dispatch sees `TimeoutError`. While `retries` is below `max_retries` the outcome is `retry`. On the last attempt the outcome is `dead` with reason `timeout`, and `on_dead` runs. There is no separate failure hook.
 
 `kwargs` on the letter is a copy of the message kwargs.

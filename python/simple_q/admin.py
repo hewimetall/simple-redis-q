@@ -1,8 +1,8 @@
 """Read-only snapshot of supervisors, processes, and the tasks they hold.
 
-``import simple_q`` does not load this module. Import it directly:
-
-``from simple_q.admin import QueueAdmin``
+``import simple_q`` does not load this module. ``from simple_q import QueueAdmin``
+does, and that import loads the extension. ``from simple_q.admin import QueueAdmin``
+is the same object.
 """
 
 from __future__ import annotations
