@@ -4,7 +4,7 @@ Rust supervisor and queue runtime for Python async tasks. The worker binary is `
 
 ## Install
 
-Supported runtime: CPython 3.12, Linux x86_64 and aarch64, glibc 2.28 or newer.
+Supported runtime: CPython 3.12, 3.13, 3.14, and 3.15 with the GIL. Linux x86_64 and aarch64, glibc 2.28 or newer. Free-threaded builds are not supported. A producer and a worker may use different minor versions: the message is JSON, and the actor module is imported by the worker.
 
 ```bash
 uv add simple-q-runtime simple-q-worker

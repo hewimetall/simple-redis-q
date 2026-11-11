@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+Wheels are built for CPython 3.12, 3.13, 3.14, and 3.15, each with the GIL. Free-threaded builds are not produced. `simple-q-runtime` is one wheel per minor version. `simple-q-worker` links `libpython3.X.so.1.0` for that same minor. The launcher reads `pyvenv.cfg` `version` and prepends the directory that holds that `libpython`.
+
 ## 1.0.0rc6
 
 An active `peek` page is a list offset. A missing id does not fail the next page. A cursor that names a task id raises `ValueError`. Stored `error` is at most 4096 bytes.

@@ -13,7 +13,7 @@ agent-worker worker --app module:app --queues default
 
 `--factory` calls the attribute and uses the returned `App`. Without `--factory`, the attribute is the `App`.
 
-The process without the internal child flag only supervises. It forks one child per slot. The child embeds CPython 3.12, imports the application, and runs the queues.
+The process without the internal child flag only supervises. It forks one child per slot. The child embeds the CPython minor the wheel was linked against (3.12, 3.13, 3.14, or 3.15, with the GIL), imports the application, and runs the queues.
 
 | Flag | Default | Role |
 | --- | --- | --- |
