@@ -36,7 +36,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pytest prometheus_client "maturin>=1.8,<2"
           maturin develop
-          python -m pytest python/tests/test_runtime_contract.py python/tests/test_lock_release.py python/tests/test_version_source.py python/tests/test_alter_option.py -q
+          python -m pytest python/tests/test_runtime_contract.py python/tests/test_lock_release.py python/tests/test_version_source.py python/tests/test_alter_option.py python/tests/test_middleware_stack.py -q
           cargo test --workspace
 
   integration:
