@@ -709,6 +709,26 @@ struct LoadedSup {
     fields: BTreeMap<String, String>,
 }
 
+/// Apalis 1.1.1 stores a new done or dead key as a sorted set scored by
+/// completion time. A key that is already a set stays a set.
+const TERMINAL_CARD: &str = r#"
+local key_type = redis.call("TYPE", KEYS[1])
+if type(key_type) == "table" then
+    key_type = key_type["ok"]
+end
+if key_type == "zset" then
+    return redis.call("ZCARD", KEYS[1])
+end
+if key_type == "set" then
+    return redis.call("SCARD", KEYS[1])
+end
+return 0
+"#;
+
+fn terminal_card(pipe: &mut redis::Pipeline, key: &str) {
+    pipe.cmd("EVAL").arg(TERMINAL_CARD).arg(1).arg(key);
+}
+
 async fn read_overview(
     conn: &mut ConnectionManager,
     prepared: &[(String, QueueConfig)],
@@ -733,10 +753,10 @@ async fn read_overview(
         pipe.cmd("ZCARD").arg(config.scheduled_jobs_set());
         let scheduled_at = expected;
         expected += 1;
-        pipe.cmd("SCARD").arg(config.done_jobs_set());
+        terminal_card(&mut pipe, &config.done_jobs_set());
         let done_at = expected;
         expected += 1;
-        pipe.cmd("SCARD").arg(config.dead_jobs_set());
+        terminal_card(&mut pipe, &config.dead_jobs_set());
         let dead_at = expected;
         expected += 1;
         pipe.cmd("ZRANGE")

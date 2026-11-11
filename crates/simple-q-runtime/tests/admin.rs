@@ -434,6 +434,15 @@ async fn queue_counts_follow_active_inflight_done_and_dead() {
         .await
         .expect("dead");
     assert_eq!(buried.queues[0].dead, 1);
+
+    let _ = redis(&["DEL", &done, &dead]);
+    let _ = redis(&["ZADD", &done, "1", &task_id]);
+    let _ = redis(&["ZADD", &dead, "1", &dead_id]);
+    let sorted = admin::snapshot(&mut conn, &settings, &[queue.clone()], Some(&host))
+        .await
+        .expect("sorted");
+    assert_eq!(sorted.queues[0].done, 1);
+    assert_eq!(sorted.queues[0].dead, 1);
 }
 
 #[tokio::test]
@@ -861,6 +870,47 @@ async fn sweep_removes_the_dead_index_member() {
     assert_eq!(redis(&["EXISTS", &old_meta]), "0");
     assert_eq!(redis(&["ZSCORE", &index, fresh_id]), fresh);
     assert_eq!(redis(&["SISMEMBER", &dead, fresh_id]), "1");
+}
+
+#[tokio::test]
+async fn sweep_removes_a_member_from_a_dead_sorted_set() {
+    let Some(mut conn) = connect().await else {
+        return;
+    };
+    let queue = token("q");
+    let settings = Config::defaults();
+    let config = redis_api::queue_config(&queue, &settings).expect("queue");
+    let data = config.job_data_hash();
+    let dead = config.dead_jobs_set();
+    let index = pages::dead_index_key(&queue);
+    let old_id = "old-zdead";
+    let fresh_id = "fresh-zdead";
+    let old_meta = format!("{}:{old_id}", config.job_meta_hash());
+    let fresh_meta = format!("{}:{fresh_id}", config.job_meta_hash());
+    let mut cleanup = Cleanup::new();
+    for key in [&data, &dead, &index, &old_meta, &fresh_meta] {
+        cleanup.key(key);
+        let _ = redis(&["DEL", key]);
+    }
+    let now = redis_now();
+    let old = now.saturating_sub(100).to_string();
+    let fresh = now.to_string();
+    let _ = redis(&["HSET", &data, old_id, "old", fresh_id, "fresh"]);
+    let _ = redis(&["HSET", &old_meta, "done_at", &old]);
+    let _ = redis(&["HSET", &fresh_meta, "done_at", &fresh]);
+    let _ = redis(&["ZADD", &dead, &old, old_id, &fresh, fresh_id]);
+    let _ = redis(&["ZADD", &index, &old, old_id, &fresh, fresh_id]);
+
+    let stats = sweep_queue(&mut conn, &queue, now as i64, 10, 10, 10)
+        .await
+        .expect("sweep");
+    assert_eq!(stats.dead, 1);
+    assert_eq!(redis(&["ZSCORE", &index, old_id]), "");
+    assert_eq!(redis(&["ZSCORE", &dead, old_id]), "");
+    assert_eq!(redis(&["HGET", &data, old_id]), "");
+    assert_eq!(redis(&["EXISTS", &old_meta]), "0");
+    assert_eq!(redis(&["ZSCORE", &index, fresh_id]), fresh);
+    assert_eq!(redis(&["ZSCORE", &dead, fresh_id]), fresh);
 }
 
 #[tokio::test]

@@ -265,7 +265,7 @@ page = await admin.dead("default")
 page = await admin.dead("default", limit=50, cursor=page.cursor)
 ```
 
-`dead` pages the sorted set `simple_q:dead:{queue}` newest-first. The score is Redis `TIME` seconds and the member is the task id. Apalis still keeps the set `{queue}:dead`. This read does not `SMEMBERS` that set. It loads one page of ids, then those fields of `{queue}:data` and `{queue}:meta:{task_id}`.
+`dead` pages the sorted set `simple_q:dead:{queue}` newest-first. The score is Redis `TIME` seconds and the member is the task id. Apalis keeps `{queue}:dead` separately, as a sorted set scored by completion time when it creates the key, or as a set when the key already is one. This read does not scan that key. It loads one page of ids, then those fields of `{queue}:data` and `{queue}:meta:{task_id}`.
 
 `limit` defaults to 50. `0` raises `ValueError`. A larger limit is capped at 200. `cursor` is opaque and exclusive: the task it names is not repeated. Pass the returned `cursor` back to read the next page. `None` means this page is the last.
 
