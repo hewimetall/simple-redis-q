@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.0rc5
+
+`QueueAdmin.dead` pages dead letters newest-first. A dead record keeps `reason`, `error`, `dead_at`, and `deliveries`. `QueueAdmin.peek` pages `active` and `scheduled`. A delivery writes `started_at` once; `locked_at` still moves on each lease renew. A snapshot lists held tasks for every queue on the supervisor. `format_bytes` prints 351112 KiB as `342.9M`.
+
+`{queue}:done` and `{queue}:dead` are sorted sets when Apalis creates the key, and stay sets when the key already is one. Queue counters and the sweeper read both.
+
+The toolchain is Rust 1.99.1. Apalis and apalis-redis are 1.1.1.
+
 ## 1.0.0rc4
 
 The worker wheel build compiles inside the manylinux container's own cargo target directory. A host `target/` from Ubuntu 24.04 was being executed there, and its build scripts need glibc 2.34.
