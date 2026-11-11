@@ -5,7 +5,7 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use apalis::prelude::{TaskBuilder, TaskSink};
 use apalis_redis::{Config as QueueConfig, RedisStorage, connect as connect_redis, queries};
 pub use redis::aio::ConnectionManager;
@@ -227,6 +227,50 @@ async fn enqueue_unique(
         return Ok(None);
     }
     Ok(Some(message_id))
+}
+
+/// `true` when `task_id` is already in `{queue}:done` or `{queue}:dead`.
+///
+/// Either key may be a set or a sorted set. A missing key is not terminal.
+pub async fn task_is_terminal(
+    conn: &mut ConnectionManager,
+    queue: &str,
+    task_id: &str,
+) -> Result<bool> {
+    if terminal_member(conn, &format!("{queue}:done"), task_id).await? {
+        return Ok(true);
+    }
+    terminal_member(conn, &format!("{queue}:dead"), task_id).await
+}
+
+async fn terminal_member(conn: &mut ConnectionManager, key: &str, task_id: &str) -> Result<bool> {
+    let kind: String = redis::cmd("TYPE")
+        .arg(key)
+        .query_async(conn)
+        .await
+        .with_context(|| format!("failed to read the type of {key}"))?;
+    match kind.as_str() {
+        "none" => Ok(false),
+        "set" => {
+            let present: i64 = redis::cmd("SISMEMBER")
+                .arg(key)
+                .arg(task_id)
+                .query_async(conn)
+                .await
+                .with_context(|| format!("failed to read {key}"))?;
+            Ok(present == 1)
+        }
+        "zset" => {
+            let score: Option<String> = redis::cmd("ZSCORE")
+                .arg(key)
+                .arg(task_id)
+                .query_async(conn)
+                .await
+                .with_context(|| format!("failed to read {key}"))?;
+            Ok(score.is_some())
+        }
+        other => bail!("{key} has type {other}"),
+    }
 }
 
 /// Drop `{queue}:idempotency:{unique_key}` after a terminal outcome.

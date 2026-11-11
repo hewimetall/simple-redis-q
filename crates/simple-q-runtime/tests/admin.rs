@@ -95,6 +95,80 @@ async fn connect() -> Option<ConnectionManager> {
 }
 
 #[tokio::test]
+async fn forget_supervisor_removes_the_hash_and_the_member() {
+    let Some(mut conn) = connect().await else {
+        return;
+    };
+    let host = token("gone");
+    let pid = 77u32;
+    let member = admin::supervisor_member(&host, pid);
+    let key = admin::supervisor_key(&member);
+    let mut cleanup = Cleanup::new();
+    cleanup.key(&key);
+    cleanup.member(&member);
+    let record = SupervisorRecord {
+        host: host.clone(),
+        pid,
+        started_at: 10,
+        version: "1.0.0-rc6".to_owned(),
+        queues: vec!["default".to_owned()],
+        processes: 1,
+        concurrency: 1,
+        max_tasks: 10,
+        child_soft: None,
+        child_hard: None,
+        cgroup_current: None,
+        cgroup_max: None,
+        recycled: 0,
+        drains: 0,
+        kills: 0,
+        restarts: 0,
+        children: Vec::new(),
+    };
+    admin::publish_supervisor(&mut conn, &Config::defaults(), &record)
+        .await
+        .expect("publish");
+    assert_eq!(redis(&["EXISTS", &key]), "1");
+    admin::forget_supervisor(&mut conn, &host, pid)
+        .await
+        .expect("forget");
+    assert_eq!(redis(&["EXISTS", &key]), "0");
+    assert!(redis(&["ZSCORE", admin::SUPERVISORS_KEY, &member]).is_empty());
+}
+
+#[tokio::test]
+async fn a_done_or_dead_member_is_terminal() {
+    let Some(mut conn) = connect().await else {
+        return;
+    };
+    let queue = token("q");
+    let task_id = token("task");
+    let done = format!("{queue}:done");
+    let dead = format!("{queue}:dead");
+    let mut cleanup = Cleanup::new();
+    cleanup.key(&done);
+    cleanup.key(&dead);
+    assert!(
+        !redis_api::task_is_terminal(&mut conn, &queue, &task_id)
+            .await
+            .expect("missing")
+    );
+    assert_eq!(redis(&["ZADD", &done, "1", &task_id]), "1");
+    assert!(
+        redis_api::task_is_terminal(&mut conn, &queue, &task_id)
+            .await
+            .expect("zset")
+    );
+    let _ = redis(&["DEL", &done]);
+    assert_eq!(redis(&["SADD", &dead, &task_id]), "1");
+    assert!(
+        redis_api::task_is_terminal(&mut conn, &queue, &task_id)
+            .await
+            .expect("set")
+    );
+}
+
+#[tokio::test]
 async fn publish_shows_up_refreshes_ttl_and_expires() {
     let Some(mut conn) = connect().await else {
         return;

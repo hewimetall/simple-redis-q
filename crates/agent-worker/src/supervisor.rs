@@ -45,6 +45,7 @@ pub async fn run(
     memory_hard_ratio: f64,
     redis_url: String,
     settings: Config,
+    signals: &mut StopSignals,
 ) -> Result<()> {
     if processes == 0 {
         anyhow::bail!("--processes must be greater than zero");
@@ -59,6 +60,16 @@ pub async fn run(
         validate_queue(queue)?;
     }
 
+    // A SIGTERM during the application import is already recorded. Yield so
+    // the runtime driver delivers it before any child is forked.
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    if stop_requested(signals).await {
+        tracing::info!("stop signal received before workers started");
+        return Ok(());
+    }
+
     let prom_dir = prom_dir();
     std::fs::create_dir_all(&prom_dir).context("failed to create the metrics directory")?;
     wipe_db_files(&prom_dir).context("failed to clear the metrics directory")?;
@@ -68,16 +79,18 @@ pub async fn run(
     let metrics = spawn_metrics(&prom_dir)?;
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let mut terminate = signal(SignalKind::terminate())?;
-    let mut interrupt = signal(SignalKind::interrupt())?;
     let live = LivePids::default();
     let roster = Roster::default();
     let mut pressure = Pressure::default();
-    spawn_supervisor_heartbeat(
-        redis_url,
+    let (stop_heartbeat_tx, stop_heartbeat_rx) = watch::channel(false);
+    let host = hostname();
+    let supervisor_pid = std::process::id();
+    let heartbeat = spawn_supervisor_heartbeat(
+        redis_url.clone(),
         settings,
-        hostname(),
-        std::process::id(),
+        host.clone(),
+        supervisor_pid,
+        stop_heartbeat_rx,
         queues.clone(),
         processes,
         concurrency as u64,
@@ -127,12 +140,12 @@ pub async fn run(
                 &roster,
             );
             }
-            _ = terminate.recv() => {
+            _ = signals.terminate.recv() => {
                 tracing::info!("SIGTERM received; draining child processes");
                 let _ = shutdown_tx.send(true);
                 break;
             }
-            _ = interrupt.recv() => {
+            _ = signals.interrupt.recv() => {
                 tracing::info!("SIGINT received; draining child processes");
                 let _ = shutdown_tx.send(true);
                 break;
@@ -141,6 +154,14 @@ pub async fn run(
                 match joined {
                     None => {
                         drop(metrics);
+                        retire_supervisor(
+                            stop_heartbeat_tx,
+                            heartbeat,
+                            &redis_url,
+                            &host,
+                            supervisor_pid,
+                        )
+                        .await;
                         return Ok(());
                     }
                     Some(Ok(Ok(()))) => {}
@@ -164,6 +185,14 @@ pub async fn run(
         note_shutdown_join(joined, &mut fatal);
     }
     drop(metrics);
+    retire_supervisor(
+        stop_heartbeat_tx,
+        heartbeat,
+        &redis_url,
+        &host,
+        supervisor_pid,
+    )
+    .await;
     match fatal {
         Some(error) => Err(error),
         None => Ok(()),
@@ -1020,18 +1049,67 @@ fn stamp_child_clocks(child: &mut ChildTrack, now: u64) {
     }
 }
 
+pub struct StopSignals {
+    terminate: tokio::signal::unix::Signal,
+    interrupt: tokio::signal::unix::Signal,
+}
+
+/// Install `SIGTERM` and `SIGINT` before any slow startup. The returned
+/// listeners keep a signal that arrives while the caller is still importing
+/// the application.
+pub async fn arm_stop_signals() -> std::io::Result<StopSignals> {
+    Ok(StopSignals {
+        terminate: signal(SignalKind::terminate())?,
+        interrupt: signal(SignalKind::interrupt())?,
+    })
+}
+
+/// `true` when a stop signal is already recorded. Does not wait for a new one.
+pub async fn stop_requested(signals: &mut StopSignals) -> bool {
+    tokio::select! {
+        biased;
+        _ = signals.terminate.recv() => true,
+        _ = signals.interrupt.recv() => true,
+        _ = std::future::ready(()) => false,
+    }
+}
+
+async fn retire_supervisor(
+    stop: watch::Sender<bool>,
+    heartbeat: tokio::task::JoinHandle<()>,
+    redis_url: &str,
+    host: &str,
+    pid: u32,
+) {
+    let _ = stop.send(true);
+    let _ = heartbeat.await;
+    match redis_api::connect(redis_url).await {
+        Ok(mut conn) => {
+            if let Err(error) =
+                simple_q_runtime::admin::forget_supervisor(&mut conn, host, pid).await
+            {
+                tracing::warn!(%error, "failed to remove the supervisor record");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "failed to remove the supervisor record");
+        }
+    }
+}
+
 fn spawn_supervisor_heartbeat(
     redis_url: String,
     settings: Config,
     host: String,
     pid: u32,
+    mut stop: watch::Receiver<bool>,
     queues: Vec<String>,
     processes: u32,
     concurrency: u64,
     max_tasks: u64,
     limits: ChildMemoryLimits,
     roster: Roster,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let period = Duration::from_secs(settings.heartbeat_secs.max(1));
         let mut tick = tokio::time::interval(period);
@@ -1040,7 +1118,14 @@ fn spawn_supervisor_heartbeat(
         let mut started_at = 0u64;
         let version = env!("CARGO_PKG_VERSION").to_owned();
         loop {
-            tick.tick().await;
+            tokio::select! {
+                biased;
+                _ = stop.changed() => return,
+                _ = tick.tick() => {}
+            }
+            if *stop.borrow() {
+                return;
+            }
             if conn.is_none() {
                 match redis_api::connect(&redis_url).await {
                     Ok(connected) => conn = Some(connected),
@@ -1093,7 +1178,7 @@ fn spawn_supervisor_heartbeat(
                 conn = None;
             }
         }
-    });
+    })
 }
 
 async fn redis_seconds(conn: &mut ConnectionManager) -> Result<u64> {
@@ -1115,6 +1200,22 @@ fn rss_of(children: &[(u32, u64)], pid: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_sigterm_before_the_loop_is_still_waiting() {
+        let mut signals = arm_stop_signals().await.expect("signal handler");
+        unsafe { libc::raise(libc::SIGTERM) };
+        let mut seen = false;
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+            if stop_requested(&mut signals).await {
+                seen = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(seen, "SIGTERM was dropped before the supervisor loop");
+    }
 
     #[test]
     fn an_exit_before_the_first_heartbeat_shares_one_redis_clock() {
