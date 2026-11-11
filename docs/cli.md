@@ -32,7 +32,7 @@ The process without the internal child flag only supervises. It forks one child 
 
 The supervisor also starts the metrics scrape. The worker command does not read `REDIS_URL`. It connects with the URL on the `App`'s `Client`. `enqueue` and `admin` do read `REDIS_URL`. `info` uses the same client URL as `worker` and does not write a heartbeat.
 
-`--app` may be omitted when `SIMPLE_Q_APP` is set. `SIMPLE_Q_APP_FACTORY`, when set, is the same as `--factory`.
+`--app` may be omitted when `SIMPLE_Q_APP` is set. `SIMPLE_Q_APP_FACTORY` is the same as `--factory` when its value is `1`, `true`, `yes`, or `on`. `false`, `0`, `no`, `off`, and an empty value leave the flag off.
 
 ## `info`
 

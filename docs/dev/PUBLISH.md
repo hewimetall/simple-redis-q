@@ -5,7 +5,7 @@ Releases are cut from `main` by pushing a tag `vX.Y.Z`. The tag workflow builds 
 | Distribution | Import or command | Build |
 | --- | --- | --- |
 | `simple-q-runtime` | `import simple_q` | maturin extension wheel, manylinux, CPython 3.12 |
-| `simple-q-worker` | `agent-worker` | maturin binary wheel inside `python:3.12-slim-bookworm` |
+| `simple-q-worker` | `agent-worker` | maturin binary wheel inside `manylinux_2_28`, launcher in front of the ELF |
 
 The name `simple-q` is already used by another project. Do not publish under it.
 
@@ -29,13 +29,13 @@ Neither crate is published to crates.io (`publish = false`).
 1. Builds the `simple-q-runtime` wheel with maturin-action.
 2. Builds `simple-q-worker` with `scripts/build-worker-wheel.sh`.
 
-The script compiles inside `python:3.12-slim-bookworm` so the binary links the shared `libpython3.12.so.1.0` from that image. The manylinux image used for the extension does not ship that library. The worker build uses:
+The script compiles inside `quay.io/pypa/manylinux_2_28`. That image's CPython is not a shared build, so the script first builds CPython 3.12 with `--enable-shared`. Debian 12 is glibc 2.36, so a binary built there does not run on Ubuntu 22.04 or RHEL 9. The worker build uses:
 
 ```bash
-maturin build --release -b bin -i python3.12 --compatibility manylinux_2_36 --auditwheel skip
+maturin build --release -b bin -i python3.12 --compatibility manylinux_2_28 --auditwheel skip
 ```
 
-`manylinux_2_36` matches glibc 2.36 on Debian 12. Auditwheel is skipped because it would otherwise reject the link to libpython. The aarch64 job registers qemu binfmt before the container build.
+Auditwheel is skipped because it would otherwise reject the link to libpython. The build then fails if `agent-worker.bin` needs a glibc newer than 2.28. It installs a `#!/bin/sh` launcher as `agent-worker` and keeps the ELF as `agent-worker.bin`. The launcher reads `pyvenv.cfg` `home` and prepends that interpreter's `lib` to `LD_LIBRARY_PATH`. The ELF's RPATH is `$ORIGIN/../lib`. The aarch64 job registers qemu binfmt before the container build.
 
 The script then installs the already built runtime wheel and the new worker wheel into a fresh virtualenv and checks:
 

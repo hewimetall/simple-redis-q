@@ -1,6 +1,5 @@
 site_name: simple-q
 site_description: simple-q 1.0, a queue runtime for Python async tasks
-site_url: https://hewimetall.github.io/simple-redis-q/
 repo_url: https://github.com/hewimetall/simple-redis-q
 repo_name: hewimetall/simple-redis-q
 docs_dir: docs

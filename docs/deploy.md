@@ -2,7 +2,7 @@
 
 These pages describe simple-q 1.0.
 
-Install `simple-q-runtime` and `simple-q-worker` on CPython 3.12, Linux x86_64 or aarch64. The supervisor process is `agent-worker`. It forks children. Give the service a finite memory limit so the cgroup ratio backstop has a `memory.max` to read. Per-child RSS limits are optional and apply even when the ratio check is idle.
+Install `simple-q-runtime` and `simple-q-worker` on CPython 3.12, Linux x86_64 or aarch64, glibc 2.28 or newer (Ubuntu 22.04, RHEL 9). The supervisor command is `agent-worker`. In a virtualenv that command is a launcher: it reads `pyvenv.cfg`, adds the base interpreter's `lib` to `LD_LIBRARY_PATH`, and execs `agent-worker.bin`. That is how a uv-managed CPython finds `libpython3.12.so.1.0`. The ELF also has RPATH `$ORIGIN/../lib`. It forks children. Give the service a finite memory limit so the cgroup ratio backstop has a `memory.max` to read. Per-child RSS limits are optional and apply even when the ratio check is idle.
 
 The worker command in every example is:
 
@@ -10,7 +10,7 @@ The worker command in every example is:
 agent-worker worker --app module:create_app --factory --queues default
 ```
 
-`module:app` is the same command without `--factory`, when the attribute is already an `App`. `--app` is required unless `SIMPLE_Q_APP` is set. `SIMPLE_Q_APP_FACTORY`, when set, is the same as `--factory`. The factory passes the Redis URL to `Client`. The worker command does not read `REDIS_URL`. It connects with the URL on the `App`'s `Client`. `enqueue` and `admin` do read `REDIS_URL`. `agent-worker info` uses the client URL and only reads.
+`module:app` is the same command without `--factory`, when the attribute is already an `App`. `--app` is required unless `SIMPLE_Q_APP` is set. `SIMPLE_Q_APP_FACTORY` is the same as `--factory` for `1`, `true`, `yes`, or `on`. `false` and `0` do not enable it. The factory passes the Redis URL to `Client`. The worker command does not read `REDIS_URL`. It connects with the URL on the `App`'s `Client`. `enqueue` and `admin` do read `REDIS_URL`. `agent-worker info` uses the client URL and only reads.
 
 ## How OOM differs
 

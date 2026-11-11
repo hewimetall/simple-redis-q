@@ -807,13 +807,76 @@ def test_current_message_carries_deliveries_and_the_worker_name():
     assert seen["plain_deliveries"] == 1
 
 
-def test_memory_client_worker_alive_is_true():
+def test_queue_admin_stays_unloaded_until_imported():
+    import simple_q
+
+    assert "QueueAdmin" in simple_q.__all__
+    assert "QueueAdmin" not in vars(simple_q)
+
+
+def test_memory_client_worker_alive_is_false_until_recorded():
     async def probe():
         client = MemoryClient()
+        assert await client.worker_alive("agent-worker.default.host.1.abcd1234") is False
+        assert await client.worker_alive("not-a-worker") is False
+        client.set_worker_alive("agent-worker.default.host.1.abcd1234")
         assert await client.worker_alive("agent-worker.default.host.1.abcd1234") is True
-        assert await client.worker_alive("not-a-worker") is True
+        client.set_worker_alive("agent-worker.default.host.1.abcd1234", False)
+        assert await client.worker_alive("agent-worker.default.host.1.abcd1234") is False
 
     asyncio.run(probe())
+
+
+def test_memory_drain_requeues_retry_and_runs_hooks():
+    client = MemoryClient()
+    seen = []
+    hooks = []
+    blocked = []
+
+    @actor(name="recalc", queue="default", max_retries=1)
+    async def recalc():
+        seen.append(current_message().retries)
+        if current_message().retries == 0:
+            blocked.append(
+                await client.send_with_options(recalc, unique_key="recalc:42")
+            )
+            raise RuntimeError("again")
+        return "ok"
+
+    app = App(
+        client=client,
+        actors=[recalc],
+        on_start=[lambda: hooks.append("start")],
+        on_stop=[lambda: hooks.append("stop")],
+    )
+    asyncio.run(client.send_with_options(recalc, unique_key="recalc:42"))
+    asyncio.run(client.drain(app))
+    assert seen == [0, 1]
+    assert hooks == ["start", "stop"]
+    assert blocked == [None]
+    assert client.depth("default") == 0
+    again = asyncio.run(client.send_with_options(recalc, unique_key="recalc:42"))
+    assert isinstance(again, str)
+
+
+def test_memory_drain_timeout_is_cancelled_error_and_then_on_dead():
+    client = MemoryClient()
+    caught = []
+    letters = []
+
+    @actor(name="slow", queue="default", max_retries=1, time_limit=1)
+    async def slow():
+        try:
+            await asyncio.sleep(1)
+        except Exception as exc:
+            caught.append(type(exc).__name__)
+
+    app = App(client=client, actors=[slow], on_dead=[letters.append])
+    asyncio.run(client.send(slow))
+    asyncio.run(client.drain(app))
+    assert caught == []
+    assert [letter.reason for letter in letters] == ["timeout"]
+    assert letters[0].error.startswith("TimeoutError:")
 
 
 def _redis_db(number: int) -> str:
