@@ -4,7 +4,9 @@
 //! it creates the key, and as a set when the key already is one. This module owns
 //! `simple_q:dead:{queue}`, a sorted set scored by Redis `TIME` seconds.
 //! Pages walk that index, or one slice of `{queue}:active` / `{queue}:scheduled`.
-//! They do not `SMEMBERS` the dead set and they do not call apalis `list_tasks`.
+//! An active page is an `LRANGE` from a list offset. A consumed id does not
+//! fail the next page. They do not `SMEMBERS` the dead set and they do not
+//! call apalis `list_tasks`.
 
 use anyhow::{Context, Result, bail};
 use apalis_redis::Config as QueueConfig;
@@ -18,6 +20,9 @@ use crate::redis_api;
 
 /// Largest page `dead` and `peek` return. Larger requests are reduced to this.
 pub const PAGE_MAX: u64 = 200;
+
+/// Longest `error` string stored on `{queue}:meta:{task_id}`.
+pub const ERROR_MAX_BYTES: usize = 4096;
 
 const NOTE_STARTED_AT: &str = r#"
 local secs = tonumber(redis.call("TIME")[1])
@@ -133,18 +138,14 @@ return out
 const PAGE_LIST: &str = r#"
 local key = KEYS[1]
 local limit = tonumber(ARGV[1])
-local cursor = ARGV[2]
+local offset = tonumber(ARGV[2])
 if not limit or limit < 1 then
     return redis.error_reply("limit must be greater than zero")
 end
-if cursor == "" then
-    return redis.call("LRANGE", key, 0, limit - 1)
+if not offset or offset < 0 or offset ~= math.floor(offset) then
+    return redis.error_reply("cursor is not valid")
 end
-local pos = redis.call("LPOS", key, cursor)
-if not pos then
-    return redis.error_reply("cursor is not in the active list")
-end
-return redis.call("LRANGE", key, pos + 1, pos + limit)
+return redis.call("LRANGE", key, offset, offset + limit - 1)
 "#;
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -185,7 +186,8 @@ pub async fn note_delivery_start(
 /// Remember why a delivery died and index the task id.
 ///
 /// Apalis still adds the id to `{queue}:dead`. `error` is omitted when it is
-/// empty. `dead_at` and the index score are the same Redis `TIME` seconds.
+/// empty, and stored text is at most [`ERROR_MAX_BYTES`] bytes. `dead_at` and
+/// the index score are the same Redis `TIME` seconds.
 pub async fn record_dead(
     conn: &mut ConnectionManager,
     settings: &Config,
@@ -198,7 +200,7 @@ pub async fn record_dead(
     let config = redis_api::queue_config(queue, settings)?;
     let meta = task_meta_key(&config, task_id);
     let index = dead_index_key(queue);
-    let error = error.unwrap_or("");
+    let error = cap_error(error.unwrap_or(""));
     let _: i64 = redis::Script::new(RECORD_DEAD)
         .key(&meta)
         .key(&index)
@@ -287,8 +289,8 @@ pub async fn dead_page(
 /// Page `{queue}:active` with `LRANGE`, or `{queue}:scheduled` with `ZRANGE`.
 ///
 /// Only that page is loaded from `{queue}:data`. `state` is `active` or
-/// `scheduled`. Scheduled rows include `run_at`, the sorted-set score in
-/// Redis seconds.
+/// `scheduled`. An active cursor is a list offset. Scheduled rows include
+/// `run_at`, the sorted-set score in Redis seconds.
 pub async fn peek_page(
     conn: &mut ConnectionManager,
     settings: &Config,
@@ -301,9 +303,9 @@ pub async fn peek_page(
     let config = redis_api::queue_config(queue, settings)?;
     let (ids, next) = match state {
         "active" => {
-            let member = active_cursor(cursor)?;
-            let ids = page_list(conn, &config.active_jobs_list(), limit + 1, &member).await?;
-            let (kept, next) = split_ids(ids, limit);
+            let offset = active_cursor(cursor)?;
+            let ids = page_list(conn, &config.active_jobs_list(), limit + 1, offset).await?;
+            let (kept, next) = split_ids(ids, limit, offset);
             (kept, next)
         }
         "scheduled" => {
@@ -357,12 +359,12 @@ async fn page_list(
     conn: &mut ConnectionManager,
     key: &str,
     limit: u64,
-    cursor: &str,
+    offset: u64,
 ) -> Result<Vec<String>> {
     let value: redis::Value = redis::Script::new(PAGE_LIST)
         .key(key)
         .arg(limit)
-        .arg(cursor)
+        .arg(offset)
         .invoke_async(conn)
         .await
         .context("failed to page the active list")?;
@@ -385,16 +387,28 @@ fn split_page(
     (kept, cursor)
 }
 
-fn split_ids(ids: Vec<String>, limit: u64) -> (Vec<(String, String)>, Option<String>) {
+fn split_ids(ids: Vec<String>, limit: u64, offset: u64) -> (Vec<(String, String)>, Option<String>) {
     let more = ids.len() as u64 > limit;
     let kept: Vec<String> = ids.into_iter().take(limit as usize).collect();
     let cursor = if more {
-        kept.last().map(|member| encode_active_cursor(member))
+        Some(encode_active_cursor(offset.saturating_add(limit)))
     } else {
         None
     };
     let rows = kept.into_iter().map(|id| (id, String::new())).collect();
     (rows, cursor)
+}
+
+/// Keep a prefix of at most [`ERROR_MAX_BYTES`] bytes, on a char boundary.
+fn cap_error(text: &str) -> &str {
+    if text.len() <= ERROR_MAX_BYTES {
+        return text;
+    }
+    let mut end = ERROR_MAX_BYTES;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 async fn load_dead(
@@ -561,10 +575,10 @@ fn scheduled_cursor(cursor: Option<&str>) -> Result<(String, String)> {
     }
 }
 
-fn active_cursor(cursor: Option<&str>) -> Result<String> {
+fn active_cursor(cursor: Option<&str>) -> Result<u64> {
     match decode_cursor(cursor)? {
-        None => Ok(String::new()),
-        Some(Decoded::Active(member)) => Ok(member),
+        None => Ok(0),
+        Some(Decoded::Active(offset)) => offset.parse().context("cursor is not valid"),
         Some(_) => bail!("cursor is not valid"),
     }
 }
@@ -590,7 +604,10 @@ fn decode_cursor(cursor: Option<&str>) -> Result<Option<Decoded>> {
     };
     match kind {
         "a" => {
-            if rest.is_empty() || rest.contains('\n') {
+            if rest.is_empty()
+                || rest.contains('\n')
+                || !rest.bytes().all(|byte| byte.is_ascii_digit())
+            {
                 bail!("cursor is not valid");
             }
             Ok(Some(Decoded::Active(rest.to_owned())))
@@ -623,8 +640,8 @@ fn encode_score_cursor(kind: &str, score: &str, member: &str) -> String {
     b64url_encode(format!("{kind}\n{score}\n{member}").as_bytes())
 }
 
-fn encode_active_cursor(member: &str) -> String {
-    b64url_encode(format!("a\n{member}").as_bytes())
+fn encode_active_cursor(offset: u64) -> String {
+    b64url_encode(format!("a\n{offset}").as_bytes())
 }
 
 fn b64url_encode(bytes: &[u8]) -> String {
@@ -767,7 +784,8 @@ mod tests {
     fn cursors_round_trip_and_reject_a_different_kind() {
         let dead = encode_score_cursor("d", "1700000000", "01HZTASK");
         let scheduled = encode_score_cursor("s", "1700000001.0", "01HZLATER");
-        let active = encode_active_cursor("01HZACTIVE");
+        let active = encode_active_cursor(2);
+        let task_id = encode_active_cursor_bytes(b"a\n01HZACTIVE");
         match decode_cursor(Some(&dead)).unwrap() {
             Some(Decoded::Score {
                 kind,
@@ -794,8 +812,12 @@ mod tests {
         }
         assert!(matches!(
             decode_cursor(Some(&active)).unwrap(),
-            Some(Decoded::Active(member)) if member == "01HZACTIVE"
+            Some(Decoded::Active(offset)) if offset == "2"
         ));
+        assert_eq!(active_cursor(Some(&active)).unwrap(), 2);
+        assert_eq!(active_cursor(None).unwrap(), 0);
+        assert!(decode_cursor(Some(&task_id)).is_err());
+        assert!(active_cursor(Some(&task_id)).is_err());
         assert!(decode_cursor(None).unwrap().is_none());
         assert!(decode_cursor(Some("")).unwrap().is_none());
         assert!(decode_cursor(Some("%%%")).is_err());
@@ -803,5 +825,24 @@ mod tests {
         assert!(scheduled_cursor(Some(&dead)).is_err());
         assert!(active_cursor(Some(&scheduled)).is_err());
         assert_eq!(dead_cursor(None).unwrap(), (String::new(), String::new()));
+    }
+
+    #[test]
+    fn stored_error_text_stops_at_4_kib() {
+        assert_eq!(cap_error("RuntimeError: boom"), "RuntimeError: boom");
+        let long = "x".repeat(8_000);
+        let capped = cap_error(&long);
+        assert_eq!(capped.len(), ERROR_MAX_BYTES);
+        assert!(long.starts_with(capped));
+        let mut split = "y".repeat(ERROR_MAX_BYTES - 1);
+        split.push('я');
+        let capped = cap_error(&split);
+        assert!(capped.len() < ERROR_MAX_BYTES);
+        assert!(split.starts_with(capped));
+        assert!(capped.is_char_boundary(capped.len()));
+    }
+
+    fn encode_active_cursor_bytes(bytes: &[u8]) -> String {
+        b64url_encode(bytes)
     }
 }

@@ -427,15 +427,38 @@ fn page_limit(limit: i64) -> PyResult<u64> {
 }
 
 fn page_error(error: anyhow::Error) -> PyErr {
-    let text = error.to_string();
-    if text.contains("limit must")
-        || text.contains("cursor is not valid")
-        || text.contains("cursor is not in the active list")
-        || text.contains("state must")
-    {
+    let text = page_error_text(&error);
+    if page_error_is_value(&text) {
         PyValueError::new_err(text)
     } else {
         PyRuntimeError::new_err(text)
+    }
+}
+
+/// `{:#}` keeps the source chain. `Display` on anyhow is only the outer context.
+fn page_error_text(error: &anyhow::Error) -> String {
+    format!("{error:#}")
+}
+
+fn page_error_is_value(text: &str) -> bool {
+    text.contains("limit must")
+        || text.contains("cursor is not valid")
+        || text.contains("cursor is not in the active list")
+        || text.contains("state must")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{page_error_is_value, page_error_text};
+
+    #[test]
+    fn a_wrapped_cursor_error_is_a_value_error() {
+        let error = anyhow::anyhow!("cursor is not in the active list")
+            .context("failed to page the active list");
+        assert!(!page_error_is_value(&error.to_string()));
+        let text = page_error_text(&error);
+        assert!(page_error_is_value(&text), "{text}");
+        assert!(text.contains("cursor is not in the active list"));
     }
 }
 

@@ -633,6 +633,26 @@ async fn dead_page_is_newest_first_and_the_cursor_is_exclusive() {
     assert_eq!(redis(&["HGET", &recorded_meta, "error"]), "");
     assert_eq!(redis(&["HGET", &recorded_meta, "deliveries"]), "3");
 
+    let long_id = format!("{}-long", token("t"));
+    let long_meta = format!("{}:{long_id}", config.job_meta_hash());
+    cleanup.key(&long_meta);
+    let huge = format!("RuntimeError: {}", "x".repeat(8_000));
+    pages::record_dead(
+        &mut conn,
+        &settings,
+        &queue,
+        &long_id,
+        "retries",
+        Some(&huge),
+        1,
+    )
+    .await
+    .expect("long error");
+    let stored = redis(&["HGET", &long_meta, "error"]);
+    assert!(stored.len() <= 4096, "{}", stored.len());
+    assert!(stored.len() >= 4090, "{}", stored.len());
+    assert!(huge.starts_with(&stored));
+
     let page_queue = token("q");
     let page_config = redis_api::queue_config(&page_queue, &settings).expect("queue");
     let page_data = page_config.job_data_hash();
@@ -789,6 +809,23 @@ async fn peek_pages_active_and_scheduled_from_the_data_hash() {
     assert_eq!(rest.tasks.len(), 1);
     assert_eq!(rest.tasks[0].task_id, "act-3");
     assert!(rest.cursor.is_none());
+    let _ = redis(&["DEL", &active]);
+    let _ = redis(&["RPUSH", &active, "act-1", "act-2", "act-3"]);
+    let again = pages::peek_page(&mut conn, &settings, &queue, "active", 2, None)
+        .await
+        .expect("active again");
+    let _ = redis(&["LREM", &active, "1", "act-2"]);
+    let shifted = pages::peek_page(
+        &mut conn,
+        &settings,
+        &queue,
+        "active",
+        2,
+        again.cursor.as_deref(),
+    )
+    .await
+    .expect("a removed id does not fail the next page");
+    assert!(shifted.tasks.is_empty());
     assert!(
         pages::peek_page(&mut conn, &settings, &queue, "active", 0, None)
             .await
