@@ -1,4 +1,4 @@
-"""Read-only snapshot of supervisors, processes, and the tasks they hold.
+"""Read-only views of supervisors, held tasks, waiting tasks, and dead letters.
 
 ``import simple_q`` does not load this module. ``from simple_q import QueueAdmin``
 does, and that import loads the extension. ``from simple_q.admin import QueueAdmin``
@@ -24,6 +24,7 @@ class HeldTask:
     max_retries: int
     time_limit_ms: int
     locked_at: int | None
+    started_at: int | None
     deliveries: int | None
 
 
@@ -82,6 +83,43 @@ class SupervisorInfo:
 
 
 @dataclass(frozen=True)
+class DeadMessage:
+    task_id: str
+    message_id: str
+    actor_name: str
+    kwargs: dict
+    reason: str
+    error: str | None
+    retries: int
+    deliveries: int
+    dead_at: int
+
+
+@dataclass(frozen=True)
+class DeadPage:
+    messages: tuple[DeadMessage, ...]
+    cursor: str | None
+
+
+@dataclass(frozen=True)
+class QueuedTask:
+    task_id: str
+    message_id: str
+    actor_name: str
+    kwargs: dict
+    retries: int
+    max_retries: int
+    time_limit_ms: int
+    run_at: int | None
+
+
+@dataclass(frozen=True)
+class TaskPage:
+    tasks: tuple[QueuedTask, ...]
+    cursor: str | None
+
+
+@dataclass(frozen=True)
 class Snapshot:
     taken_at: int
     queues: list[QueueStats]
@@ -99,6 +137,41 @@ class QueueAdmin:
         raw = await self._admin.snapshot(list(queues), host)
         payload = json.loads(raw)
         return _snapshot(payload)
+
+    async def dead(self, queue: str, limit: int = 50, cursor: str | None = None) -> DeadPage:
+        """Page dead messages newest-first.
+
+        ``limit`` defaults to 50, rejects 0, and is capped at 200. ``cursor``
+        is opaque and exclusive. The next page omits the task the cursor names.
+        """
+
+        raw = await self._admin.dead(queue, _page_limit(limit), cursor)
+        return _dead_page(json.loads(raw))
+
+    async def peek(
+        self,
+        queue: str,
+        state: str,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> TaskPage:
+        """Page ``active`` or ``scheduled`` tasks without listing the whole queue.
+
+        ``active`` reads one ``LRANGE`` of ``{queue}:active``. ``scheduled``
+        reads one ``ZRANGE`` of ``{queue}:scheduled`` and includes ``run_at``.
+        Only that page is loaded from ``{queue}:data``.
+        """
+
+        if state not in {"active", "scheduled"}:
+            raise ValueError("state must be active or scheduled")
+        raw = await self._admin.peek(queue, state, _page_limit(limit), cursor)
+        return _task_page(json.loads(raw))
+
+
+def _page_limit(limit: int) -> int:
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        raise ValueError("limit must be greater than zero")
+    return min(limit, 200)
 
 
 def _opt_int(value) -> int | None:
@@ -119,6 +192,7 @@ def _held(value: dict) -> HeldTask:
         max_retries=int(value.get("max_retries") or 0),
         time_limit_ms=int(value.get("time_limit_ms") or 0),
         locked_at=_opt_int(value.get("locked_at")),
+        started_at=_opt_int(value.get("started_at")),
         deliveries=_opt_int(deliveries),
     )
 
@@ -178,6 +252,53 @@ def _supervisor(value: dict) -> SupervisorInfo:
         restarts=int(value.get("restarts") or 0),
         children=[_process(child) for child in value.get("children") or []],
     )
+
+
+def _dead_message(value: dict) -> DeadMessage:
+    return DeadMessage(
+        task_id=value.get("task_id") or "",
+        message_id=value.get("message_id") or "",
+        actor_name=value.get("actor_name") or "",
+        kwargs=_object(value.get("kwargs")),
+        reason=value.get("reason") or "",
+        error=value.get("error"),
+        retries=int(value.get("retries") or 0),
+        deliveries=int(value.get("deliveries") or 0),
+        dead_at=int(value.get("dead_at") or 0),
+    )
+
+
+def _dead_page(value: dict) -> DeadPage:
+    return DeadPage(
+        messages=tuple(_dead_message(item) for item in value.get("messages") or []),
+        cursor=value.get("cursor"),
+    )
+
+
+def _queued(value: dict) -> QueuedTask:
+    return QueuedTask(
+        task_id=value.get("task_id") or "",
+        message_id=value.get("message_id") or "",
+        actor_name=value.get("actor_name") or "",
+        kwargs=_object(value.get("kwargs")),
+        retries=int(value.get("retries") or 0),
+        max_retries=int(value.get("max_retries") or 0),
+        time_limit_ms=int(value.get("time_limit_ms") or 0),
+        run_at=_opt_int(value.get("run_at")),
+    )
+
+
+def _task_page(value: dict) -> TaskPage:
+    return TaskPage(
+        tasks=tuple(_queued(item) for item in value.get("tasks") or []),
+        cursor=value.get("cursor"),
+    )
+
+
+def _object(value) -> dict:
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
 
 
 def _snapshot(value: dict) -> Snapshot:

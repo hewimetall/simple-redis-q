@@ -46,5 +46,18 @@ class Admin:
     def snapshot(
         self, queues: builtins.list[builtins.str], host: builtins.str | None = ...
     ) -> typing.Awaitable[builtins.str]: ...
+    def dead(
+        self,
+        queue: builtins.str,
+        limit: builtins.int = 50,
+        cursor: builtins.str | None = None,
+    ) -> typing.Awaitable[builtins.str]: ...
+    def peek(
+        self,
+        queue: builtins.str,
+        state: builtins.str,
+        limit: builtins.int = 50,
+        cursor: builtins.str | None = None,
+    ) -> typing.Awaitable[builtins.str]: ...
 
 def execution_snapshot() -> builtins.list[builtins.str]: ...

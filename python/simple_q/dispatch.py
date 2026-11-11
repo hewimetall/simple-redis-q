@@ -43,6 +43,12 @@ def _exception_text(caught: BaseException) -> str:
     return f"{type(caught).__name__}: {caught}"
 
 
+def _dead_result(reason: str, error: str | None) -> dict:
+    """Outcome dict for a dead delivery. ``error`` is what Rust stores."""
+
+    return {"outcome": "dead", "reason": reason, "error": error}
+
+
 log = logging.getLogger("simple_q")
 
 DEFAULT_TIME_LIMIT_MS = 1_800_000
@@ -292,7 +298,7 @@ class App:
                 current.deliveries,
                 error=None,
             )
-            return {"outcome": "dead", "reason": "unknown_actor"}
+            return _dead_result("unknown_actor", None)
 
         queue = current.queue_name
         message_id = current.message_id
@@ -309,7 +315,7 @@ class App:
                 error=None,
             )
             reject(queue, actor_name)
-            return {"outcome": "dead", "reason": "poison"}
+            return _dead_result("poison", None)
 
         start_attempt(message_id, queue, actor_name)
         owner = None
@@ -342,7 +348,7 @@ class App:
                         current.deliveries,
                         error=_exception_text(caught),
                     )
-                    return {"outcome": "dead", "reason": "timeout"}
+                    return _dead_result("timeout", _exception_text(caught))
                 return await self._retry(message, declared, current)
             except Exception as caught:
                 error = caught
@@ -357,7 +363,7 @@ class App:
                         current.deliveries,
                         error=_exception_text(caught),
                     )
-                    return {"outcome": "dead", "reason": "retries"}
+                    return _dead_result("retries", _exception_text(caught))
                 return await self._retry(message, declared, current)
             else:
                 return {"outcome": "ok", "result": result}

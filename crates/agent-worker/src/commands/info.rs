@@ -426,13 +426,17 @@ fn bytes_or_dash(bytes: Option<u64>) -> String {
     }
 }
 
-/// 1024-based. An exact GiB, MiB, or KiB stays a whole number (`4G`, `1500M`).
-/// Anything else uses one decimal at 10 or above and two below, dropping a trailing zero.
+/// 1024-based. A whole unit is used only when the value is an exact multiple
+/// and `bytes / unit` is below 10000 (`4G`, `1500M`). Anything else uses one
+/// decimal at 10 or above and two below, dropping a trailing zero.
 fn format_bytes(bytes: u64) -> String {
     const UNITS: [(u64, &str); 3] = [(1024 * 1024 * 1024, "G"), (1024 * 1024, "M"), (1024, "K")];
     for (unit, suffix) in UNITS {
         if bytes >= unit && bytes % unit == 0 {
-            return format!("{}{suffix}", bytes / unit);
+            let whole = bytes / unit;
+            if whole < 10_000 {
+                return format!("{whole}{suffix}");
+            }
         }
     }
     for (unit, suffix) in UNITS {
@@ -498,6 +502,9 @@ mod tests {
             format_bytes((1.51 * 1024f64.powi(3)).round() as u64),
             "1.51G"
         );
+        assert_eq!(format_bytes(351_112 * 1024), "342.9M");
+        assert_eq!(format_bytes(9_999 * 1024 * 1024), "9999M");
+        assert_eq!(format_bytes(10_000 * 1024 * 1024), "9.77G");
         assert_eq!(format_uptime(1_000, 1_045), "45s");
         assert_eq!(format_uptime(1_000, 1_000 + 38 * 60), "38m");
         assert_eq!(format_uptime(1_000, 1_000 + 2 * 3_600 + 5 * 60), "2h5m");
@@ -685,6 +692,7 @@ quota  12      1          4         9873  0";
             max_retries: 1,
             time_limit_ms: 1_800_000,
             locked_at: Some(taken_at - 212),
+            started_at: Some(taken_at - 212),
             deliveries: 1,
         }
     }

@@ -16,6 +16,7 @@ pub mod ping;
 pub mod admin;
 pub mod cleanup;
 pub mod lock;
+pub mod pages;
 pub mod redis_api;
 pub mod slots;
 
