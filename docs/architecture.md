@@ -2,7 +2,7 @@
 
 These pages describe simple-q 1.0.
 
-The containers inside simple-q are **Client**, **App**, **Config**, the **worker supervisor**, and **Redis**. Client sends. App runs the handler and the dead-letter hook. `Config.from_env` reads only `SIMPLE_Q_*`. The worker uses the Redis URL stored on the `App`'s `Client`. `agent-worker enqueue` and `agent-worker admin` read `REDIS_URL` themselves. `agent-worker info` uses the same client URL as `worker`. `SIMPLE_Q_APP` and `SIMPLE_Q_APP_FACTORY` are read by `worker` and `info`, not by `Config.from_env`. `HOSTNAME`, `BOARD_*`, `QUEUE`, `RUST_LOG`, and `DRAMATIQ_PROM_*` are read by the worker name, the board, the log filter, and the metrics process. The worker supervisor forks children, watches memory, and publishes its own Redis record. It does not take messages and it does not heartbeat as a queue worker. Redis holds the queue and that supervisor record.
+The containers inside simple-q are **Client**, **App**, **Config**, the **worker supervisor**, and **Redis**. Client sends. App runs the handler and the dead-letter hook. `Config.from_env` reads only `SIMPLE_Q_*`. The worker uses the Redis URL stored on the `App`'s `Client`. `agent-worker enqueue` and `agent-worker admin` read `REDIS_URL` themselves. `agent-worker info` uses the same client URL as `worker`. `SIMPLE_Q_APP` and `SIMPLE_Q_APP_FACTORY` are read by `worker` and `info`, not by `Config.from_env`. The factory variable enables a call only for `1`, `true`, `yes`, or `on`. In a virtualenv the `agent-worker` command is a launcher that execs `agent-worker.bin` after the dynamic linker can see `libpython3.12.so.1.0`. `HOSTNAME`, `BOARD_*`, `QUEUE`, `RUST_LOG`, and `DRAMATIQ_PROM_*` are read by the worker name, the board, the log filter, and the metrics process. The worker supervisor forks children, watches memory, and publishes its own Redis record. It does not take messages and it does not heartbeat as a queue worker. Redis holds the queue and that supervisor record.
 
 This is the context diagram for that model.
 
@@ -35,7 +35,7 @@ A retry does not start at `send`. After `App.dispatch` returns `retry`, `handle_
 
 ### One delivery
 
-The apalis worker calls `handle`, which calls `handle_job`. `incr_delivery` runs `INCR` and `EXPIRE` on `delivery:{message_id}:{retries}` before Python. `decide` returns `Run` when that count is at or below `max_deliveries`. `bridge.execute` calls `App.dispatch`. The handler is `declared.function` under `asyncio.wait_for`. Success deletes the delivery key and the idempotency key. A failure before the last attempt returns `retry` and keeps the idempotency key. The last failure calls `on_dead` and leaves the delivery key.
+The apalis worker calls `handle`, which calls `handle_job`. `incr_delivery` runs `INCR` and `EXPIRE` on `delivery:{message_id}:{retries}` before Python. `decide` returns `Run` when that count is at or below `max_deliveries`. `bridge.execute` calls `App.dispatch`. The handler is `declared.function` under `asyncio.wait_for`. That wait cancels the handler with `CancelledError`. `CancelledError` is a `BaseException`, so `except Exception` inside the handler does not run. The exception that leaves `wait_for` is `TimeoutError`. Success deletes the delivery key and the idempotency key. A failure before the last attempt returns `retry` and keeps the idempotency key. The last failure, including the last timeout, calls `on_dead` and leaves the delivery key.
 
 ### Poison, before the handler
 
@@ -49,7 +49,15 @@ The apalis worker calls `handle`, which calls `handle_job`. `incr_delivery` runs
 
 ### In-memory drain
 
-`MemoryClient.drain` pops queued messages and calls `App.dispatch`. A `retry` outcome leaves the `unique_key` held and does not put the message back. Any other outcome, and a raised handler, release the key.
+`MemoryClient.drain` calls `App.startup`, which runs `on_start`, then pops one message at a time and calls `App.dispatch`. A `retry` outcome adds one to `retries`, drops `delay_ms`, and appends the message to the same in-process queue. The backoff is not slept. The `unique_key` stays held, so a second `send` of that key still returns `None`. `_requeue` does not consult the held set; `_push` would reject the same key. Any other outcome releases the key. A raised `dispatch` releases the key and propagates. `App.shutdown`, which runs `on_stop`, runs when the queue is empty and when `dispatch` raises. Two messages are never in flight together. `worker_alive` is true only for a name passed to `set_worker_alive`. A name that was never recorded, and a name cleared with `False`, is not alive.
+
+### Loading the App
+
+`worker` and `info` call `cli::factory_enabled` before `bridge::load_app`. `--factory` forces the call. Otherwise the value of `SIMPLE_Q_APP_FACTORY` is trimmed and compared, without regard to ASCII case, to `1`, `true`, `yes`, or `on`. Unset, empty, `false`, `0`, `no`, `off`, and any other string leave the factory off. Clap does not parse this variable: its `SetTrue` default is the string `false`, and a value parser would turn the flag on when the variable is unset. `load_app` imports `module:attribute`. When the factory is on it calls that attribute with no arguments. When it is off the attribute itself is the `App`. Either result must have `dispatch` and `client`.
+
+### Installed command
+
+`simple-q-worker` installs two files into the virtualenv `bin` directory. `agent-worker` is a shell launcher. `agent-worker.bin` is the ELF. The launcher resolves its own path, reads `pyvenv.cfg` one directory above `bin`, and takes the `home` entry. That entry is the base interpreter's `bin` directory. The launcher looks for `libpython3.12.so.1.0` or `libpython3.12.so` in `$home/../lib` and `$home/../lib64`. When one of those files exists, that directory is prepended to `LD_LIBRARY_PATH`. The launcher then `exec`s `agent-worker.bin` with the same arguments. The ELF `RUNPATH` is `$ORIGIN/../lib`, the virtualenv `lib` directory. The dynamic linker loads `libpython3.12.so.1.0` before `main`. `init_interpreter` then searches `argv[0]` and `current_exe` for a path that has `pyvenv.cfg` in its directory or in the parent directory, and passes that path to `PyConfig` as the program name and the executable. `site.py` adds that virtualenv's site-packages. A missing `pyvenv.cfg` leaves the default interpreter config, which is how a container entrypoint that is the ELF itself still finds the image's standard library. The `Dockerfile` copies the ELF to `/usr/local/bin/agent-worker` and sets `LD_LIBRARY_PATH` to `/usr/local/lib`. It does not install the launcher.
 
 ### Memory pressure
 

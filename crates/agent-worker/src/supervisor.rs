@@ -572,31 +572,6 @@ pub fn parse_byte_size(raw: &str) -> Result<u64, ChildMemoryConfigError> {
         .ok_or_else(|| ChildMemoryConfigError::invalid(raw))
 }
 
-pub fn parse_child_memory_limits(
-    soft: Option<&str>,
-    hard: Option<&str>,
-) -> Result<ChildMemoryLimits, ChildMemoryConfigError> {
-    let soft_bytes = match soft {
-        Some(raw) => Some(parse_byte_size(raw)?),
-        None => None,
-    };
-    let hard_bytes = match hard {
-        Some(raw) => Some(parse_byte_size(raw)?),
-        None => None,
-    };
-    if let (Some(soft_raw), Some(hard_raw), Some(left), Some(right)) =
-        (soft, hard, soft_bytes, hard_bytes)
-    {
-        if left >= right {
-            return Err(ChildMemoryConfigError::soft_not_below(soft_raw, hard_raw));
-        }
-    }
-    Ok(ChildMemoryLimits {
-        soft: soft_bytes,
-        hard: hard_bytes,
-    })
-}
-
 /// What one child's RSS means for that pid alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ByteAction {
@@ -1187,20 +1162,20 @@ mod tests {
         assert!(parse_byte_size("abc").is_err());
         assert!(parse_byte_size("1.5G").is_err());
         assert!(parse_byte_size("1.5").is_err());
-        assert!(parse_child_memory_limits(Some("1G"), Some("1G")).is_err());
-        assert!(parse_child_memory_limits(Some("2G"), Some("1G")).is_err());
-        assert!(parse_child_memory_limits(Some("1500M"), Some("1G")).is_err());
-        assert!(parse_child_memory_limits(Some("1024K"), Some("1M")).is_err());
-        let limits = parse_child_memory_limits(Some("1G"), Some("1500M")).unwrap();
+        assert!(load_child_memory_limits(None, None, Some("1G"), Some("1G")).is_err());
+        assert!(load_child_memory_limits(None, None, Some("2G"), Some("1G")).is_err());
+        assert!(load_child_memory_limits(None, None, Some("1500M"), Some("1G")).is_err());
+        assert!(load_child_memory_limits(None, None, Some("1024K"), Some("1M")).is_err());
+        let limits = load_child_memory_limits(None, None, Some("1G"), Some("1500M")).unwrap();
         assert!(limits.soft.unwrap() < limits.hard.unwrap());
-        let soft_only = parse_child_memory_limits(Some("512K"), None).unwrap();
+        let soft_only = load_child_memory_limits(None, None, Some("512K"), None).unwrap();
         assert_eq!(soft_only.soft, Some(512 * 1024));
         assert_eq!(soft_only.hard, None);
-        let hard_only = parse_child_memory_limits(None, Some("1G")).unwrap();
+        let hard_only = load_child_memory_limits(None, None, None, Some("1G")).unwrap();
         assert_eq!(hard_only.soft, None);
         assert_eq!(hard_only.hard, Some(1024 * 1024 * 1024));
         assert_eq!(
-            parse_child_memory_limits(None, None).unwrap(),
+            load_child_memory_limits(None, None, None, None).unwrap(),
             ChildMemoryLimits {
                 soft: None,
                 hard: None,
@@ -1212,7 +1187,7 @@ mod tests {
         assert!(junk.to_string().contains("invalid"));
         let fraction = parse_byte_size("1.5G").unwrap_err();
         assert!(fraction.to_string().contains("invalid"));
-        let order = parse_child_memory_limits(Some("2G"), Some("1G")).unwrap_err();
+        let order = load_child_memory_limits(None, None, Some("2G"), Some("1G")).unwrap_err();
         assert!(order.to_string().contains("not below"));
     }
 

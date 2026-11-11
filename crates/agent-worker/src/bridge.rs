@@ -89,19 +89,6 @@ pub fn load_app<'py>(
     Ok(app)
 }
 
-#[allow(dead_code)]
-pub fn read_config(app_path: &str, factory: bool) -> Result<simple_q_runtime::config::Config> {
-    Python::attach(|py| -> PyResult<simple_q_runtime::config::Config> {
-        let app = load_app(py, app_path, factory)?;
-        let config = app.getattr("client")?.getattr("config")?;
-        let config = config
-            .cast::<simple_q_runtime::config::Config>()
-            .map_err(|error| pyo3::exceptions::PyTypeError::new_err(error.to_string()))?;
-        Ok(config.borrow().clone())
-    })
-    .map_err(|error: PyErr| anyhow::anyhow!(error.to_string()))
-}
-
 /// Redis URL and `Config` stored on the application's `Client`.
 ///
 /// The supervisor and `info` use this. Neither command is a queue worker.

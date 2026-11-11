@@ -2,7 +2,7 @@
 
 These pages describe simple-q 1.0.
 
-Install `simple-q-runtime` and `simple-q-worker` on CPython 3.12, Linux x86_64 or aarch64, glibc 2.28 or newer (Ubuntu 22.04, RHEL 9). The supervisor command is `agent-worker`. In a virtualenv that command is a launcher: it reads `pyvenv.cfg`, adds the base interpreter's `lib` to `LD_LIBRARY_PATH`, and execs `agent-worker.bin`. That is how a uv-managed CPython finds `libpython3.12.so.1.0`. The ELF also has RPATH `$ORIGIN/../lib`. It forks children. Give the service a finite memory limit so the cgroup ratio backstop has a `memory.max` to read. Per-child RSS limits are optional and apply even when the ratio check is idle.
+Install `simple-q-runtime` and `simple-q-worker` on CPython 3.12, Linux x86_64 or aarch64, glibc 2.28 or newer (Ubuntu 22.04, RHEL 9). The supervisor command is `agent-worker`. In a virtualenv that command is a launcher: it reads `pyvenv.cfg`, adds the base interpreter's `lib` to `LD_LIBRARY_PATH`, and execs `agent-worker.bin`. That is how a uv-managed CPython finds `libpython3.12.so.1.0`. The ELF also has RPATH `$ORIGIN/../lib`. The virtualenv, including `pyvenv.cfg` and `bin`, must be writable only by the user that runs the service. The launcher trusts that tree. It forks children. Give the service a finite memory limit so the cgroup ratio backstop has a `memory.max` to read. Per-child RSS limits are optional and apply even when the ratio check is idle.
 
 The worker command in every example is:
 
