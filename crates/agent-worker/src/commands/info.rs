@@ -473,7 +473,7 @@ fn format_uptime(started_at: u64, taken_at: u64) -> String {
     }
 }
 
-/// Cargo writes `1.0.0-rc4`. The text line prints `1.0.0rc4`.
+/// Cargo writes `1.0.0-rc5`. The text line prints `1.0.0rc5`.
 fn display_version(version: &str) -> String {
     version.replacen("-rc", "rc", 1)
 }
@@ -508,7 +508,7 @@ mod tests {
         assert_eq!(format_uptime(1_000, 1_045), "45s");
         assert_eq!(format_uptime(1_000, 1_000 + 38 * 60), "38m");
         assert_eq!(format_uptime(1_000, 1_000 + 2 * 3_600 + 5 * 60), "2h5m");
-        assert_eq!(display_version("1.0.0-rc4"), "1.0.0rc4");
+        assert_eq!(display_version("1.0.0-rc5"), "1.0.0rc5");
     }
 
     #[test]
@@ -538,7 +538,7 @@ mod tests {
                 pid: 1,
                 started_at,
                 last_seen: taken_at,
-                version: "1.0.0-rc4".to_owned(),
+                version: "1.0.0-rc5".to_owned(),
                 queues: vec!["quota".to_owned()],
                 processes: 3,
                 concurrency: 1,
@@ -618,7 +618,7 @@ mod tests {
         };
         let text = render_text(&snapshot, false);
         let expected = "\
-supervisor  worker-quota-6f8b9c7d4-x2k9p  pid 1  up 38m  simple-q 1.0.0rc4
+supervisor  worker-quota-6f8b9c7d4-x2k9p  pid 1  up 38m  simple-q 1.0.0rc5
 queues      quota  processes 3/3  concurrency 1  max_tasks 500
 memory      cgroup 2.1G / 4G  child soft 1G / hard 1500M
 counters    recycled 14  soft 2  hard 1  restarts 0
