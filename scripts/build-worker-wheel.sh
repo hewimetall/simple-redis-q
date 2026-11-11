@@ -47,6 +47,10 @@ curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profil
 export PATH="/opt/python-shared/bin:${PATH}"
 export LD_LIBRARY_PATH=/opt/python-shared/lib
 export PYO3_PYTHON=/opt/python-shared/bin/python3.12
+# The host job compiles into /io/target on Ubuntu 24.04. Those build scripts
+# need glibc 2.34, and this image has 2.28. Cargo would run the host binaries
+# and abort before it compiles anything here.
+export CARGO_TARGET_DIR=/tmp/cargo-target
 python3.12 -m pip install --upgrade pip
 python3.12 -m pip install "maturin>=1.8,<2" uv
 cd crates/agent-worker

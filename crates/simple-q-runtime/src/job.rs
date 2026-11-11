@@ -78,6 +78,9 @@ impl Job {
         }
         if let Some(lock_key) = &self.lock_key {
             names::validate_lock_key(lock_key)?;
+            if self.lock_ttl == 0 {
+                bail!("lock_ttl must be greater than zero");
+            }
         }
         Ok(())
     }
@@ -178,6 +181,26 @@ mod tests {
                 .to_string()
                 .contains("unsupported message version")
         );
+    }
+
+    #[test]
+    fn a_lock_without_a_positive_ttl_is_rejected() {
+        let mut payload = sample();
+        payload["lock_key"] = json!("cache:discovery");
+        payload["lock_ttl"] = json!(0);
+        assert!(
+            Job::parse(payload)
+                .unwrap_err()
+                .to_string()
+                .contains("lock_ttl")
+        );
+
+        let mut held = sample();
+        held["lock_key"] = json!("cache:discovery");
+        held["lock_ttl"] = json!(30);
+        let job = Job::parse(held).unwrap();
+        assert_eq!(job.lock_key.as_deref(), Some("cache:discovery"));
+        assert_eq!(job.lock_ttl, 30);
     }
 
     #[test]

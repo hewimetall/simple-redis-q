@@ -35,7 +35,7 @@ The script compiles inside `quay.io/pypa/manylinux_2_28`. That image's CPython i
 maturin build --release -b bin -i python3.12 --compatibility manylinux_2_28 --auditwheel skip
 ```
 
-Auditwheel is skipped because it would otherwise reject the link to libpython. The build then fails if `agent-worker.bin` needs a glibc newer than 2.28. It installs a `#!/bin/sh` launcher as `agent-worker` and keeps the ELF as `agent-worker.bin`. The launcher reads `pyvenv.cfg` `home` and prepends that interpreter's `lib` to `LD_LIBRARY_PATH`. The ELF's RPATH is `$ORIGIN/../lib`. The aarch64 job registers qemu binfmt before the container build.
+The container compiles into `CARGO_TARGET_DIR=/tmp/cargo-target`. The host job has already filled `/io/target` with build scripts linked on Ubuntu 24.04, and those binaries need glibc 2.34. Auditwheel is skipped because it would otherwise reject the link to libpython. The build then fails if `agent-worker.bin` needs a glibc newer than 2.28. It installs a `#!/bin/sh` launcher as `agent-worker` and keeps the ELF as `agent-worker.bin`. The launcher reads `pyvenv.cfg` `home` and prepends that interpreter's `lib` to `LD_LIBRARY_PATH`. The ELF's RPATH is `$ORIGIN/../lib`. The aarch64 job registers qemu binfmt before the container build.
 
 The script then installs the already built runtime wheel and the new worker wheel into a fresh virtualenv and checks:
 

@@ -43,6 +43,10 @@ The apalis worker calls `handle`, which calls `handle_job`. `incr_delivery` runs
 
 `on_dead` receives one `DeadLetter`. `error` is `"{Type}: {message}"` only for `retries` and `timeout`.
 
+### Business lock
+
+`dispatch` resolves `lock_key`, then `Client.acquire_lock`. The Redis command is `SET lock:{key} {owner} NX PX {ttl_ms}`. The owner is a UUID. A miss returns no owner. `skip_on_lock` ends the delivery as `skipped`. Otherwise the attempt fails and follows `max_retries`. A background task extends the TTL with `PEXPIRE` while this process still holds the owner. One missed Python ping does not stop that task. The ping budget does: the child marks the loop unhealthy, stops extending, cancels the task, and exits 2. A Redis error on extend is retried on the next period. Losing the key stops extending. `release` clears the local flag first, then deletes the key only when the value is still this owner. If `acquire` is dropped after that key is stored and before the owner is returned, renewal stops and the same delete runs. Cancelling `dispatch` during the unlock still runs the delete. `lock_ttl` of zero is rejected.
+
 ### Worker heartbeat
 
 `Client.worker_alive` uses the connection opened by a previous send. A client that has never connected returns `False` and does not call Redis. Otherwise the runtime parses `agent-worker.{queue}.{host}.{pid}.{suffix}`, reads `ZSCORE {queue}:workers`, and compares the score with Redis `TIME` against `heartbeat_secs * missed_heartbeats`.

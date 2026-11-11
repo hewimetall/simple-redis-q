@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+The worker wheel build compiles inside the manylinux container's own cargo target directory. A host `target/` from Ubuntu 24.04 was being executed there, and its build scripts need glibc 2.34.
+
+A missed Python ping no longer stops business-lock renewal. Renewal stops when the ping budget elapses. A Redis error while extending the lock is retried. Cancelling `dispatch` during unlock still deletes the key. `lock_ttl` must be greater than zero.
+
 ## 1.0.0rc3
 
 The worker wheel is `manylinux_2_28`. `agent-worker` in a virtualenv is a launcher that points `LD_LIBRARY_PATH` at the base interpreter's `lib` before `agent-worker.bin`.
