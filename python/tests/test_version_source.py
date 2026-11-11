@@ -29,8 +29,8 @@ def pep440(version: str) -> str:
 def test_workspace_package_version_is_the_only_source():
     workspace = tomllib.loads((ROOT / "Cargo.toml").read_text())
     source = workspace["workspace"]["package"]["version"]
-    assert source == "1.0.0-rc6"
-    assert pep440(source) == "1.0.0rc6"
+    assert source == "1.0.0-rc7"
+    assert pep440(source) == "1.0.0rc7"
 
     for rel in ("crates/simple-q-runtime/Cargo.toml", "crates/agent-worker/Cargo.toml"):
         package = tomllib.loads((ROOT / rel).read_text())["package"]
