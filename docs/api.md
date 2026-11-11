@@ -40,6 +40,14 @@ When the lock is busy and `skip_on_lock` is true, the delivery counts as process
 
 Retry delay follows the Dramatiq 1.18 backoff. `retries` is the number already recorded, before this delay is added. The delay is `int(half + uniform(0, half))`, where `half` is half of `min(min_backoff * 2**retries, max_backoff)`.
 
+`@actor` accepts only the parameters in its signature. `@actor(alter=True)` raises `TypeError`. A value that changes from send to send is a keyword of `send` or an entry in `headers`. A value that is the same for every send of one actor lives in the module that declares the actor. The worker imports that module. It is written onto the message when `on_send` copies it into `headers`, or when the caller includes it in `kwargs`.
+
+`python/examples/alter_option.py` is that shape. `alter` is an argument of the handler. The middleware copies it into the string header `alter`. `note` is a header the handler does not take as an argument. `lane` comes from a dict in the example module. From the repository root:
+
+```bash
+PYTHONPATH=python python python/examples/alter_option.py
+```
+
 ## `Client`
 
 ```python
@@ -67,6 +75,9 @@ class Client:
     async def send(self, actor, /, **kwargs) -> str:
         """Enqueue ``actor`` and return the message id.
 
+        ``kwargs`` are the handler arguments. They are stored as JSON:
+        strings, numbers, booleans, lists, and objects. The handler is
+        called as ``function(**kwargs)``, so it must accept every key.
         Raises when the message was not queued, including when a
         ``unique_key`` passed another way is already held.
         """
@@ -155,6 +166,20 @@ def worker_name() -> str | None:
 ```
 
 `CurrentMessage` carries `message_id`, `retries`, `max_retries`, `queue_name`, `actor_name`, `kwargs`, `headers`, `deliveries`, and `worker_name`.
+
+`on_send` hooks run in registration order. Each hook receives the headers returned by the previous hook. `None` keeps that mapping. `around_dispatch`, `on_start`, `on_stop`, and `on_dead` also run in registration order. The first `around_dispatch` hook is the outer hook: it starts first and finishes last. `current_message()` is already bound when an `around_dispatch` hook starts.
+
+`dispatch` returns a dict. The worker reads `outcome`:
+
+| `outcome` | What the worker does |
+| --- | --- |
+| `retry` | Enqueues the same message after `delay_ms` milliseconds and adds one to `retries`. A missing `delay_ms` waits zero. The idempotency key stays. |
+| `dead` | Releases the idempotency key and records the attempt as killed. `reason` is the abort text. The delivery key stays. |
+| any other value, including `ok` and `skipped` | Acknowledges the delivery and releases the idempotency key. |
+
+An `around_dispatch` hook can return one of those dicts without calling `call_next`. An exception from `dispatch` releases the idempotency key and kills the attempt. Python does not enqueue a retry for that exception. `on_dead` runs inside the handler path, before the outer `around_dispatch` hook sees the dict. Replacing a `dead` outcome with `retry` after that leaves the dead-letter hook already called.
+
+A middleware class registers the hooks in `install(client, app)`. The running example is `python/examples/alter_option.py`. The Dramatiq names for the same hooks are on the [migration](migration.md) page.
 
 ## `Config`
 
