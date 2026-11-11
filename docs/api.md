@@ -167,7 +167,16 @@ def worker_name() -> str | None:
 
 `CurrentMessage` carries `message_id`, `retries`, `max_retries`, `queue_name`, `actor_name`, `kwargs`, `headers`, `deliveries`, and `worker_name`.
 
-`on_send` hooks run in registration order. Each hook receives the headers returned by the previous hook. `None` keeps that mapping. `around_dispatch`, `on_start`, `on_stop`, and `on_dead` also run in registration order. The first `around_dispatch` hook is the outer hook: it starts first and finishes last. `current_message()` is already bound when an `around_dispatch` hook starts.
+Several middleware classes share one `App`. Each `install` appends that class's hooks. The list order is the stack order. For classes installed as `a`, then `b`, then `c`, then `d`:
+
+- `on_send`, `on_start`, `on_stop`, and `on_dead` run `a`, `b`, `c`, `d`.
+- Each `on_send` receives the headers returned by the previous hook. `None` keeps that mapping. The same header key keeps the last write.
+- `around_dispatch` enters `a`, `b`, `c`, `d`, then the handler, then leaves `d`, `c`, `b`, `a`. The first registered hook is the outer hook. `current_message()` is already bound when that outer hook starts.
+- An outer hook that returns without calling `call_next` leaves the inner hooks and the handler uncalled.
+- The dict an inner hook returns is the dict the outer hook receives. A `delay_ms` written on a `retry` outcome is visible to every outer hook, and it is the dict `dispatch` returns.
+- `on_dead` runs inside the handler path, after the handler and before any `around_dispatch` hook leaves. An exception from one `on_start`, `on_stop`, or `on_dead` hook is logged. The later hooks in that list still run.
+
+`python/tests/test_middleware_stack.py` installs four classes and records this order.
 
 `dispatch` returns a dict. The worker reads `outcome`:
 

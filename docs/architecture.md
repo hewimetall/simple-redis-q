@@ -35,7 +35,11 @@ A retry does not start at `send`. After `App.dispatch` returns `retry`, `handle_
 
 ### One delivery
 
-The apalis worker calls `handle`, which calls `handle_job`. `incr_delivery` runs `INCR` and `EXPIRE` on `delivery:{message_id}:{retries}` before Python. `decide` returns `Run` when that count is at or below `max_deliveries`. `bridge.execute` calls `App.dispatch`. The handler is `declared.function` under `asyncio.wait_for`. That wait cancels the handler with `CancelledError`. `CancelledError` is a `BaseException`, so `except Exception` inside the handler does not run. The exception that leaves `wait_for` is `TimeoutError`. Success deletes the delivery key and the idempotency key. A failure before the last attempt returns `retry` and keeps the idempotency key. The last failure, including the last timeout, calls `on_dead` and leaves the delivery key.
+The apalis worker calls `handle`, which calls `handle_job`. `incr_delivery` runs `INCR` and `EXPIRE` on `delivery:{message_id}:{retries}` before Python. `decide` returns `Run` when that count is at or below `max_deliveries`. `bridge.execute` serializes the `Job` to JSON, calls `App.dispatch`, and serializes the returned dict back to JSON. `handle_job` reads `outcome` from that dict.
+
+`App.dispatch` binds `current_message()` and then runs the `around_dispatch` list. Hooks registered first are the outer wrappers: installed as `a`, `b`, `c`, `d`, the call enters in that order and leaves `d`, `c`, `b`, `a`. The handler is `declared.function` under `asyncio.wait_for`, inside the innermost call. That wait cancels the handler with `CancelledError`. `CancelledError` is a `BaseException`, so `except Exception` inside the handler does not run. The exception that leaves `wait_for` is `TimeoutError`. `on_send` does not run here. It ran in `prepare` on the sending process, before the `Job` was stored.
+
+`retry` makes `handle_job` add one to `retries` and call `enqueue_job` with `delay_ms`. The idempotency key stays, and the delivery key is deleted. `dead`, and an exception from `dispatch`, release the idempotency key and return `AbortError`. The delivery key stays. Any other outcome, including `ok` and `skipped`, deletes both keys. A failure before the last attempt returns `retry`. The last failure, including the last timeout, calls `on_dead` and returns `dead`.
 
 ### Poison, before the handler
 

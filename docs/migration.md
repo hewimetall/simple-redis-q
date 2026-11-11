@@ -49,9 +49,29 @@ class AlterMiddleware:
         return await call_next()
 ```
 
-`on_send` runs in registration order. The first `around_dispatch` hook registered is the outer hook. `await client.send(recalc, project_id="42", alter=True)` stores `alter` in `kwargs` as JSON. The handler must accept `alter`. `headers` is `dict[str, str]`, so a boolean option is stored as `"1"` or `"0"`. `@actor(alter=True)` raises `TypeError`. A flag that is the same for every send of one actor lives in the module the worker imports, and `on_send` copies it onto the message when the delivery should see it.
+A pack of middleware is a list. Each class registers only the hooks it uses:
 
-`on_dead` runs inside `call_next`, before an outer hook sees the outcome dict. An exception from `dispatch` kills the attempt and releases the idempotency key. Python does not enqueue a retry for that exception.
+```python
+def create_app(client) -> App:
+    app = App(client=client, actors=[recalc])
+    for middleware in (Trace(), Alter(), Audit()):
+        middleware.install(client, app)
+    return app
+```
+
+Installed as `a`, then `b`, then `c`, then `d`, the stack runs like this:
+
+| Hook | Order |
+| --- | --- |
+| `on_send`, `on_start`, `on_stop`, `on_dead` | `a`, `b`, `c`, `d` |
+| `around_dispatch` on the way in | `a`, `b`, `c`, `d`, then the handler |
+| `around_dispatch` on the way out | `d`, `c`, `b`, `a` |
+
+Each `on_send` sees the headers returned by the previous one. The same header key keeps the last write. The first `around_dispatch` hook is the outer hook. `current_message()` is already bound when it starts. An outer hook that returns without calling `call_next` leaves `b`, `c`, `d`, and the handler uncalled. A `delay_ms` an inner hook writes on a `retry` outcome is what every outer hook sees, and it is what `dispatch` returns. `on_dead` runs after the handler and before any `around_dispatch` hook leaves. One `on_start`, `on_stop`, or `on_dead` that raises is logged, and the later hooks in that list still run.
+
+`await client.send(recalc, project_id="42", alter=True)` stores `alter` in `kwargs` as JSON. The handler must accept `alter`. `headers` is `dict[str, str]`, so a boolean option is stored as `"1"` or `"0"`. `@actor(alter=True)` raises `TypeError`. A flag that is the same for every send of one actor lives in the module the worker imports, and `on_send` copies it onto the message when the delivery should see it.
+
+An exception from `dispatch` kills the attempt and releases the idempotency key. Python does not enqueue a retry for that exception. `python/tests/test_middleware_stack.py` records the four-class order above.
 
 `python/examples/alter_option.py` is a working middleware. It sends `alter` as a handler argument, copies it into a header, and passes `note` as a header the handler does not take. From the repository root:
 
