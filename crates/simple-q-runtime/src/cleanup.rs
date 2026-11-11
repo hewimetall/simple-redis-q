@@ -16,12 +16,13 @@ pub fn should_delete(done_at: i64, now: i64, ttl_secs: u64) -> bool {
     done_at <= now.saturating_sub(ttl_secs as i64)
 }
 
-/// Delete expired done and dead records in SSCAN batches, then drop worker
+/// Delete expired done and dead records in cursor batches, then drop worker
 /// metadata hashes whose names are no longer in `{queue}:workers`.
 ///
 /// Apalis `vacuum` reads a data hash with `HGETALL` and does not remove ids from
-/// the done and dead sets. This walk uses a cursor and removes the payload,
-/// the per-task meta hash, and the set member together. A dead id is also
+/// the done and dead keys. A new key is a sorted set. A key that is already a
+/// set stays a set. This walk uses `ZSCAN` or `SSCAN` and removes the payload,
+/// the per-task meta hash, and the member together. A dead id is also
 /// removed from `simple_q:dead:{queue}`.
 pub async fn sweep_queue(
     conn: &mut ConnectionManager,
@@ -116,6 +117,12 @@ async fn sweep_orphan_metadata(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum MemberKey {
+    Set,
+    Zset,
+}
+
 async fn sweep_set(
     conn: &mut ConnectionManager,
     queue: &str,
@@ -126,16 +133,39 @@ async fn sweep_set(
 ) -> Result<u64> {
     let set = format!("{queue}:{which}");
     let data = format!("{queue}:data");
+    let kind: String = redis::cmd("TYPE")
+        .arg(&set)
+        .query_async(conn)
+        .await
+        .with_context(|| format!("failed to read the type of {set}"))?;
+    let kind = match kind.as_str() {
+        "none" => return Ok(0),
+        "set" => MemberKey::Set,
+        "zset" => MemberKey::Zset,
+        other => anyhow::bail!("{set} has type {other}"),
+    };
+    let scan = match kind {
+        MemberKey::Set => "SSCAN",
+        MemberKey::Zset => "ZSCAN",
+    };
+    let remove = match kind {
+        MemberKey::Set => "SREM",
+        MemberKey::Zset => "ZREM",
+    };
     let mut cursor = 0u64;
     let mut deleted = 0u64;
     loop {
-        let (next, ids): (u64, Vec<String>) = redis::cmd("SSCAN")
+        let (next, flat): (u64, Vec<String>) = redis::cmd(scan)
             .arg(&set)
             .arg(cursor)
             .arg("COUNT")
             .arg(batch.max(1))
             .query_async(conn)
             .await?;
+        let ids: Vec<String> = match kind {
+            MemberKey::Set => flat,
+            MemberKey::Zset => flat.into_iter().step_by(2).collect(),
+        };
         for id in ids {
             let meta = format!("{queue}:meta:{id}");
             let done_at: Option<String> = redis::cmd("HGET")
@@ -156,7 +186,7 @@ async fn sweep_set(
                 .arg(&id)
                 .cmd("DEL")
                 .arg(&meta)
-                .cmd("SREM")
+                .cmd(remove)
                 .arg(&set)
                 .arg(&id);
             if which == "dead" {

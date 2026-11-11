@@ -4,7 +4,7 @@ dynamic = ["version"]
 description = "Queue runtime for Python async tasks, with a Rust extension for Redis enqueue and locks"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["prometheus_client>=0.21"]
+dependencies = ["prometheus_client>=0.26"]
 
 [project.urls]
 Homepage = "https://github.com/hewimetall/simple-redis-q"
@@ -12,13 +12,13 @@ Repository = "https://github.com/hewimetall/simple-redis-q"
 Issues = "https://github.com/hewimetall/simple-redis-q/issues"
 
 [build-system]
-requires = ["maturin>=1.8,<2"]
+requires = ["maturin>=1.16,<2"]
 build-backend = "maturin"
 
 [dependency-groups]
 dev = [
     "maturin>=1.16.0",
-    "opentelemetry-sdk>=1.27",
+    "opentelemetry-sdk>=1.45.2",
 ]
 
 [tool.maturin]
