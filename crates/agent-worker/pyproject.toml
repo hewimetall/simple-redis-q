@@ -7,7 +7,7 @@ name = "simple-q-worker"
 dynamic = ["version"]
 description = "agent-worker supervisor binary for simple-q-runtime"
 requires-python = ">=3.12"
-dependencies = ["simple-q-runtime==1.0.0rc6"]
+dependencies = ["simple-q-runtime==1.0.0rc7"]
 
 [project.urls]
 Homepage = "https://github.com/hewimetall/simple-redis-q"
