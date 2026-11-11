@@ -3,6 +3,6 @@ resolver = "2"
 members = ["crates/simple-q-runtime", "crates/agent-worker"]
 
 [workspace.package]
-version = "1.0.0-rc4"
+version = "1.0.0-rc6"
 edition = "2024"
 rust-version = "1.99"
