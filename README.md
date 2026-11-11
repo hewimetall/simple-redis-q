@@ -12,6 +12,8 @@ uv add simple-q-runtime simple-q-worker
 
 `simple-q-runtime` is the importable package (`import simple_q`). `simple-q-worker` installs the `agent-worker` binary into the virtualenv and depends on the same version of `simple-q-runtime`.
 
+A local macOS producer is `maturin develop` against CPython 3.12 or newer. A local worker is `cargo build -p agent-worker` with `PYO3_PYTHON` pointing at a shared CPython (`libpython3.X.dylib` from python.org or Homebrew). PyO3 sets the rpath. Published wheels and the `agent-worker` launcher are Linux.
+
 ## Example
 
 ```python

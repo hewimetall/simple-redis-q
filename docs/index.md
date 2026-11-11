@@ -4,7 +4,7 @@ These pages describe simple-q 1.0.
 
 simple-q runs Python async tasks on Redis. `simple-q-runtime` is the importable package (`import simple_q`). `simple-q-worker` installs the `agent-worker` supervisor. Importing `simple_q` does not open Redis. `Client` does.
 
-Supported runtime: CPython 3.12, 3.13, 3.14, and 3.15 with the GIL, Linux x86_64 and aarch64. Free-threaded builds are not supported. A producer and a worker may use different minor versions. The message is JSON. The actor module is imported by the worker.
+Supported runtime: CPython 3.12, 3.13, 3.14, and 3.15 with the GIL, Linux x86_64 and aarch64. Free-threaded builds are not supported. A producer and a worker may use different minor versions. The message is JSON. The actor module is imported by the worker. A Mac builds the producer with `maturin develop` and a local worker with `cargo build -p agent-worker` against a shared CPython. Published wheels stay Linux.
 
 ```bash
 uv add simple-q-runtime simple-q-worker
