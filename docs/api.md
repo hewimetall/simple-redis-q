@@ -183,7 +183,7 @@ Several middleware classes share one `App`. Each `install` appends that class's 
 | `outcome` | What the worker does |
 | --- | --- |
 | `retry` | Enqueues the same message after `delay_ms` milliseconds and adds one to `retries`. A missing `delay_ms` waits zero. The idempotency key stays. |
-| `dead` | Releases the idempotency key and records the attempt as killed. `reason` is the abort text. `error` is the exception text for `retries` and `timeout`, and null for `poison` and `unknown_actor`. The delivery key stays. Rust stores `reason`, `error`, `dead_at`, and `deliveries`. |
+| `dead` | Releases the idempotency key and records the attempt as killed. `reason` is the abort text. `error` is the exception text for `retries` and `timeout`, and null for `poison` and `unknown_actor`. The delivery key stays. Rust stores `reason`, `error`, `dead_at`, and `deliveries`. Stored `error` is at most 4096 bytes. |
 | any other value, including `ok` and `skipped` | Acknowledges the delivery and releases the idempotency key. |
 
 An `around_dispatch` hook can return one of those dicts without calling `call_next`. An exception from `dispatch` releases the idempotency key and kills the attempt. Python does not enqueue a retry for that exception. `on_dead` runs inside the handler path, before the outer `around_dispatch` hook sees the dict. Replacing a `dead` outcome with `retry` after that leaves the dead-letter hook already called.
@@ -276,9 +276,9 @@ The return value is a frozen `DeadPage`:
 - `DeadPage`: `messages`, `cursor`
 - `DeadMessage`: `task_id`, `message_id`, `actor_name`, `kwargs`, `reason`, `error`, `retries`, `deliveries`, `dead_at`
 
-`reason` is `poison`, `invalid`, the Python `dead` reason (`retries`, `timeout`, `unknown_actor`, or another reason the outcome dict carried), or `dispatch` when `dispatch` raises. `error` is the exception text for `retries`, `timeout`, and `dispatch`. It is null for `poison`, `invalid`, and `unknown_actor`. `on_dead` is unchanged: it still receives one `DeadLetter`.
+`reason` is `poison`, `invalid`, the Python `dead` reason (`retries`, `timeout`, `unknown_actor`, or another reason the outcome dict carried), or `dispatch` when `dispatch` raises. `error` is the exception text for `retries`, `timeout`, and `dispatch`, stored at most 4096 bytes. It is null for `poison`, `invalid`, and `unknown_actor`. `on_dead` is unchanged: it still receives one `DeadLetter`.
 
-The sweeper removes the index member when it deletes that dead task.
+`dead` lists ids written to `simple_q:dead:{queue}` from 1.0.0rc5 on. A task that died before that index is still in `{queue}:dead` and still counts in the queue snapshot. `dead` does not return it. The sweeper deletes it with the rest of that key, within the dead TTL (seven days by default). The sweeper also removes an index member when it deletes that dead task.
 
 ### `peek`
 
@@ -287,9 +287,11 @@ waiting = await admin.peek("default", "active")
 later = await admin.peek("default", "scheduled", limit=50, cursor=None)
 ```
 
-`peek` reads one page of `{queue}:active` with `LRANGE`, or one page of `{queue}:scheduled` with `ZRANGE` and `WITHSCORES`. It then loads only those ids from `{queue}:data`. It does not call apalis `list_tasks`. `state` is `active` or `scheduled`. Any other value raises `ValueError`. `limit` and `cursor` follow the same rules as `dead`.
+`peek` reads one page of `{queue}:active` with `LRANGE`, or one page of `{queue}:scheduled` with `ZRANGE` and `WITHSCORES`. It then loads only those ids from `{queue}:data`. It does not call apalis `list_tasks`. `state` is `active` or `scheduled`. Any other value raises `ValueError`. `limit` follows the same rules as `dead`. A cursor that does not decode raises `ValueError`.
 
-Active pages follow the list from the head. The cursor is base64url of `a\n{task_id}`. The next page starts after that id. Scheduled pages are soonest-first. The cursor is base64url of `s\n{run_at}\n{task_id}`. Equal scores are lexicographic by task id. `run_at` is the score, in Redis seconds. Active rows leave `run_at` unset.
+Active pages start at the head of the list. The cursor is base64url, without padding, of `a\n{offset}`. `offset` is the zero-based index of the next page. A worker can take a task between pages, so a later page can skip or repeat an id. A missing id does not fail the page. A cursor that names a task id is not an offset and raises `ValueError`.
+
+Scheduled pages are soonest-first. The cursor is base64url of `s\n{run_at}\n{task_id}` and is exclusive. Equal scores are lexicographic by task id. `run_at` is the score, in Redis seconds. Active rows leave `run_at` unset.
 
 The return value is a frozen `TaskPage`:
 

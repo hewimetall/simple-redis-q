@@ -43,7 +43,7 @@ The apalis worker calls `handle`, which calls `handle_job`. `incr_delivery` runs
 
 `retry` makes `handle_job` add one to `retries` and call `enqueue_job` with `delay_ms`. The idempotency key stays, and the delivery key is deleted. `dead`, and an exception from `dispatch`, release the idempotency key and return `AbortError`. The delivery key stays. Any other outcome, including `ok` and `skipped`, deletes both keys. A failure before the last attempt returns `retry`. The last failure, including the last timeout, calls `on_dead` and returns `dead`. The dead outcome dict includes `error`, which is the exception text for `retries` and `timeout` and null otherwise. `on_dead` still receives one `DeadLetter`.
 
-A dead delivery (`poison`, `invalid`, a Python `dead` outcome, or an exception from `dispatch`) `HSET`s `reason`, `dead_at`, `deliveries`, and `error` when there is one, on `{queue}:meta:{task_id}`. It `ZADD`s the task id to `simple_q:dead:{queue}` with that same Redis time as the score. Apalis writes `{queue}:dead` as a sorted set scored by completion time when the key is new, and appends to it when the key is already a set. The sweeper `ZREM`s the index member when it deletes the task.
+A dead delivery (`poison`, `invalid`, a Python `dead` outcome, or an exception from `dispatch`) `HSET`s `reason`, `dead_at`, `deliveries`, and `error` when there is one, on `{queue}:meta:{task_id}`. Stored `error` is at most 4096 bytes. It `ZADD`s the task id to `simple_q:dead:{queue}` with that same Redis time as the score. Apalis writes `{queue}:dead` as a sorted set scored by completion time when the key is new, and appends to it when the key is already a set. The sweeper `ZREM`s the index member when it deletes the task.
 
 ### Poison, before the handler
 

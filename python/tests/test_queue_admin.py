@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import dataclasses
 import json
 import os
@@ -165,6 +166,19 @@ def test_peek_pages_active_and_scheduled():
         rest = asyncio.run(admin.peek(queue, "active", cursor=waiting.cursor))
         assert [task.task_id for task in rest.tasks] == ["act-3"]
         assert rest.cursor is None
+
+        stale = base64.urlsafe_b64encode(b"a\nact-2").decode().rstrip("=")
+        with pytest.raises(ValueError):
+            asyncio.run(admin.peek(queue, "active", cursor=stale))
+        with pytest.raises(ValueError):
+            asyncio.run(admin.peek(queue, "active", cursor="%%%"))
+
+        _redis("DEL", active)
+        _redis("RPUSH", active, "act-1", "act-2", "act-3")
+        first = asyncio.run(admin.peek(queue, "active", limit=2))
+        _redis("LREM", active, "1", "act-2")
+        shifted = asyncio.run(admin.peek(queue, "active", cursor=first.cursor))
+        assert shifted.tasks == ()
 
         _redis("ZADD", scheduled, "100", "sch-a", "200", "sch-c", "200", "sch-b")
         for task_id in ("sch-a", "sch-b", "sch-c"):
