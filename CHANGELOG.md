@@ -1,14 +1,10 @@
 # Changelog
 
-## 1.0.0rc5
-
-`QueueAdmin.dead` pages dead letters newest-first. A dead record keeps `reason`, `error`, `dead_at`, and `deliveries`. `QueueAdmin.peek` pages `active` and `scheduled`. A delivery writes `started_at` once; `locked_at` still moves on each lease renew. A snapshot lists held tasks for every queue on the supervisor. `format_bytes` prints 351112 KiB as `342.9M`.
-
-`{queue}:done` and `{queue}:dead` are sorted sets when Apalis creates the key, and stay sets when the key already is one. Queue counters and the sweeper read both.
-
-## Unreleased
+## 1.0.0rc6
 
 An active `peek` page is a list offset. A missing id does not fail the next page. A cursor that names a task id raises `ValueError`. Stored `error` is at most 4096 bytes.
+
+The arm wheel build installs the pinned compiler without rustfmt. The 1.0.0rc5 tag's arm job stopped on a `cargo-fmt` proxy conflict and did not publish.
 
 ## 1.0.0rc5
 
