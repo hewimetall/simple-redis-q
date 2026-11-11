@@ -46,7 +46,7 @@ The supervisor checks memory about once a second. It does not take messages. The
 
 `--child-memory-soft` and `--child-memory-hard`, or `SIMPLE_Q_CHILD_MEMORY_SOFT` and `SIMPLE_Q_CHILD_MEMORY_HARD`, set an RSS limit for one child. The flag wins when both the flag and the variable are set. `K`, `M`, and `G` are powers of 1024. An optional `B` is the same unit. A bare number is bytes. Zero, a fraction, and any other shape are invalid and the supervisor exits 3 before it starts a child. When both limits are set, soft must be below hard.
 
-RSS comes from `/proc/<pid>/statm`. At the soft limit that pid receives `SIGUSR1` once and drains: it finishes current work and takes nothing new. At the hard limit that pid receives `SIGKILL`. A later child is a new process. The queue and the poison rule stay as they were.
+On Linux, RSS comes from `/proc/<pid>/statm` (resident pages times the page size). On macOS it comes from `proc_pid_rusage` (`ri_resident_size`). A failed read leaves that child out of the limit check. At the soft limit that pid receives `SIGUSR1` once and drains: it finishes current work and takes nothing new. At the hard limit that pid receives `SIGKILL`. A later child is a new process. The queue and the poison rule stay as they were.
 
 If `processes * hard` is greater than a finite cgroup `memory.max`, the supervisor logs a warning and keeps running.
 
@@ -56,7 +56,7 @@ The ratio backstop uses the cgroup working set: `memory.current` minus `inactive
 
 `SIMPLE_Q_MEMORY_SOFT_RATIO` defaults to 0.80. `SIMPLE_Q_MEMORY_HARD_RATIO` defaults to 0.95. Both must be finite numbers in the open interval `(0, 1)`. At the soft ratio the supervisor sends `SIGUSR1` to the child with the largest RSS that has not already been asked to drain. The next tick picks another child if usage is still high. At the hard ratio the supervisor sends `SIGKILL` to the largest child when that child's RSS is at least half the working set (`rss * 2 >= usage`). A child that does not own the usage is drained instead of killed, because killing it would not stop the cgroup from running out of memory.
 
-Without a finite `memory.max` (`max`, empty, or missing), the ratio check does nothing. The per-child byte limits still apply.
+Without a finite `memory.max` (`max`, empty, or missing), the ratio check does nothing. On macOS `/proc/self/cgroup` is absent, so the ratio stays off. The per-child byte limits still apply.
 
 The supervisor writes `simple_q_child_memory_drains_total` and `simple_q_child_memory_kills_total` into `simple_q_child_memory.prom` in the metrics directory. The scrape adds those samples. A missing file is zero for both, and the scrape still returns 200.
 

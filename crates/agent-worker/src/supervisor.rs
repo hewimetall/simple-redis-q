@@ -706,11 +706,40 @@ fn container_memory() -> Option<(u64, u64)> {
 }
 
 fn resident_bytes(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_resident_bytes(pid)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        proc_resident_bytes(pid)
+    }
+}
+
+fn proc_resident_bytes(pid: u32) -> Option<u64> {
     let text = std::fs::read_to_string(format!("/proc/{pid}/statm")).ok()?;
     let pages = text.split_whitespace().nth(1)?.parse::<u64>().ok()?;
     let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     let page = if page > 0 { page as u64 } else { 4096 };
     Some(pages.saturating_mul(page))
+}
+
+// `ri_resident_size` from libproc. `rusage_info_t` is a `void *` typedef, and
+// the call writes the struct into the buffer behind that pointer.
+#[cfg(target_os = "macos")]
+fn macos_resident_bytes(pid: u32) -> Option<u64> {
+    let mut info = unsafe { std::mem::zeroed::<libc::rusage_info_v0>() };
+    let status = unsafe {
+        libc::proc_pid_rusage(
+            pid as libc::c_int,
+            libc::RUSAGE_INFO_V0,
+            &mut info as *mut libc::rusage_info_v0 as *mut libc::rusage_info_t,
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    Some(info.ri_resident_size)
 }
 
 fn log_child_memory_limits(limits: &ChildMemoryLimits) {
@@ -1223,6 +1252,12 @@ mod tests {
         note_shutdown_join(joined, &mut fatal);
         let error = fatal.expect("a panicked slot was treated as success");
         assert!(error.to_string().contains("panicked"));
+    }
+
+    #[test]
+    fn the_current_process_reports_a_resident_size() {
+        let rss = resident_bytes(std::process::id()).expect("resident size");
+        assert!(rss > 0);
     }
 
     #[test]

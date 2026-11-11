@@ -48,7 +48,9 @@ pub fn initialize() {
 
 fn load_embedded(py: Python<'_>) -> Bound<'_, PyAny> {
     let imp = py.import("_imp").expect("_imp");
-    let machinery = py.import("importlib.machinery").expect("importlib.machinery");
+    let machinery = py
+        .import("importlib.machinery")
+        .expect("importlib.machinery");
     for name in ["simple_q._runtime", "_runtime"] {
         let spec = machinery
             .call_method1("ModuleSpec", (name, py.None()))
@@ -71,6 +73,11 @@ fn init_interpreter() {
     // directory above it. Set the config path from the launch path when that
     // file is present, and leave the default config alone otherwise so the
     // shared libpython still finds the standard library.
+    //
+    // PyInitConfig (3.14) defaults to an isolated runtime and would skip
+    // site.py. PyConfig and Py_InitializeFromConfig stay available through
+    // 3.15 and are what loads the virtualenv. The binary links the GIL
+    // libpython for one minor version. Free-threaded builds are not linked.
     let venv_executable = venv_executable();
     unsafe {
         if pyo3::ffi::Py_IsInitialized() != 0 {

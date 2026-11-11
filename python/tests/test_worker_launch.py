@@ -22,7 +22,9 @@ def test_launcher_points_ld_library_path_at_the_base_lib(tmp_path):
     venv = tmp_path / "venv"
     bindir = venv / "bin"
     bindir.mkdir(parents=True)
-    (venv / "pyvenv.cfg").write_text(f"home = {tmp_path / 'cpython' / 'bin'}\n")
+    (venv / "pyvenv.cfg").write_text(
+        f"home = {tmp_path / 'cpython' / 'bin'}\nversion = 3.12.16\n"
+    )
     elf = bindir / "agent-worker.bin"
     elf.write_text(
         "#!/bin/sh\nprintf '%s\\n' \"${LD_LIBRARY_PATH-}\"\nprintf '%s\\n' \"$1\"\n"
@@ -43,6 +45,31 @@ def test_launcher_points_ld_library_path_at_the_base_lib(tmp_path):
     )
     lines = completed.stdout.splitlines()
     assert lines == [str(base), "info"]
+
+
+def test_launcher_uses_the_version_minor_not_another_libpython(tmp_path):
+    tree = tmp_path / "cpython"
+    (tree / "lib").mkdir(parents=True)
+    (tree / "lib64").mkdir()
+    (tree / "bin").mkdir()
+    (tree / "lib" / "libpython3.12.so.1.0").write_bytes(b"")
+    (tree / "lib64" / "libpython3.15.so.1.0").write_bytes(b"")
+    venv = tmp_path / "venv"
+    bindir = venv / "bin"
+    bindir.mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text(
+        f"home = {tree / 'bin'}\nversion = 3.15.2\n"
+    )
+    elf = bindir / "agent-worker.bin"
+    elf.write_text("#!/bin/sh\nprintf '%s\\n' \"${LD_LIBRARY_PATH-}\"\n")
+    elf.chmod(elf.stat().st_mode | stat.S_IEXEC)
+    script = bindir / "agent-worker"
+    script.write_bytes(LAUNCHER.read_bytes())
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    env = os.environ.copy()
+    env.pop("LD_LIBRARY_PATH", None)
+    completed = subprocess.run([str(script)], check=True, capture_output=True, text=True, env=env)
+    assert completed.stdout.strip() == str(tree / "lib64")
 
 
 def test_launcher_leaves_the_path_alone_without_libpython(tmp_path):
