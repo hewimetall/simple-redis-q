@@ -52,7 +52,7 @@ export PYO3_PYTHON=/opt/python-shared/bin/python3.12
 # and abort before it compiles anything here.
 export CARGO_TARGET_DIR=/tmp/cargo-target
 python3.12 -m pip install --upgrade pip
-python3.12 -m pip install "maturin>=1.8,<2" uv
+python3.12 -m pip install "maturin>=1.16,<2" uv
 cd crates/agent-worker
 maturin build --release -b bin -i python3.12 --compatibility manylinux_2_28 --auditwheel skip --out /tmp/wheels
 cd /io

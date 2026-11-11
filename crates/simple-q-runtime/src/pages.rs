@@ -1,6 +1,7 @@
 //! Dead-letter index and one-page reads of active and scheduled tasks.
 //!
-//! Apalis keeps `{queue}:dead` as a set. This module owns
+//! Apalis keeps `{queue}:dead` as a sorted set scored by completion time when
+//! it creates the key, and as a set when the key already is one. This module owns
 //! `simple_q:dead:{queue}`, a sorted set scored by Redis `TIME` seconds.
 //! Pages walk that index, or one slice of `{queue}:active` / `{queue}:scheduled`.
 //! They do not `SMEMBERS` the dead set and they do not call apalis `list_tasks`.

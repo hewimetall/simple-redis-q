@@ -24,7 +24,7 @@ jobs:
           python-version: "3.12"
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -34,7 +34,7 @@ jobs:
           python3 -m venv .venv
           . .venv/bin/activate
           python -m pip install --upgrade pip
-          python -m pip install pytest prometheus_client "maturin>=1.8,<2"
+          python -m pip install pytest "prometheus_client>=0.26" "maturin>=1.16,<2"
           maturin develop
           python -m pytest python/tests/test_runtime_contract.py python/tests/test_lock_release.py python/tests/test_version_source.py python/tests/test_alter_option.py python/tests/test_middleware_stack.py -q
           cargo test --workspace
@@ -63,7 +63,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y python3.12-dev pkg-config libssl-dev redis-tools
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -79,7 +79,7 @@ jobs:
           PYO3_PYTHON: python3.12
 
       - name: Orphan-window tests
-        run: python3 -m pip install pytest prometheus_client && python3 -m pytest python/tests/test_orphan_integration.py python/tests/test_worker_info.py -q
+        run: python3 -m pip install pytest "prometheus_client>=0.26" && python3 -m pytest python/tests/test_orphan_integration.py python/tests/test_worker_info.py -q
         env:
           AGENT_WORKER_BIN: target/release/agent-worker
           REDIS_URL: redis://127.0.0.1:6379/15
@@ -98,7 +98,7 @@ jobs:
           python-version: "3.12"
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
