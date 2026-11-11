@@ -93,6 +93,8 @@ def actor(
     max_deliveries: int = DEFAULT_MAX_DELIVERIES,
 ):
     validate_queue(queue)
+    if lock_ttl <= 0:
+        raise ValueError("lock_ttl must be greater than zero")
 
     def decorate(function):
         return Actor(
@@ -133,6 +135,8 @@ def build_message(
     unique_key: str | None = None,
 ) -> dict:
     validate_queue(queue)
+    if lock_ttl <= 0:
+        raise ValueError("lock_ttl must be greater than zero")
     if not isinstance(kwargs, dict):
         raise TypeError("kwargs must be a dict")
     if any(not isinstance(key, str) or not isinstance(value, str) for key, value in headers.items()):
@@ -316,7 +320,7 @@ class App:
             lock_key = resolve_lock_key(message.get("lock_key") or declared.lock_key, current.kwargs)
             if lock_key:
                 owner = await self.client.acquire_lock(
-                    lock_key, int(message.get("lock_ttl") or declared.lock_ttl)
+                    lock_key, _lock_ttl(message.get("lock_ttl"), declared.lock_ttl)
                 )
                 if owner is None:
                     if message.get("skip_on_lock", declared.skip_on_lock):
@@ -420,7 +424,36 @@ class App:
                 log.exception("%s hook failed", label)
 
 
+def _lock_ttl(raw, declared: int) -> int:
+    ttl = declared if raw is None else int(raw)
+    if ttl <= 0:
+        raise ValueError("lock_ttl must be greater than zero")
+    return ttl
+
+
 async def _release(client, lock_key: str, owner: str) -> None:
+    """Unlock even when ``dispatch`` is already being cancelled.
+
+    A cancel delivered at the ``await`` inside ``finally`` used to abandon
+    the unlock. The inner task is shielded, the cancel count is cleared for
+    that wait, and the cancellation is raised again after the unlock finishes.
+    """
+
+    task = asyncio.create_task(_release_once(client, lock_key, owner))
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if current is not None:
+            while current.cancelling():
+                current.uncancel()
+        try:
+            await task
+        finally:
+            raise
+
+
+async def _release_once(client, lock_key: str, owner: str) -> None:
     try:
         await client.release_lock(lock_key, owner)
     except Exception:

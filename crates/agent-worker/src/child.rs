@@ -164,8 +164,10 @@ async fn lifecycle(
                 if tokio::time::Instant::now() >= next_ping {
                     next_ping = tokio::time::Instant::now() + PING_EVERY;
                     let ok = bridge::ping(PING_TIMEOUT).await;
-                    if watch.observe(ok, std::time::Instant::now()) {
-                        lock::set_loop_healthy(false);
+                    let budget_elapsed = watch.observe(ok, std::time::Instant::now());
+                    // A missed ping leaves renewal running. The budget is what stops it.
+                    lock::note_ping(ok, budget_elapsed);
+                    if budget_elapsed {
                         shared.pool.pause_all();
                         tracing::warn!(in_flight = registry::len(), "Python loop ping budget elapsed");
                         for execution in registry::snapshot() {
@@ -173,7 +175,6 @@ async fn lifecycle(
                         }
                         return Ok(2);
                     }
-                    lock::set_loop_healthy(ok);
                 }
             }
         }

@@ -36,7 +36,7 @@ def actor(
 
 `lock_key`, after substitution, is a non-empty ASCII string of letters, digits, and `:._-`. It must not start with `lock:`. A missing placeholder raises `KeyError`. Any other shape raises `ValueError`. The Redis key is `lock:` plus that string. `lock_ttl` is seconds. The default is 30.
 
-When the lock is busy and `skip_on_lock` is true, the delivery counts as processed and does not count as an error. When `skip_on_lock` is false, a busy lock fails the attempt and follows `max_retries`. A failed unlock after a successful handler keeps the successful result.
+When the lock is busy and `skip_on_lock` is true, the delivery counts as processed and does not count as an error. When `skip_on_lock` is false, a busy lock fails the attempt and follows `max_retries`. A failed unlock after a successful handler keeps the successful result. `lock_ttl` must be greater than zero. Cancelling `dispatch` while the unlock is waiting still releases the lock.
 
 Retry delay follows the Dramatiq 1.18 backoff. `retries` is the number already recorded, before this delay is added. The delay is `int(half + uniform(0, half))`, where `half` is half of `min(min_backoff * 2**retries, max_backoff)`.
 
