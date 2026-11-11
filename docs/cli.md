@@ -49,7 +49,7 @@ By default it prints the supervisor on this host (`HOSTNAME`, the same value as 
 Exit 0. Exit 1 when `--all` is absent and this host has no live supervisor. The message is `no live supervisor on {host}` on stderr.
 
 ```text
-supervisor  worker-quota-6f8b9c7d4-x2k9p  pid 1  up 38m  simple-q 1.0.0rc5
+supervisor  worker-quota-6f8b9c7d4-x2k9p  pid 1  up 38m  simple-q 1.0.0rc6
 queues      quota  processes 3/3  concurrency 1  max_tasks 500
 memory      cgroup 2.1G / 4G  child soft 1G / hard 1500M
 counters    recycled 14  soft 2  hard 1  restarts 0
@@ -66,7 +66,7 @@ QUEUE  ACTIVE  SCHEDULED  INFLIGHT  DONE  DEAD
 quota  12      1          4         9873  0
 ```
 
-`processes 3/3` is live children over the configured count. `soft` and `hard` in the counters line are soft drains and hard kills since this supervisor started. A killed or exited row that still holds a task says it is waiting for requeue. `simple-q 1.0.0rc5` is the package version; the binary's `--version` still prints the Cargo form `1.0.0-rc5`.
+`processes 3/3` is live children over the configured count. `soft` and `hard` in the counters line are soft drains and hard kills since this supervisor started. A killed or exited row that still holds a task says it is waiting for requeue. `simple-q 1.0.0rc6` is the package version; the binary's `--version` still prints the Cargo form `1.0.0-rc6`.
 
 ## `admin`
 

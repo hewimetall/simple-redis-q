@@ -44,6 +44,12 @@ ldconfig
 test -f /opt/python-shared/lib/libpython3.12.so.1.0
 curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
 . "$HOME/.cargo/env"
+# rust-toolchain.toml also requests rustfmt and clippy. On aarch64 that
+# install collides with the cargo-fmt proxy and the wheel build stops.
+# The wheel only needs the compiler named in the toolchain file.
+channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' /io/rust-toolchain.toml)
+rustup toolchain install "$channel" --profile minimal --no-self-update
+export RUSTUP_TOOLCHAIN="$channel"
 export PATH="/opt/python-shared/bin:${PATH}"
 export LD_LIBRARY_PATH=/opt/python-shared/lib
 export PYO3_PYTHON=/opt/python-shared/bin/python3.12
