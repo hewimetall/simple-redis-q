@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.0rc3
 
 The worker wheel is `manylinux_2_28`. `agent-worker` in a virtualenv is a launcher that points `LD_LIBRARY_PATH` at the base interpreter's `lib` before `agent-worker.bin`.
 
