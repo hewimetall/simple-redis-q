@@ -6,8 +6,9 @@
 //! message, including the delivery count and this process's worker name.
 //! Retry stores the original job, so the sender's headers stay in Redis.
 //! The delivery key is deleted only after ack. The idempotency key is
-//! deleted only on a terminal outcome: ack, dead, or poison. A retry leaves
-//! it in place, and a crash before that outcome leaves it for the redelivery.
+//! deleted only after Redis has stored the task in `done` or `dead`. A retry
+//! leaves it in place. A crash before that delete, including `SIGKILL`,
+//! leaves it until the TTL or until the redelivered attempt finishes.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -317,7 +318,7 @@ async fn handle_job(
             );
         }
         record_dead(&mut conn, &state, &job, &task_id, "invalid", None, 0).await;
-        release_unique_key(&state.shared.redis, &job).await;
+        release_unique_key_after_ack(state.shared.redis.clone(), &job, &task_id);
         return Err(Box::new(AbortError::new(error)));
     }
 
@@ -365,7 +366,7 @@ async fn handle_job(
             &mut conn, &state, &job, &task_id, "poison", None, deliveries,
         )
         .await;
-        release_unique_key(&state.shared.redis, &job).await;
+        release_unique_key_after_ack(state.shared.redis.clone(), &job, &task_id);
         return Err(Box::new(AbortError::new(anyhow::anyhow!("dead: poison"))));
     }
     tracing::info!(
@@ -394,7 +395,7 @@ async fn handle_job(
                 deliveries,
             )
             .await;
-            release_unique_key(&state.shared.redis, &job).await;
+            release_unique_key_after_ack(state.shared.redis.clone(), &job, &task_id);
             return Err(Box::new(AbortError::new(error)));
         }
     };
@@ -441,12 +442,12 @@ async fn handle_job(
                 &mut conn, &state, &job, &task_id, reason, error_text, deliveries,
             )
             .await;
-            release_unique_key(&state.shared.redis, &job).await;
+            release_unique_key_after_ack(state.shared.redis.clone(), &job, &task_id);
             Err(Box::new(AbortError::new(anyhow::anyhow!("dead: {reason}"))))
         }
         _ => {
             release_acked(&state.shared.redis, &job).await;
-            release_unique_key(&state.shared.redis, &job).await;
+            release_unique_key_after_ack(state.shared.redis.clone(), &job, &task_id);
             Ok(value)
         }
     }
@@ -483,20 +484,52 @@ async fn record_dead(
     }
 }
 
-async fn release_unique_key(redis: &ConnectionManager, job: &Job) {
-    let Some(unique_key) = job.unique_key.as_deref().filter(|key| !key.is_empty()) else {
+fn release_unique_key_after_ack(redis: ConnectionManager, job: &Job, task_id: &str) {
+    let Some(unique_key) = job.unique_key.clone().filter(|key| !key.is_empty()) else {
         return;
     };
-    if let Err(error) =
-        redis_api::release_idempotency(&mut redis.clone(), &job.queue, unique_key).await
-    {
+    let queue = job.queue.clone();
+    let message_id = job.message_id.clone();
+    let task_id = task_id.to_owned();
+    tokio::spawn(async move {
+        let mut conn = redis;
+        // The handler returns before Apalis writes done or dead. Wait until
+        // that write is visible, then delete. Deleting earlier lets a second
+        // send enqueue a copy while this task is still inflight.
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            match redis_api::task_is_terminal(&mut conn, &queue, &task_id).await {
+                Ok(true) => {
+                    if let Err(error) =
+                        redis_api::release_idempotency(&mut conn, &queue, &unique_key).await
+                    {
+                        tracing::warn!(
+                            message_id = %message_id,
+                            queue_name = %queue,
+                            error = %error,
+                            "failed to drop the idempotency key after a terminal outcome"
+                        );
+                    }
+                    return;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        message_id = %message_id,
+                        queue_name = %queue,
+                        error = %error,
+                        "left the idempotency key in place"
+                    );
+                    return;
+                }
+            }
+        }
         tracing::warn!(
-            message_id = %job.message_id,
-            queue_name = %job.queue,
-            error = %error,
-            "failed to drop the idempotency key after a terminal outcome"
+            message_id = %message_id,
+            queue_name = %queue,
+            "left the idempotency key in place; the task was not terminal yet"
         );
-    }
+    });
 }
 
 async fn release_acked(redis: &ConnectionManager, job: &Job) {

@@ -114,6 +114,11 @@ fn main() -> anyhow::Result<()> {
             child_memory_hard,
         } => {
             init_log();
+            // As pid 1 the kernel drops SIGTERM until a handler exists. The
+            // application import is the slow part of startup, so the handler
+            // is installed first. Tokio keeps the signal until the loop polls.
+            let runtime = tokio::runtime::Runtime::new()?;
+            let mut signals = runtime.block_on(supervisor::arm_stop_signals())?;
             runtime::initialize();
             let factory = cli::factory_enabled(factory);
             let (url, settings) = bridge::read_client(&app, factory)?;
@@ -131,7 +136,6 @@ fn main() -> anyhow::Result<()> {
                     std::process::exit(3);
                 }
             };
-            let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(supervisor::run(
                 app,
                 factory,
@@ -144,6 +148,7 @@ fn main() -> anyhow::Result<()> {
                 settings.memory_hard_ratio,
                 url,
                 settings,
+                &mut signals,
             ))
         }
         Command::Worker {

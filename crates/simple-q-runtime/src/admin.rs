@@ -354,6 +354,25 @@ pub struct SupervisorRecord {
     pub children: Vec<ChildRecord>,
 }
 
+/// Drop the supervisor hash and its sorted-set member after an orderly stop.
+///
+/// The hash TTL is the backstop for a process that never reaches this call.
+/// A heartbeat that runs after this delete would publish the record again.
+pub async fn forget_supervisor(conn: &mut ConnectionManager, host: &str, pid: u32) -> Result<()> {
+    let member = supervisor_member(host, pid);
+    let key = supervisor_key(&member);
+    redis::pipe()
+        .cmd("DEL")
+        .arg(&key)
+        .cmd("ZREM")
+        .arg(SUPERVISORS_KEY)
+        .arg(&member)
+        .query_async::<()>(conn)
+        .await
+        .context("failed to remove a supervisor")?;
+    Ok(())
+}
+
 /// Publish one supervisor heartbeat.
 ///
 /// The score and `last_seen` are Redis `TIME`. Finished children older than

@@ -183,8 +183,8 @@ Several middleware classes share one `App`. Each `install` appends that class's 
 | `outcome` | What the worker does |
 | --- | --- |
 | `retry` | Enqueues the same message after `delay_ms` milliseconds and adds one to `retries`. A missing `delay_ms` waits zero. The idempotency key stays. |
-| `dead` | Releases the idempotency key and records the attempt as killed. `reason` is the abort text. `error` is the exception text for `retries` and `timeout`, and null for `poison` and `unknown_actor`. The delivery key stays. Rust stores `reason`, `error`, `dead_at`, and `deliveries`. Stored `error` is at most 4096 bytes. |
-| any other value, including `ok` and `skipped` | Acknowledges the delivery and releases the idempotency key. |
+| `dead` | Records the attempt as killed. The idempotency key is released once the task is in `{queue}:dead`. `reason` is the abort text. `error` is the exception text for `retries` and `timeout`, and null for `poison` and `unknown_actor`. The delivery key stays. Rust stores `reason`, `error`, `dead_at`, and `deliveries`. Stored `error` is at most 4096 bytes. |
+| any other value, including `ok` and `skipped` | Acknowledges the delivery. The idempotency key is released once the task is in `{queue}:done`. |
 
 An `around_dispatch` hook can return one of those dicts without calling `call_next`. An exception from `dispatch` releases the idempotency key and kills the attempt. Python does not enqueue a retry for that exception. `on_dead` runs inside the handler path, before the outer `around_dispatch` hook sees the dict. Replacing a `dead` outcome with `retry` after that leaves the dead-letter hook already called.
 

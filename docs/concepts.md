@@ -18,6 +18,8 @@ A child pings the Python loop every 2 seconds with a 3 second timeout. `PingWatc
 
 The child ignores `SIGTERM`. The supervisor owns process recycling.
 
+The supervisor installs `SIGTERM` and `SIGINT` before it imports the application. As pid 1 the kernel drops `SIGTERM` until a handler exists, and that import is the slow part of startup. A signal during the import is still waiting when the loop starts, and no child is forked. On the way out the supervisor deletes `simple_q:supervisor:{host}.{pid}` and removes `{host}.{pid}` from `simple_q:supervisors`. The hash TTL remains the backstop when the process is killed.
+
 ## Poison
 
 `decide` compares the delivery count with `max_deliveries`. The count is the value Redis returned from `INCR`, so the first run of an attempt is 1. A count **above** `max_deliveries` is poison. The delivery that lands **on** the limit still runs.

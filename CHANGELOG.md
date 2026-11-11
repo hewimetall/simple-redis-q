@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+The supervisor installs `SIGTERM` and `SIGINT` before it imports the application, so a signal during that import still stops the process before any child starts. An orderly stop deletes the supervisor hash and its sorted-set member. The idempotency key is deleted after the task is in `done` or `dead`.
+
 ## 1.0.0rc6
 
 An active `peek` page is a list offset. A missing id does not fail the next page. A cursor that names a task id raises `ValueError`. Stored `error` is at most 4096 bytes.
