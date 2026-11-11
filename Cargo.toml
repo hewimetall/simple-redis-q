@@ -3,4 +3,4 @@ resolver = "2"
 members = ["crates/simple-q-runtime", "crates/agent-worker"]
 
 [workspace.package]
-version = "1.0.0-rc2"
+version = "1.0.0-rc3"
