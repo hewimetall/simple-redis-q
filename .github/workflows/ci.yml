@@ -13,7 +13,12 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14", "3.15"]
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,7 +26,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@1.99.1
@@ -35,12 +40,18 @@ jobs:
           . .venv/bin/activate
           python -m pip install --upgrade pip
           python -m pip install pytest "prometheus_client>=0.26" "maturin>=1.16,<2"
+          export PYO3_PYTHON="$(command -v python)"
           maturin develop
-          python -m pytest python/tests/test_runtime_contract.py python/tests/test_lock_release.py python/tests/test_version_source.py python/tests/test_alter_option.py python/tests/test_middleware_stack.py -q
+          python -m pytest python/tests/test_runtime_contract.py python/tests/test_lock_release.py python/tests/test_version_source.py python/tests/test_alter_option.py python/tests/test_middleware_stack.py python/tests/test_worker_launch.py -q
           cargo test --workspace
 
   integration:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14", "3.15"]
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
     services:
       redis7:
         image: redis:7
@@ -55,12 +66,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python
+        id: setup-python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
 
       - name: Install Python headers
-        run: sudo apt-get update && sudo apt-get install -y python3.12-dev pkg-config libssl-dev redis-tools
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev redis-tools
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@1.99.1
@@ -71,12 +83,12 @@ jobs:
       - name: Build agent-worker
         run: cargo build -p agent-worker --release
         env:
-          PYO3_PYTHON: python3.12
+          PYO3_PYTHON: ${{ steps.setup-python.outputs.python-path }}
 
       - name: Snapshot tests
         run: cargo test -p simple-q-runtime --test admin -- --test-threads=1
         env:
-          PYO3_PYTHON: python3.12
+          PYO3_PYTHON: ${{ steps.setup-python.outputs.python-path }}
 
       - name: Install the runtime extension
         run: |
@@ -84,6 +96,7 @@ jobs:
           . .venv/bin/activate
           python -m pip install --upgrade pip
           python -m pip install pytest "prometheus_client>=0.26" "maturin>=1.16,<2"
+          export PYO3_PYTHON="$(command -v python)"
           maturin develop --release -m crates/simple-q-runtime/Cargo.toml
 
       - name: Orphan-window tests
@@ -95,6 +108,7 @@ jobs:
           REDIS_URL: redis://127.0.0.1:6379/15
           REDIS_URL_8: redis://127.0.0.1:6380/15
           PYTHONPATH: python
+          PYO3_PYTHON: ${{ steps.setup-python.outputs.python-path }}
 
   worker-wheel:
     runs-on: ubuntu-latest
@@ -113,12 +127,12 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
 
-      - name: Build the runtime wheel
+      - name: Build the runtime wheels
         uses: PyO3/maturin-action@v1
         with:
           target: x86_64
-          args: --release --out dist -i python3.12
+          args: --release --out dist -i /opt/python/cp312-cp312/bin/python -i /opt/python/cp313-cp313/bin/python -i /opt/python/cp314-cp314/bin/python -i /opt/python/cp315-cp315/bin/python
           manylinux: auto
 
-      - name: Build and install the worker wheel
+      - name: Build and install the worker wheels
         run: bash scripts/build-worker-wheel.sh linux/amd64

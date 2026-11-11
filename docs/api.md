@@ -247,7 +247,7 @@ The return value is a frozen `Snapshot`:
 
 ### Field meanings
 
-- `rss` is resident bytes from `/proc/{pid}/statm` (resident pages times the page size). Shared libraries are mapped into every process that loads them, so those pages count in every process.
+- `rss` is resident bytes. On Linux that is `/proc/{pid}/statm` (resident pages times the page size). Shared libraries are mapped into every process that loads them, so those pages count in every process. On macOS it is `ri_resident_size` from `proc_pid_rusage`.
 - `cgroup_current` is `memory.current` minus `inactive_file`. `cgroup_max` is `memory.max` when that file is a byte count. The value published on the supervisor record is refreshed on the supervisor heartbeat. The one-second read is only the memory-limit check. It does not publish a new `cgroup_current`.
 - `tasks_done` includes poison. The child writes it on its heartbeat, to `tasks_done` on the worker metadata hash and to `tasks:{pid}` on the supervisor hash.
 - While the child row still says running and `tasks_done` has reached `max_tasks`, the snapshot shows `draining` / `max_tasks`. After exit 0 the row is `exited` / `max_tasks`.

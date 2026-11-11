@@ -18,7 +18,9 @@ A queue name is one lowercase ASCII word of letters and digits. `default` is the
 
 ## Also true in 1.0
 
-Wheels are Linux x86_64 and aarch64 for CPython 3.12. The worker wheel is `manylinux_2_28` (glibc 2.28 or newer). The installed `agent-worker` command is a launcher in front of `agent-worker.bin`, because a uv-managed CPython does not put `libpython3.12.so.1.0` on the default linker path.
+Wheels are Linux x86_64 and aarch64 for CPython 3.12, 3.13, 3.14, and 3.15, each with the GIL. Free-threaded builds are not published. The worker wheel is `manylinux_2_28` (glibc 2.28 or newer) and links `libpython3.X.so.1.0` for that minor. The installed `agent-worker` command is a launcher in front of `agent-worker.bin`, because a uv-managed CPython does not put that library on the default linker path. The launcher reads `version` from `pyvenv.cfg`.
+
+A Mac can build the producer with `maturin develop` and the worker with `cargo build -p agent-worker` against a shared CPython (`libpython3.X.dylib`). PyO3 records that library directory as an rpath, so the Linux launcher is not part of a local build. There is no macOS wheel. The cgroup ratio stays off. Per-child RSS limits use `proc_pid_rusage`. A missing `/etc/hostname` makes the worker name use `localhost`.
 
 `MemoryClient.drain` runs one message at a time. Two handlers are never in flight together, so a test cannot show two tasks holding locks at once. A `retry` outcome is queued again immediately. The backoff delay is not waited out.
 
