@@ -70,6 +70,7 @@ pub fn run_child(
             config: config.clone(),
             stop_meta: Arc::new(watch::channel(false).0),
             announces: Arc::new(Mutex::new(Vec::new())),
+            releases: Arc::new(Mutex::new(Vec::new())),
         };
 
         let terminate = signal(SignalKind::terminate())?;
@@ -121,8 +122,9 @@ pub fn run_child(
                 Ok(())
             }
         };
-        // A normal drain deletes the metadata hash. A failed delete is logged
-        // and does not change the exit code. SIGKILL never reaches this path.
+        // A normal drain waits for idempotency deletes, then deletes the
+        // metadata hash. A failed delete is logged and does not change the
+        // exit code. SIGKILL never reaches this path.
         shared.delete_worker_metadata().await;
         // Push Rust spans into the Python exporter before on_stop. The
         // application's own force_flush stays in that hook.

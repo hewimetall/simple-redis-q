@@ -6,7 +6,7 @@ Wheels are built for CPython 3.12, 3.13, 3.14, and 3.15, each with the GIL. Free
 
 On macOS, per-child RSS comes from `proc_pid_rusage` (`ri_resident_size`). The cgroup ratio still reads `/proc/self/cgroup` and stays off. Published wheels stay Linux.
 
-The supervisor installs `SIGTERM` and `SIGINT` before it imports the application, so a signal during that import still stops the process before any child starts. An orderly stop deletes the supervisor hash and its sorted-set member. The idempotency key is deleted after the task is in `done` or `dead`.
+The supervisor installs `SIGTERM` and `SIGINT` before it imports the application, so a signal during that import still stops the process before any child starts. An orderly stop deletes the supervisor hash and its sorted-set member. The idempotency key is deleted after the task is in `done` or `dead`. The child waits for that delete before it exits.
 
 ## 1.0.0rc6
 
