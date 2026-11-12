@@ -291,6 +291,74 @@ pub async fn release_idempotency(
     Ok(())
 }
 
+/// First pause before checking `done` or `dead`, then double, capped at 5 seconds.
+pub fn next_idempotency_wait(current: Duration) -> Duration {
+    const MAX_WAIT: Duration = Duration::from_secs(5);
+    current
+        .saturating_mul(2)
+        .min(MAX_WAIT)
+        .max(Duration::from_millis(20))
+}
+
+/// Delete `{queue}:idempotency:{unique_key}` once `task_id` is in `done` or `dead`.
+///
+/// The check repeats until that write is visible, `stop` is set, or `budget`
+/// elapses. A Redis error is retried the same way. `Ok(true)` means the key
+/// was deleted. `Ok(false)` means the task was still not terminal when the
+/// wait ended.
+pub async fn release_idempotency_when_terminal(
+    conn: &mut ConnectionManager,
+    queue: &str,
+    task_id: &str,
+    unique_key: &str,
+    stop: &mut tokio::sync::watch::Receiver<bool>,
+    budget: Duration,
+) -> Result<bool> {
+    if unique_key.is_empty() {
+        return Ok(true);
+    }
+    let started = std::time::Instant::now();
+    let mut delay = Duration::from_millis(20);
+    loop {
+        if !idempotency_stop(stop) {
+            tokio::select! {
+                biased;
+                changed = stop.changed() => {
+                    if changed.is_err() || idempotency_stop(stop) {
+                        return release_if_terminal(conn, queue, task_id, unique_key).await;
+                    }
+                }
+                _ = tokio::time::sleep(delay) => {}
+            }
+        }
+        let finished = idempotency_stop(stop) || started.elapsed() >= budget;
+        match release_if_terminal(conn, queue, task_id, unique_key).await {
+            Ok(true) => return Ok(true),
+            Ok(false) if finished => return Ok(false),
+            Err(error) if finished => return Err(error),
+            Ok(false) | Err(_) => {}
+        }
+        delay = next_idempotency_wait(delay);
+    }
+}
+
+fn idempotency_stop(stop: &tokio::sync::watch::Receiver<bool>) -> bool {
+    *stop.borrow()
+}
+
+async fn release_if_terminal(
+    conn: &mut ConnectionManager,
+    queue: &str,
+    task_id: &str,
+    unique_key: &str,
+) -> Result<bool> {
+    if !task_is_terminal(conn, queue, task_id).await? {
+        return Ok(false);
+    }
+    release_idempotency(conn, queue, unique_key).await?;
+    Ok(true)
+}
+
 pub fn delivery_key(message_id: &str, retries: u32) -> String {
     format!("delivery:{message_id}:{retries}")
 }
@@ -345,6 +413,22 @@ pub async fn release_delivery(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_idempotency_wait_doubles_until_five_seconds() {
+        assert_eq!(
+            next_idempotency_wait(Duration::from_millis(20)),
+            Duration::from_millis(40)
+        );
+        assert_eq!(
+            next_idempotency_wait(Duration::from_secs(3)),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            next_idempotency_wait(Duration::from_secs(5)),
+            Duration::from_secs(5)
+        );
+    }
 
     #[test]
     fn a_score_inside_the_window_is_alive_and_an_older_or_missing_score_is_not() {

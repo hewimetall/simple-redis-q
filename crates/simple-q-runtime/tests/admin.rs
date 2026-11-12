@@ -137,6 +137,80 @@ async fn forget_supervisor_removes_the_hash_and_the_member() {
 }
 
 #[tokio::test]
+async fn a_terminal_write_after_one_second_still_drops_the_key() {
+    let Some(mut conn) = connect().await else {
+        return;
+    };
+    let queue = token("late");
+    let task_id = token("task");
+    let unique = token("key");
+    let idem = redis_api::idempotency_redis_key(&queue, &unique);
+    let done = format!("{queue}:done");
+    let mut cleanup = Cleanup::new();
+    cleanup.key(&idem);
+    cleanup.key(&done);
+    assert_eq!(redis(&["SET", &idem, "1", "EX", "120"]), "OK");
+    let (_tx, mut stop) = tokio::sync::watch::channel(false);
+    let queue_for_task = queue.clone();
+    let task_for_task = task_id.clone();
+    let unique_for_task = unique.clone();
+    let handle = tokio::spawn(async move {
+        redis_api::release_idempotency_when_terminal(
+            &mut conn,
+            &queue_for_task,
+            &task_for_task,
+            &unique_for_task,
+            &mut stop,
+            Duration::from_secs(10),
+        )
+        .await
+    });
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    assert_eq!(
+        redis(&["EXISTS", &idem]),
+        "1",
+        "the key was dropped too early"
+    );
+    assert_eq!(redis(&["ZADD", &done, "1", &task_id]), "1");
+    let released = tokio::time::timeout(Duration::from_secs(8), handle)
+        .await
+        .expect("release timed out")
+        .expect("release task")
+        .expect("release");
+    assert!(released);
+    assert_eq!(redis(&["EXISTS", &idem]), "0");
+}
+
+#[tokio::test]
+async fn shutdown_leaves_an_idempotency_key_that_is_not_terminal() {
+    let Some(mut conn) = connect().await else {
+        return;
+    };
+    let queue = token("stop");
+    let unique = token("key");
+    let idem = redis_api::idempotency_redis_key(&queue, &unique);
+    let mut cleanup = Cleanup::new();
+    cleanup.key(&idem);
+    assert_eq!(redis(&["SET", &idem, "1", "EX", "120"]), "OK");
+    let (tx, mut stop) = tokio::sync::watch::channel(false);
+    let _ = tx.send(true);
+    let started = std::time::Instant::now();
+    let released = redis_api::release_idempotency_when_terminal(
+        &mut conn,
+        &queue,
+        "missing",
+        &unique,
+        &mut stop,
+        Duration::from_secs(30),
+    )
+    .await
+    .expect("release");
+    assert!(!released);
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(redis(&["EXISTS", &idem]), "1");
+}
+
+#[tokio::test]
 async fn a_done_or_dead_member_is_terminal() {
     let Some(mut conn) = connect().await else {
         return;

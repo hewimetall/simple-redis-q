@@ -7,9 +7,10 @@
 //! Retry stores the original job, so the sender's headers stay in Redis.
 //! The delivery key is deleted only after ack. The idempotency key is
 //! deleted only after Redis has stored the task in `done` or `dead`. The child
-//! joins that delete before it exits. A retry leaves the key in place. A crash
-//! before that delete, including `SIGKILL`, leaves it until the TTL or until
-//! the redelivered attempt finishes.
+//! keeps checking until that write is visible, the process stops, or
+//! `SIMPLE_Q_UNIQUE_TTL_SECS` elapses, and joins that task before it exits.
+//! A retry leaves the key in place. A crash before that delete, including
+//! `SIGKILL`, leaves it until the TTL or until the redelivered attempt finishes.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -492,45 +493,40 @@ fn release_unique_key_after_ack(shared: &Shared, job: &Job, task_id: &str) {
     let queue = job.queue.clone();
     let message_id = job.message_id.clone();
     let task_id = task_id.to_owned();
-    let redis = shared.redis.clone();
+    let mut conn = shared.redis.clone();
+    let budget = std::time::Duration::from_secs(shared.config.unique_ttl_secs.max(1));
+    let mut stop = shared.stop_meta.subscribe();
     let handle = tokio::spawn(async move {
-        let mut conn = redis;
-        // The handler returns before Apalis writes done or dead. Wait until
-        // that write is visible, then delete. Deleting earlier lets a second
-        // send enqueue a copy while this task is still inflight.
-        for _ in 0..50 {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            match redis_api::task_is_terminal(&mut conn, &queue, &task_id).await {
-                Ok(true) => {
-                    if let Err(error) =
-                        redis_api::release_idempotency(&mut conn, &queue, &unique_key).await
-                    {
-                        tracing::warn!(
-                            message_id = %message_id,
-                            queue_name = %queue,
-                            error = %error,
-                            "failed to drop the idempotency key after a terminal outcome"
-                        );
-                    }
-                    return;
-                }
-                Ok(false) => {}
-                Err(error) => {
-                    tracing::warn!(
-                        message_id = %message_id,
-                        queue_name = %queue,
-                        error = %error,
-                        "left the idempotency key in place"
-                    );
-                    return;
-                }
+        // The handler returns before Apalis writes done or dead. Keep checking
+        // until that write is visible. Stopping after a second leaves the key
+        // until SIMPLE_Q_UNIQUE_TTL_SECS even though the ack landed late.
+        match redis_api::release_idempotency_when_terminal(
+            &mut conn,
+            &queue,
+            &task_id,
+            &unique_key,
+            &mut stop,
+            budget,
+        )
+        .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(
+                    message_id = %message_id,
+                    queue_name = %queue,
+                    "left the idempotency key in place; the task was not terminal yet"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    message_id = %message_id,
+                    queue_name = %queue,
+                    error = %error,
+                    "left the idempotency key in place"
+                );
             }
         }
-        tracing::warn!(
-            message_id = %message_id,
-            queue_name = %queue,
-            "left the idempotency key in place; the task was not terminal yet"
-        );
     });
     let mut releases = shared.releases.lock().expect("releases");
     releases.retain(|pending| !pending.is_finished());

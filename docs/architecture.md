@@ -31,7 +31,7 @@ These are the paths the code actually takes. Each chain stops at a Redis command
 
 `Client.send` and `Client.send_with_options` both call `prepare`, then `enqueue_prepared`, then `enqueue_job`. `prepare` runs `on_send` on the caller's task and builds a job with `retries = 0`. A first send with `unique_key` goes through `enqueue_unique`: apalis `SETNX`s `{queue}:idempotency:{key}` and sets its TTL to `SIMPLE_Q_UNIQUE_TTL_SECS`. A held key returns `None` from `send_with_options`. `send` raises in that case.
 
-A retry does not start at `send`. After `App.dispatch` returns `retry`, `handle_job` adds one to `retries` and calls `enqueue_job` with the delay. `extend_idempotency_for_delay` then `EXPIRE`s the same key for the wait plus `unique_ttl`. The retry does not claim the key again. `handle_job` deletes the key only after the task id is in `{queue}:done` or `{queue}:dead`. `SIGKILL` never reaches that delete. A live neighbor requeues the inflight message after one heartbeat window, and the redelivered attempt deletes the key when it finishes.
+A retry does not start at `send`. After `App.dispatch` returns `retry`, `handle_job` adds one to `retries` and calls `enqueue_job` with the delay. `extend_idempotency_for_delay` then `EXPIRE`s the same key for the wait plus `unique_ttl`. The retry does not claim the key again. `handle_job` deletes the key only after the task id is in `{queue}:done` or `{queue}:dead`. It keeps checking until that write is visible, the process stops, or `SIMPLE_Q_UNIQUE_TTL_SECS` elapses. `SIGKILL` never reaches that delete. A live neighbor requeues the inflight message after one heartbeat window, and the redelivered attempt deletes the key when it finishes.
 
 ### One delivery
 
