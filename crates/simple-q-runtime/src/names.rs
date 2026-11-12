@@ -51,7 +51,7 @@ pub(crate) fn validate_lock_key(lock_key: &str) -> Result<()> {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'.' | b'_' | b'-'));
     if !canonical {
         bail!(
-            "lock_key `{lock_key}` must be a non-empty server key such as `cache:discovery` without the `{LOCK_PREFIX}` prefix"
+            "lock_key `{lock_key}` must be a non-empty server key such as `demo:gate` without the `{LOCK_PREFIX}` prefix"
         );
     }
     Ok(())
@@ -75,14 +75,11 @@ mod tests {
 
     #[test]
     fn lock_keys_keep_a_prefix_outside_the_apalis_keyspace() {
-        assert_eq!(
-            lock_redis_key("cache:discovery").unwrap(),
-            "lock:cache:discovery"
-        );
-        assert!(lock_redis_key("lock:cache:discovery").is_err());
+        assert_eq!(lock_redis_key("demo:gate").unwrap(), "lock:demo:gate");
+        assert!(lock_redis_key("lock:demo:gate").is_err());
         assert!(lock_redis_key("").is_err());
-        assert!(lock_redis_key("cache discovery").is_err());
-        assert!(lock_redis_key("cache:acme\u{200b}").is_err());
+        assert!(lock_redis_key("demo gate").is_err());
+        assert!(lock_redis_key("demo:bad\u{200b}").is_err());
     }
 
     #[test]

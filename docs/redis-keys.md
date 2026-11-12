@@ -1,8 +1,8 @@
 # Redis keys
 
-These pages describe simple-q 1.0.
+These pages describe simple-q 1.1.
 
-Queue names in keys are one lowercase ASCII word. The examples use `default`. The unique-key example is `recalc:42`. The lock-key example is `cache:discovery`.
+Queue names in keys are one lowercase ASCII word. The examples use `default`. The unique-key example is `recalc:42`. The lock-key example is `demo:gate`.
 
 | Key | Role |
 | --- | --- |
@@ -19,7 +19,7 @@ Queue names in keys are one lowercase ASCII word. The examples use `default`. Th
 
 `{queue}:done` is the success key, with the same two shapes as `{queue}:dead`. The sweeper deletes a record older than `SIMPLE_Q_DONE_TTL_SECS` (24 hours by default) in the same cursor walk. The walk uses `ZSCAN` or `SSCAN`, and `HSCAN` for worker metadata. It removes the payload, the per-task meta hash, and the member together. A dead id is removed from `simple_q:dead:{queue}` in that same delete.
 
-The business lock is `lock:{lock_key}`, for example `lock:cache:discovery`. It is not an Apalis queue key. The message lease and the business lock are different keys. Losing the lease does not unlock the business lock. The TTL is extended until the owner releases the key or the ping budget elapses. A single missed ping does not stop that extend. A failed extend is retried. When the budget elapses, renewal stops. `lock_ttl` is seconds and must be greater than zero.
+The business lock is `lock:{lock_key}`, for example `lock:demo:gate`. It is not an Apalis queue key. The message lease and the business lock are different keys. Losing the lease does not unlock the business lock. The TTL is extended until the owner releases the key or the ping budget elapses. A single missed ping does not stop that extend. A failed extend is retried. When the budget elapses, renewal stops. `lock_ttl` is seconds and must be greater than zero.
 
 `unique_key` is deleted after the task is in `{queue}:done` or `{queue}:dead`. The worker repeats that check, backing off from 20 milliseconds to 5 seconds, until the write is visible, the process stops, or `SIMPLE_Q_UNIQUE_TTL_SECS` elapses. A Redis error during the wait is retried. A retry leaves the idempotency key in place and, when the retry is delayed, extends its TTL by the delay. A crash before that delete, including `SIGKILL`, leaves the key until the redelivered attempt finishes. With a live worker that is about one heartbeat window plus the attempt. If the message is gone and never reaches a terminal state, the key stays until `SIMPLE_Q_UNIQUE_TTL_SECS`. Poison and a dead outcome leave `delivery:{message_id}:{retries}` in place so the next start of that attempt still sees a count above `max_deliveries`. Ack, and a retry that has been enqueued, delete the delivery key immediately.
 

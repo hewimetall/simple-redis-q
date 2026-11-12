@@ -690,29 +690,29 @@ def test_memory_drain_runs_messages_sent_by_a_handler():
 def test_lock_key_template_is_filled_from_kwargs():
     client = FakeClient()
 
-    @actor(name="calc", queue="default", lock_key="cache:calc:{project_name}", max_retries=0)
-    async def calc(project_name: str):
-        return project_name
+    @actor(name="calc", queue="default", lock_key="demo:item:{name}", max_retries=0)
+    async def calc(name: str):
+        return name
 
     app = App(client=client, actors=[calc])
     message = build_message(
         actor_name="calc",
         queue="default",
-        kwargs={"project_name": "alpha"},
+        kwargs={"name": "alpha"},
         headers={},
         max_retries=0,
-        lock_key="cache:calc:{project_name}",
+        lock_key="demo:item:{name}",
         message_id="lock-1",
     )
     result = asyncio.run(app.dispatch(message))
     assert result["outcome"] == "ok"
-    assert client.keys == ["cache:calc:alpha"]
+    assert client.keys == ["demo:item:alpha"]
 
 
 def test_lock_key_template_rejects_a_missing_placeholder():
-    @actor(name="calc", queue="default", lock_key="cache:calc:{project_name}", max_retries=0)
-    async def calc(project_name: str = "x"):
-        return project_name
+    @actor(name="calc", queue="default", lock_key="demo:item:{name}", max_retries=0)
+    async def calc(name: str = "x"):
+        return name
 
     app = App(client=FakeClient(), actors=[calc])
     message = build_message(
@@ -721,33 +721,33 @@ def test_lock_key_template_rejects_a_missing_placeholder():
         kwargs={},
         headers={},
         max_retries=0,
-        lock_key="cache:calc:{project_name}",
+        lock_key="demo:item:{name}",
         message_id="lock-missing",
     )
     try:
         asyncio.run(app.dispatch(message))
     except KeyError as error:
-        assert "project_name" in str(error)
+        assert "name" in str(error)
     else:
         raise AssertionError("missing lock_key placeholder was accepted")
 
 
 def test_lock_key_rejects_a_non_canonical_character():
-    assert usable_lock_key("cache:calc:alpha")
-    assert not usable_lock_key("cache:acme\u200b")
+    assert usable_lock_key("demo:item:alpha")
+    assert not usable_lock_key("demo:bad\u200b")
 
-    @actor(name="calc", queue="default", lock_key="cache:calc:{project_name}", max_retries=0)
-    async def calc(project_name: str):
-        return project_name
+    @actor(name="calc", queue="default", lock_key="demo:item:{name}", max_retries=0)
+    async def calc(name: str):
+        return name
 
     app = App(client=FakeClient(), actors=[calc])
     message = build_message(
         actor_name="calc",
         queue="default",
-        kwargs={"project_name": "acme\u200b"},
+        kwargs={"name": "acme\u200b"},
         headers={},
         max_retries=0,
-        lock_key="cache:calc:{project_name}",
+        lock_key="demo:item:{name}",
         message_id="lock-zwsp",
     )
     try:

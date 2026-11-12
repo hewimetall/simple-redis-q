@@ -1,6 +1,6 @@
 # Architecture
 
-These pages describe simple-q 1.0.
+These pages describe simple-q 1.1.
 
 The containers inside simple-q are **Client**, **App**, **Config**, the **worker supervisor**, and **Redis**. Client sends. App runs the handler and the dead-letter hook. `Config.from_env` reads only `SIMPLE_Q_*`. The worker uses the Redis URL stored on the `App`'s `Client`. `agent-worker enqueue` and `agent-worker admin` read `REDIS_URL` themselves. `agent-worker info` uses the same client URL as `worker`. `SIMPLE_Q_APP` and `SIMPLE_Q_APP_FACTORY` are read by `worker` and `info`, not by `Config.from_env`. The factory variable enables a call only for `1`, `true`, `yes`, or `on`. In a virtualenv the `agent-worker` command is a launcher that execs `agent-worker.bin` after the dynamic linker can see `libpython3.X.so.1.0` for the minor in `pyvenv.cfg`. `HOSTNAME`, `BOARD_*`, `QUEUE`, `RUST_LOG`, and `DRAMATIQ_PROM_*` are read by the worker name, the board, the log filter, and the metrics process. The worker supervisor forks children, watches memory, and publishes its own Redis record. It does not take messages and it does not heartbeat as a queue worker. Redis holds the queue and that supervisor record.
 
@@ -73,7 +73,7 @@ A dead delivery (`poison`, `invalid`, a Python `dead` outcome, or an exception f
 
 ### Memory pressure
 
-Once a second the supervisor reads each child's RSS and, when `memory.max` is finite, the cgroup working set (`memory.current` minus `inactive_file`). A per-child byte limit drains with `SIGUSR1` or kills with `SIGKILL`. A ratio `Kill` signals the largest child only when that child's RSS is at least half the usage. Otherwise the largest not-yet-drained child gets `SIGUSR1`. The child treats `SIGUSR1` as stop-taking-work. `SIGKILL` has no handler. A signal is stored on the child row only after `signal_child` succeeds. A second `SIGUSR1` does not replace the first. Anything after `SIGKILL` is ignored, and the kill is visible before `wait`.
+Once a second the supervisor reads each child's RSS and, when `memory.max` is finite, the cgroup working set (`memory.current` minus `inactive_file`). It does not look at whether a child is running a task. A per-child byte limit compares each process with its own threshold and can drain or kill several children in the same second. A ratio `Kill` signals one child, the largest, only when that child's RSS is at least half the usage. A child already killed for its own hard limit is that one child. Otherwise the largest not-yet-drained child gets `SIGUSR1`. The child treats `SIGUSR1` as stop-taking-work. `SIGKILL` has no handler. A signal is stored on the child row only after `signal_child` succeeds. A second `SIGUSR1` does not replace the first. Anything after `SIGKILL` is ignored, and the kill is visible before `wait`.
 
 ### Supervisor record
 

@@ -481,7 +481,7 @@ def resolve_lock_key(template: str | None, kwargs: dict) -> str | None:
     """Fill ``{field}`` placeholders in a lock key from the message kwargs.
 
     A resolved key is ASCII letters, digits, and ``:._-``, without a ``lock:`` prefix.
-    ``cache:calc:{project_name}`` is the template shape.
+    ``demo:item:{name}`` is the template shape.
     """
 
     if not template:

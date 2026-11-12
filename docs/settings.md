@@ -1,6 +1,6 @@
 # Settings
 
-These pages describe simple-q 1.0.
+These pages describe simple-q 1.1.
 
 `Config.from_env()` reads `SIMPLE_Q_*` only. An invalid value raises. There is no silent default: a value that is empty, not a number, zero where the setting must be positive, or a ratio outside `(0, 1)` raises. An omitted variable uses the default in this table. The Redis URL is not one of these settings. The application passes it to `Client`. `agent-worker enqueue` and `agent-worker admin` read `REDIS_URL` themselves.
 
@@ -26,7 +26,7 @@ The child-memory counters `simple_q_child_memory_drains_total` and `simple_q_chi
 | `SIMPLE_Q_CHILD_MEMORY_SOFT` | unset | Soft RSS for one child. Used when `--child-memory-soft` is omitted. The flag wins when both are set. |
 | `SIMPLE_Q_CHILD_MEMORY_HARD` | unset | Hard RSS for one child. Used when `--child-memory-hard` is omitted. The flag wins when both are set. |
 | `SIMPLE_Q_MEMORY_SOFT_RATIO` | `0.80` | Working-set fraction that drains the largest child. Finite, and inside `(0, 1)`. |
-| `SIMPLE_Q_MEMORY_HARD_RATIO` | `0.95` | Working-set fraction that `SIGKILL`s the largest child when that child owns at least half the usage. Finite, and inside `(0, 1)`. |
+| `SIMPLE_Q_MEMORY_HARD_RATIO` | `0.95` | Working-set fraction that `SIGKILL`s one child, the largest, when that child owns at least half the usage. Finite, and inside `(0, 1)`. |
 | `SIMPLE_Q_SLOT` | set by the supervisor | Metric-file id for one child. The supervisor sets it. Files are named by this slot, not by the operating-system pid. |
 
 Child memory suffixes are `K`, `M`, and `G` as powers of 1024, with an optional `B`. A bare number is bytes. Soft must be below hard when both are set.

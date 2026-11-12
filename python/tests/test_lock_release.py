@@ -27,29 +27,29 @@ client = FakeClient()
 
 @actor(
     queue="default",
-    lock_key="cache:discovery",
+    lock_key="demo:gate",
     lock_ttl=30,
     skip_on_lock=False,
     max_retries=0,
 )
-async def discovery(value: str):
+async def gated(value: str):
     if value == "boom":
         raise RuntimeError("boom")
     return {"ok": True, "value": value}
 
 
 def _app():
-    return App(client=client, actors=[discovery])
+    return App(client=client, actors=[gated])
 
 
 def _message(value: str) -> dict:
     return build_message(
-        actor_name="discovery",
+        actor_name="gated",
         queue="default",
         kwargs={"value": value},
         headers={},
         max_retries=0,
-        lock_key="cache:discovery",
+        lock_key="demo:gate",
         message_id=f"lock-{value}",
     )
 
@@ -79,7 +79,7 @@ def test_lock_ttl_rejects_zero():
         assert "lock_ttl" in str(error)
     try:
         build_message(
-            actor_name="discovery",
+            actor_name="gated",
             queue="default",
             kwargs={},
             headers={},
@@ -109,7 +109,7 @@ def test_cancel_during_release_still_unlocks():
 
     local = Client()
 
-    @actor(queue="default", lock_key="cache:discovery", lock_ttl=30, max_retries=0)
+    @actor(queue="default", lock_key="demo:gate", lock_ttl=30, max_retries=0)
     async def work():
         return "ok"
 
@@ -121,7 +121,7 @@ def test_cancel_during_release_still_unlocks():
             kwargs={},
             headers={},
             max_retries=0,
-            lock_key="cache:discovery",
+            lock_key="demo:gate",
             message_id="cancel-release",
         )
         task = asyncio.create_task(app.dispatch(message))

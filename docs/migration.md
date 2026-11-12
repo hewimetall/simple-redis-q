@@ -1,6 +1,6 @@
 # Migration from Dramatiq
 
-These pages describe simple-q 1.0.
+These pages describe simple-q 1.1.
 
 Metric names stay. The middleware API does not.
 

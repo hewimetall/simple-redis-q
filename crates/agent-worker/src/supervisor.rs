@@ -8,10 +8,15 @@
 //! failure.
 //!
 //! Each child has optional RSS byte limits. Once a second the supervisor reads
-//! RSS. At the soft limit that child gets SIGUSR1 and drains. At the hard limit
-//! that child is SIGKILLed. The container ratio is a backstop: usage is
-//! `memory.current` minus `inactive_file`, and the soft ratio drains only the
-//! child with the largest RSS.
+//! RSS. It does not look at whether a child is running a task. At the soft
+//! limit every child over it gets one SIGUSR1. At the hard limit every child
+//! over it is SIGKILLed. Several children can be signaled in the same second.
+//! The container ratio is a backstop: usage is `memory.current` minus
+//! `inactive_file`. At the soft ratio one not-yet-drained child, the largest
+//! RSS, gets SIGUSR1. The next second, if usage is still high, the next
+//! largest. At the hard ratio one child, the largest, is SIGKILLed when its
+//! RSS is at least half the usage. Otherwise nobody is killed for the ratio
+//! and that child is drained instead.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -645,6 +650,107 @@ pub fn ratio_drain_target(children: &[(u32, u64)], already: &[u32]) -> Option<u3
         .map(|(pid, _)| *pid)
 }
 
+/// One signal the supervisor will send on this memory tick.
+///
+/// The plan is RSS only. It has no input for whether a child is running a task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlannedSignal {
+    Drain(u32, DrainCause),
+    Kill(u32, KillCause),
+}
+
+/// Signals for one second.
+///
+/// Per-child limits, when set, compare each process with its own threshold.
+/// Every child at the soft limit gets one `SIGUSR1`. Every child at the hard
+/// limit gets `SIGKILL`. Several children can be named in the same plan.
+///
+/// The pod ratio adds at most one signal. At the soft ratio that is `SIGUSR1`
+/// for the largest RSS that has not already been asked to drain. A child this
+/// plan is already draining counts as asked, so the next child waits for the
+/// next call. At the hard ratio the largest child is `SIGKILL`ed when its RSS
+/// is at least half of `occupied`. If that child is already in the plan for
+/// its own hard limit, no second child is killed. When the largest is below
+/// half, nobody is killed for the ratio and the largest not-yet-asked child
+/// gets `SIGUSR1`.
+pub fn plan_memory_signals(
+    children: &[(u32, u64)],
+    soft: Option<u64>,
+    hard: Option<u64>,
+    occupied: Option<u64>,
+    limit: Option<u64>,
+    soft_ratio: f64,
+    hard_ratio: f64,
+    already_drained: &[u32],
+) -> Vec<PlannedSignal> {
+    let mut planned = Vec::new();
+    for &(pid, rss) in children {
+        match byte_action(rss, soft, hard) {
+            ByteAction::Kill => planned.push(PlannedSignal::Kill(pid, KillCause::MemoryHard)),
+            ByteAction::Drain if !already_drained.contains(&pid) => {
+                planned.push(PlannedSignal::Drain(pid, DrainCause::MemorySoft));
+            }
+            ByteAction::Drain | ByteAction::None => {}
+        }
+    }
+
+    let (Some(occupied), Some(limit)) = (occupied, limit) else {
+        return planned;
+    };
+    match memory_action(occupied, limit, soft_ratio, hard_ratio) {
+        MemoryAction::None => {}
+        MemoryAction::Kill => {
+            if let Some(pid) = largest_child_to_kill(children, occupied) {
+                if !planned.iter().any(
+                    |signal| matches!(signal, PlannedSignal::Kill(current, _) if *current == pid),
+                ) {
+                    planned.retain(|signal| {
+                        !matches!(signal, PlannedSignal::Drain(current, _) if *current == pid)
+                    });
+                    planned.push(PlannedSignal::Kill(pid, KillCause::MemoryRatio));
+                }
+            } else if let Some(pid) =
+                ratio_drain_not_already_planned(children, already_drained, &planned)
+            {
+                planned.push(PlannedSignal::Drain(pid, DrainCause::MemoryRatio));
+            }
+        }
+        MemoryAction::Drain => {
+            if let Some(pid) = ratio_drain_not_already_planned(children, already_drained, &planned)
+            {
+                planned.push(PlannedSignal::Drain(pid, DrainCause::MemoryRatio));
+            }
+        }
+    }
+    planned
+}
+
+/// Largest RSS that has not been asked to drain and is not already in `planned`.
+/// A child this plan is killing is skipped. A child this plan is already
+/// draining is the one for this second, so the caller adds nobody else.
+fn ratio_drain_not_already_planned(
+    children: &[(u32, u64)],
+    already_drained: &[u32],
+    planned: &[PlannedSignal],
+) -> Option<u32> {
+    let killing = |pid: u32| {
+        planned
+            .iter()
+            .any(|signal| matches!(signal, PlannedSignal::Kill(current, _) if *current == pid))
+    };
+    let draining = |pid: u32| {
+        planned
+            .iter()
+            .any(|signal| matches!(signal, PlannedSignal::Drain(current, _) if *current == pid))
+    };
+    let (pid, _) = children
+        .iter()
+        .copied()
+        .filter(|(pid, _)| !already_drained.contains(pid) && !killing(*pid))
+        .max_by_key(|(_, rss)| *rss)?;
+    if draining(pid) { None } else { Some(pid) }
+}
+
 /// `true` when `processes * hard` is greater than a finite cgroup `memory.max`.
 pub fn hard_budget_exceeds_cgroup(processes: u32, hard: u64, memory_max: u64) -> bool {
     (processes as u64).saturating_mul(hard) > memory_max
@@ -838,124 +944,85 @@ fn apply_memory_pressure(
         roster.set_rss(*pid, *rss);
     }
 
-    let mut killed = Vec::new();
-    for (pid, action) in byte_limit_targets(&children, limits.soft, limits.hard) {
-        let rss = rss_of(&children, pid);
-        match action {
-            ByteAction::Kill => {
-                tracing::error!(reason = "memory hard", pid, rss, "killing child");
-                if signal_child(pid, libc::SIGKILL) {
-                    metrics.record_kill();
-                    roster.signal(pid, SentSignal::Kill(KillCause::MemoryHard));
-                }
-                killed.push(pid);
-            }
-            ByteAction::Drain => {
-                if pressure.drained.insert(pid) {
-                    tracing::warn!(reason = "memory soft", pid, rss, "draining child");
-                    if signal_child(pid, libc::SIGUSR1) {
-                        metrics.record_drain();
-                        roster.signal(pid, SentSignal::Usr1(DrainCause::MemorySoft));
+    let already: Vec<u32> = pressure.drained.iter().copied().collect();
+    let (occupied, limit) = match container_memory() {
+        Some((usage, limit)) => (Some(usage), Some(limit)),
+        None => (None, None),
+    };
+    let planned = plan_memory_signals(
+        &children,
+        limits.soft,
+        limits.hard,
+        occupied,
+        limit,
+        memory_soft_ratio,
+        memory_hard_ratio,
+        &already,
+    );
+    for signal in planned {
+        match signal {
+            PlannedSignal::Kill(pid, cause) => {
+                let rss = rss_of(&children, pid);
+                match cause {
+                    KillCause::MemoryHard => {
+                        tracing::error!(reason = "memory hard", pid, rss, "killing child");
+                    }
+                    KillCause::MemoryRatio => {
+                        tracing::error!(
+                            pid,
+                            rss,
+                            usage = occupied.unwrap_or(0),
+                            limit = limit.unwrap_or(0),
+                            "container memory crossed the hard threshold; killing the largest child"
+                        );
                     }
                 }
-            }
-            ByteAction::None => {}
-        }
-    }
-
-    let Some((usage, limit)) = container_memory() else {
-        return;
-    };
-    match memory_action(usage, limit, memory_soft_ratio, memory_hard_ratio) {
-        MemoryAction::None => {}
-        MemoryAction::Drain => {
-            drain_one_for_ratio(
-                RatioDrain::Soft,
-                &children,
-                pressure,
-                &killed,
-                usage,
-                limit,
-                metrics,
-                roster,
-            );
-        }
-        MemoryAction::Kill => {
-            let eligible: Vec<(u32, u64)> = children
-                .iter()
-                .copied()
-                .filter(|(pid, _)| !killed.contains(pid))
-                .collect();
-            if let Some(pid) = largest_child_to_kill(&eligible, usage) {
-                let rss = rss_of(&eligible, pid);
-                tracing::error!(
-                    pid,
-                    rss,
-                    usage,
-                    limit,
-                    "container memory crossed the hard threshold; killing the largest child"
-                );
                 if signal_child(pid, libc::SIGKILL) {
                     metrics.record_kill();
-                    roster.signal(pid, SentSignal::Kill(KillCause::MemoryRatio));
+                    roster.signal(pid, SentSignal::Kill(cause));
                 }
-            } else {
-                drain_one_for_ratio(
-                    RatioDrain::HardWithoutOwner,
-                    &children,
-                    pressure,
-                    &killed,
-                    usage,
-                    limit,
-                    metrics,
-                    roster,
-                );
+            }
+            PlannedSignal::Drain(pid, cause) => {
+                if pressure.drained.contains(&pid) {
+                    continue;
+                }
+                let rss = rss_of(&children, pid);
+                match cause {
+                    DrainCause::MemorySoft => {
+                        tracing::warn!(reason = "memory soft", pid, rss, "draining child");
+                    }
+                    DrainCause::MemoryRatio => {
+                        let usage = occupied.unwrap_or(0);
+                        let cap = limit.unwrap_or(0);
+                        if memory_action(usage, cap, memory_soft_ratio, memory_hard_ratio)
+                            == MemoryAction::Kill
+                        {
+                            tracing::warn!(
+                                pid,
+                                rss,
+                                usage,
+                                limit = cap,
+                                "container memory crossed the hard threshold but no child owns it; draining the largest child"
+                            );
+                        } else {
+                            tracing::warn!(
+                                pid,
+                                rss,
+                                usage,
+                                limit = cap,
+                                "container memory crossed the soft threshold; draining the largest child"
+                            );
+                        }
+                    }
+                    DrainCause::Shutdown => {}
+                }
+                if signal_child(pid, libc::SIGUSR1) {
+                    pressure.drained.insert(pid);
+                    metrics.record_drain();
+                    roster.signal(pid, SentSignal::Usr1(cause));
+                }
             }
         }
-    }
-}
-
-enum RatioDrain {
-    Soft,
-    HardWithoutOwner,
-}
-
-fn drain_one_for_ratio(
-    kind: RatioDrain,
-    children: &[(u32, u64)],
-    pressure: &mut Pressure,
-    killed: &[u32],
-    usage: u64,
-    limit: u64,
-    metrics: &ChildMemoryMetrics,
-    roster: &Roster,
-) {
-    let mut skip: Vec<u32> = pressure.drained.iter().copied().collect();
-    skip.extend_from_slice(killed);
-    let Some(pid) = ratio_drain_target(children, &skip) else {
-        return;
-    };
-    let rss = rss_of(children, pid);
-    pressure.drained.insert(pid);
-    match kind {
-        RatioDrain::Soft => tracing::warn!(
-            pid,
-            rss,
-            usage,
-            limit,
-            "container memory crossed the soft threshold; draining the largest child"
-        ),
-        RatioDrain::HardWithoutOwner => tracing::warn!(
-            pid,
-            rss,
-            usage,
-            limit,
-            "container memory crossed the hard threshold but no child owns it; draining the largest child"
-        ),
-    }
-    if signal_child(pid, libc::SIGUSR1) {
-        metrics.record_drain();
-        roster.signal(pid, SentSignal::Usr1(DrainCause::MemoryRatio));
     }
 }
 
@@ -1381,6 +1448,164 @@ mod tests {
         assert_ne!(
             vec![first],
             children.iter().map(|(pid, _)| *pid).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn rss_selection_does_not_read_whether_a_child_is_busy() {
+        let children = [(11_u32, 100_u64), (22, 2_000), (33, 9_000)];
+        let soft = 0.80;
+        let hard = 0.95;
+
+        let over = plan_memory_signals(
+            &children,
+            Some(1_500),
+            Some(8_000),
+            None,
+            None,
+            soft,
+            hard,
+            &[],
+        );
+        assert_eq!(
+            over,
+            vec![
+                PlannedSignal::Drain(22, DrainCause::MemorySoft),
+                PlannedSignal::Kill(33, KillCause::MemoryHard),
+            ]
+        );
+
+        let first =
+            plan_memory_signals(&children, None, None, Some(80), Some(100), soft, hard, &[]);
+        assert_eq!(
+            first,
+            vec![PlannedSignal::Drain(33, DrainCause::MemoryRatio)]
+        );
+        let second = plan_memory_signals(
+            &children,
+            None,
+            None,
+            Some(80),
+            Some(100),
+            soft,
+            hard,
+            &[33],
+        );
+        assert_eq!(
+            second,
+            vec![PlannedSignal::Drain(22, DrainCause::MemoryRatio)]
+        );
+        let third = plan_memory_signals(
+            &children,
+            None,
+            None,
+            Some(80),
+            Some(100),
+            soft,
+            hard,
+            &[33, 22],
+        );
+        assert_eq!(
+            third,
+            vec![PlannedSignal::Drain(11, DrainCause::MemoryRatio)]
+        );
+        assert!(
+            plan_memory_signals(
+                &children,
+                None,
+                None,
+                Some(80),
+                Some(100),
+                soft,
+                hard,
+                &[33, 22, 11],
+            )
+            .is_empty()
+        );
+
+        let owned = plan_memory_signals(
+            &[(4, 10), (9, 80)],
+            None,
+            None,
+            Some(100),
+            Some(100),
+            soft,
+            hard,
+            &[],
+        );
+        assert_eq!(owned, vec![PlannedSignal::Kill(9, KillCause::MemoryRatio)]);
+        let shared = plan_memory_signals(
+            &[(4, 10), (9, 40)],
+            None,
+            None,
+            Some(100),
+            Some(100),
+            soft,
+            hard,
+            &[],
+        );
+        assert_eq!(
+            shared,
+            vec![PlannedSignal::Drain(9, DrainCause::MemoryRatio)]
+        );
+        assert_eq!(
+            plan_memory_signals(
+                &[(4, 10)],
+                None,
+                None,
+                Some(100),
+                Some(100),
+                soft,
+                hard,
+                &[4]
+            ),
+            Vec::<PlannedSignal>::new()
+        );
+
+        let both_large = [(1_u32, 60_u64), (2, 55)];
+        assert_eq!(
+            plan_memory_signals(
+                &both_large,
+                None,
+                None,
+                Some(100),
+                Some(100),
+                soft,
+                hard,
+                &[]
+            ),
+            vec![PlannedSignal::Kill(1, KillCause::MemoryRatio)]
+        );
+        assert_eq!(
+            plan_memory_signals(
+                &[(1, 80), (2, 60)],
+                None,
+                Some(70),
+                Some(100),
+                Some(100),
+                soft,
+                hard,
+                &[],
+            ),
+            vec![PlannedSignal::Kill(1, KillCause::MemoryHard)]
+        );
+
+        let already_soft = plan_memory_signals(
+            &children,
+            Some(1_500),
+            None,
+            Some(80),
+            Some(100),
+            soft,
+            hard,
+            &[],
+        );
+        assert_eq!(
+            already_soft,
+            vec![
+                PlannedSignal::Drain(22, DrainCause::MemorySoft),
+                PlannedSignal::Drain(33, DrainCause::MemorySoft),
+            ]
         );
     }
 

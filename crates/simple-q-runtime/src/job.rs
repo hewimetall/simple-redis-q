@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn a_lock_without_a_positive_ttl_is_rejected() {
         let mut payload = sample();
-        payload["lock_key"] = json!("cache:discovery");
+        payload["lock_key"] = json!("demo:gate");
         payload["lock_ttl"] = json!(0);
         assert!(
             Job::parse(payload)
@@ -196,10 +196,10 @@ mod tests {
         );
 
         let mut held = sample();
-        held["lock_key"] = json!("cache:discovery");
+        held["lock_key"] = json!("demo:gate");
         held["lock_ttl"] = json!(30);
         let job = Job::parse(held).unwrap();
-        assert_eq!(job.lock_key.as_deref(), Some("cache:discovery"));
+        assert_eq!(job.lock_key.as_deref(), Some("demo:gate"));
         assert_eq!(job.lock_ttl, 30);
     }
 

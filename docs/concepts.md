@@ -1,6 +1,6 @@
 # Concepts
 
-These pages describe simple-q 1.0.
+These pages describe simple-q 1.1.
 
 A send stores one version-1 message. `message_id` stays the same across retries. `retries` counts handler failures. `deliveries` counts how many times a worker has started that attempt. Those two numbers are independent.
 
@@ -40,13 +40,13 @@ Restarting a child does not change poison. A delivery that already passed `max_d
 
 ## Memory
 
-The supervisor checks memory about once a second. It does not take messages. The Redis record it publishes for `agent-worker info` is on the [architecture](architecture.md) page.
+The supervisor checks memory about once a second. It does not take messages, and it does not look at whether a child is running a task. Both rules below choose by RSS. The Redis record it publishes for `agent-worker info` is on the [architecture](architecture.md) page.
 
 ### Per-child RSS
 
 `--child-memory-soft` and `--child-memory-hard`, or `SIMPLE_Q_CHILD_MEMORY_SOFT` and `SIMPLE_Q_CHILD_MEMORY_HARD`, set an RSS limit for one child. The flag wins when both the flag and the variable are set. `K`, `M`, and `G` are powers of 1024. An optional `B` is the same unit. A bare number is bytes. Zero, a fraction, and any other shape are invalid and the supervisor exits 3 before it starts a child. When both limits are set, soft must be below hard.
 
-On Linux, RSS comes from `/proc/<pid>/statm` (resident pages times the page size). On macOS it comes from `proc_pid_rusage` (`ri_resident_size`). A failed read leaves that child out of the limit check. At the soft limit that pid receives `SIGUSR1` once and drains: it finishes current work and takes nothing new. At the hard limit that pid receives `SIGKILL`. A later child is a new process. The queue and the poison rule stay as they were.
+On Linux, RSS comes from `/proc/<pid>/statm` (resident pages times the page size). On macOS it comes from `proc_pid_rusage` (`ri_resident_size`). A failed read leaves that child out of the limit check. Each child is compared with its own threshold. At the soft limit that pid receives `SIGUSR1` once and drains: it finishes current work and takes nothing new. At the hard limit that pid receives `SIGKILL`. Several children can be signaled in the same second when several have crossed their own limit. A later child is a new process. The queue and the poison rule stay as they were.
 
 If `processes * hard` is greater than a finite cgroup `memory.max`, the supervisor logs a warning and keeps running.
 
@@ -54,7 +54,7 @@ If `processes * hard` is greater than a finite cgroup `memory.max`, the supervis
 
 The ratio backstop uses the cgroup working set: `memory.current` minus `inactive_file` from `memory.stat`. That is the same subtraction kubelet uses. When `inactive_file` is absent, the usage is `memory.current`. `working_set` is that subtraction.
 
-`SIMPLE_Q_MEMORY_SOFT_RATIO` defaults to 0.80. `SIMPLE_Q_MEMORY_HARD_RATIO` defaults to 0.95. Both must be finite numbers in the open interval `(0, 1)`. At the soft ratio the supervisor sends `SIGUSR1` to the child with the largest RSS that has not already been asked to drain. The next tick picks another child if usage is still high. At the hard ratio the supervisor sends `SIGKILL` to the largest child when that child's RSS is at least half the working set (`rss * 2 >= usage`). A child that does not own the usage is drained instead of killed, because killing it would not stop the cgroup from running out of memory.
+`SIMPLE_Q_MEMORY_SOFT_RATIO` defaults to 0.80. `SIMPLE_Q_MEMORY_HARD_RATIO` defaults to 0.95. Both must be finite numbers in the open interval `(0, 1)`. At the soft ratio the supervisor sends `SIGUSR1` to the child with the largest RSS that has not already been asked to drain. The next tick picks the next largest if usage is still high. A child already selected for its own soft limit in that same second is the one child for the ratio, so the next child waits. At the hard ratio the supervisor sends `SIGKILL` to one child, the largest, when that child's RSS is at least half the working set (`rss * 2 >= usage`). If that child is already being killed for its own hard byte limit, no second child is killed for the ratio. When even the largest RSS is below half the working set, nobody is killed for the ratio. The largest child that has not already been asked to drain gets `SIGUSR1`, because killing a child that does not own the usage would not stop the cgroup from running out of memory.
 
 Without a finite `memory.max` (`max`, empty, or missing), the ratio check does nothing. On macOS `/proc/self/cgroup` is absent, so the ratio stays off. The per-child byte limits still apply.
 

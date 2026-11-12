@@ -20,7 +20,7 @@ A local macOS producer is `maturin develop` against CPython 3.12 or newer. A loc
 from simple_q import App, Client, Config, actor
 
 
-@actor(queue="default", max_retries=2, lock_key="cache:discovery")
+@actor(queue="default", max_retries=2, lock_key="demo:gate")
 async def recalc(project_id: int) -> None:
     ...
 
@@ -43,4 +43,4 @@ async def enqueue() -> None:
 
 ## Documentation
 
-These pages describe 1.0: [docs/index.md](docs/index.md).
+These pages describe 1.1: [docs/index.md](docs/index.md).

@@ -1,6 +1,6 @@
 # API
 
-These pages describe simple-q 1.0. The signatures below are the supported surface. `Config.from_env()` reads `SIMPLE_Q_*` only. An invalid value raises. There is no silent default.
+These pages describe simple-q 1.1. The signatures below are the supported surface. `Config.from_env()` reads `SIMPLE_Q_*` only. An invalid value raises. There is no silent default.
 
 ## `@actor`
 
@@ -28,7 +28,7 @@ def actor(
     failure. Zero means a failure is dead immediately.
     ``time_limit``, ``min_backoff``, and ``max_backoff`` are milliseconds.
     ``lock_key`` may contain ``{field}`` placeholders filled from kwargs
-    at dispatch. The example key is ``cache:discovery``.
+    at dispatch. The example key is ``demo:gate``.
     ``max_deliveries`` is the poison limit. The delivery that lands on
     the limit still runs.
     """

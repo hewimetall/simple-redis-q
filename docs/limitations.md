@@ -1,6 +1,6 @@
 # Limitations
 
-These pages describe simple-q 1.0.
+These pages describe simple-q 1.1.
 
 ## No synchronous send
 

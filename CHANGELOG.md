@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.1.0
+
+The supervisor chooses a child for a memory limit by RSS. It does not look at whether that child is running a task. A per-child soft limit sends one `SIGUSR1` to every child over its own threshold, and a per-child hard limit sends `SIGKILL`. Several children can be signaled in the same second. At 80% of the cgroup working set, one not-yet-drained child, the largest RSS, gets `SIGUSR1`. If usage is still high a second later, the next largest gets it. At 95%, one child, the largest, is `SIGKILL`ed when its RSS is at least half the working set. If that child is already being killed for its own hard limit, no second child is killed. When the largest is below half, nobody is killed for the ratio, and the largest child that has not been asked to drain gets `SIGUSR1`. A `SIGUSR1` that the kernel does not deliver is not recorded, so the next second tries that child again.
+
+Lock-key examples are `demo:gate` and `demo:item:{name}`.
 
 The worker keeps trying to delete `unique_key` until the task is in `done` or `dead`, the process stops, or `SIMPLE_Q_UNIQUE_TTL_SECS` elapses. A Redis error during that wait is retried. A slow ack no longer leaves the key for the rest of the TTL while the process is still up. The default TTL stays 86400 seconds.
 
