@@ -24,6 +24,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python
+        id: setup-python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
@@ -33,14 +34,19 @@ jobs:
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
+        with:
+          # The venv path is the same string on every Python version. A shared
+          # cache then relinks agent-worker to whichever libpython was saved.
+          key: py${{ matrix.python }}
 
       - name: Unit tests
+        env:
+          PYO3_PYTHON: ${{ steps.setup-python.outputs.python-path }}
         run: |
           python3 -m venv .venv
           . .venv/bin/activate
           python -m pip install --upgrade pip
           python -m pip install pytest "prometheus_client>=0.26" "maturin>=1.16,<2"
-          export PYO3_PYTHON="$(command -v python)"
           maturin develop
           python -m pytest python/tests/test_runtime_contract.py python/tests/test_lock_release.py python/tests/test_version_source.py python/tests/test_alter_option.py python/tests/test_middleware_stack.py python/tests/test_worker_launch.py -q
           cargo test --workspace
@@ -79,6 +85,8 @@ jobs:
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
+        with:
+          key: py${{ matrix.python }}
 
       - name: Build agent-worker
         run: cargo build -p agent-worker --release
