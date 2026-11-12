@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+A soft memory signal skips a child that is inside a delivery. The supervisor keeps one anonymous memfd for its own lifetime, one `AtomicU32` per slot. The child maps that page after start, closes the descriptor, and counts each delivery. The parent stores 0 before it starts a child in that slot, so a digit left by `SIGKILL` does not mark the next child busy. A hard signal does not read the digit. On macOS there is no memfd, and a soft signal uses RSS only.
+
 ## 1.1.0
 
 The supervisor chooses a child for a memory limit by RSS. It does not look at whether that child is running a task. A per-child soft limit sends one `SIGUSR1` to every child over its own threshold, and a per-child hard limit sends `SIGKILL`. Several children can be signaled in the same second. At 80% of the cgroup working set, one not-yet-drained child, the largest RSS, gets `SIGUSR1`. If usage is still high a second later, the next largest gets it. At 95%, one child, the largest, is `SIGKILL`ed when its RSS is at least half the working set. If that child is already being killed for its own hard limit, no second child is killed. When the largest is below half, nobody is killed for the ratio, and the largest child that has not been asked to drain gets `SIGUSR1`. A `SIGUSR1` that the kernel does not deliver is not recorded, so the next second tries that child again.

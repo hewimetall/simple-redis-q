@@ -34,6 +34,7 @@ pub fn run_child(
     concurrency: usize,
     max_tasks: u64,
 ) -> Result<()> {
+    crate::slot_busy::install()?;
     runtime::initialize();
     let runtime = Builder::new_multi_thread().enable_all().build()?;
     let runtime: &'static tokio::runtime::Runtime = Box::leak(Box::new(runtime));

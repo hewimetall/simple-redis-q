@@ -8,15 +8,17 @@
 //! failure.
 //!
 //! Each child has optional RSS byte limits. Once a second the supervisor reads
-//! RSS. It does not look at whether a child is running a task. At the soft
-//! limit every child over it gets one SIGUSR1. At the hard limit every child
-//! over it is SIGKILLed. Several children can be signaled in the same second.
+//! RSS. A soft signal skips a slot whose delivery digit is not zero. A hard
+//! signal does not read that digit. At the soft limit every free child over it
+//! gets one SIGUSR1. At the hard limit every child over it is SIGKILLed.
+//! Several children can be signaled in the same second.
 //! The container ratio is a backstop: usage is `memory.current` minus
-//! `inactive_file`. At the soft ratio one not-yet-drained child, the largest
-//! RSS, gets SIGUSR1. The next second, if usage is still high, the next
-//! largest. At the hard ratio one child, the largest, is SIGKILLed when its
-//! RSS is at least half the usage. Otherwise nobody is killed for the ratio
-//! and that child is drained instead.
+//! `inactive_file`. At the soft ratio one free child that has not yet been
+//! drained, the largest RSS, gets SIGUSR1. A busy child is left for a later
+//! second. At the hard ratio one child, the largest, is SIGKILLed when its
+//! RSS is at least half the usage. The hard path does not read the digit.
+//! Otherwise nobody is killed for the ratio and the largest free child that
+//! has not been asked to drain is drained instead.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -104,6 +106,7 @@ pub async fn run(
         roster.clone(),
     );
 
+    let digits = crate::slot_busy::open(processes)?;
     let mut slots = tokio::task::JoinSet::new();
     for index in 0..processes {
         let app = app.clone();
@@ -113,6 +116,7 @@ pub async fn run(
         let prom_dir = prom_dir.clone();
         let live = live.clone();
         let roster = roster.clone();
+        let digits = digits.clone();
         slots.spawn(async move {
             supervise_slot(
                 index,
@@ -126,6 +130,7 @@ pub async fn run(
                 prom_dir,
                 live,
                 roster,
+                digits,
             )
             .await
         });
@@ -143,6 +148,7 @@ pub async fn run(
                 memory_hard_ratio,
                 &memory_metrics,
                 &roster,
+                digits.as_deref(),
             );
             }
             _ = signals.terminate.recv() => {
@@ -216,6 +222,7 @@ async fn supervise_slot(
     prom_dir: std::path::PathBuf,
     live: LivePids,
     roster: Roster,
+    digits: Option<std::sync::Arc<crate::slot_busy::SlotDigits>>,
 ) -> Result<()> {
     let mut backoff = Duration::from_secs(1);
 
@@ -225,6 +232,9 @@ async fn supervise_slot(
         }
 
         reset_slot_gauges(&prom_dir, index).context("failed to reset slot gauges")?;
+        if let Some(digits) = &digits {
+            digits.reset(index);
+        }
         let mut child = spawn_child(
             &app,
             factory,
@@ -233,6 +243,7 @@ async fn supervise_slot(
             max_tasks,
             index,
             &prom_dir,
+            digits.as_ref().map(|digits| digits.raw_fd()),
         )?;
         let pid = child.id().context("child process has no pid")?;
         tracing::info!(index, pid, "worker process started");
@@ -320,6 +331,7 @@ fn spawn_child(
     max_tasks: u64,
     slot: u32,
     prom_dir: &std::path::Path,
+    slot_fd: Option<i32>,
 ) -> Result<Child> {
     let executable = std::env::current_exe().context("failed to resolve the worker executable")?;
     let mut command = Command::new(executable);
@@ -340,9 +352,17 @@ fn spawn_child(
         .env("prometheus_multiproc_dir", prom_dir)
         .env("DRAMATIQ_PROM_DB", prom_dir)
         .env("dramatiq_prom_db", prom_dir)
-        .kill_on_drop(true)
-        .spawn()
-        .context("failed to spawn a worker process")
+        .kill_on_drop(true);
+    if let Some(fd) = slot_fd {
+        command.env("SIMPLE_Q_SLOT_FD", fd.to_string());
+        // SAFETY: the closure runs in the forked child, before exec. It only
+        // calls fcntl(F_GETFD) and fcntl(F_SETFD). The parent descriptor stays
+        // cloexec, so a spawn on another thread does not inherit it.
+        unsafe {
+            command.pre_exec(move || crate::slot_busy::clear_cloexec(fd));
+        }
+    }
+    command.spawn().context("failed to spawn a worker process")
 }
 
 fn prom_dir() -> std::path::PathBuf {
@@ -652,7 +672,8 @@ pub fn ratio_drain_target(children: &[(u32, u64)], already: &[u32]) -> Option<u3
 
 /// One signal the supervisor will send on this memory tick.
 ///
-/// The plan is RSS only. It has no input for whether a child is running a task.
+/// A soft signal skips a pid whose delivery digit is not zero. A hard signal
+/// does not read that digit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlannedSignal {
     Drain(u32, DrainCause),
@@ -666,13 +687,14 @@ pub enum PlannedSignal {
 /// limit gets `SIGKILL`. Several children can be named in the same plan.
 ///
 /// The pod ratio adds at most one signal. At the soft ratio that is `SIGUSR1`
-/// for the largest RSS that has not already been asked to drain. A child this
-/// plan is already draining counts as asked, so the next child waits for the
-/// next call. At the hard ratio the largest child is `SIGKILL`ed when its RSS
-/// is at least half of `occupied`. If that child is already in the plan for
-/// its own hard limit, no second child is killed. When the largest is below
-/// half, nobody is killed for the ratio and the largest not-yet-asked child
-/// gets `SIGUSR1`.
+/// for the largest free RSS that has not already been asked to drain. A child
+/// this plan is already draining counts as asked, so the next child waits for
+/// the next call. A busy child is not asked and is not recorded as drained.
+/// At the hard ratio the largest child is `SIGKILL`ed when its RSS is at
+/// least half of `occupied`, whether or not its digit is set. If that child
+/// is already in the plan for its own hard limit, no second child is killed.
+/// When the largest is below half, nobody is killed for the ratio and the
+/// largest free not-yet-asked child gets `SIGUSR1`.
 pub fn plan_memory_signals(
     children: &[(u32, u64)],
     soft: Option<u64>,
@@ -682,12 +704,13 @@ pub fn plan_memory_signals(
     soft_ratio: f64,
     hard_ratio: f64,
     already_drained: &[u32],
+    busy: &[u32],
 ) -> Vec<PlannedSignal> {
     let mut planned = Vec::new();
     for &(pid, rss) in children {
         match byte_action(rss, soft, hard) {
             ByteAction::Kill => planned.push(PlannedSignal::Kill(pid, KillCause::MemoryHard)),
-            ByteAction::Drain if !already_drained.contains(&pid) => {
+            ByteAction::Drain if !already_drained.contains(&pid) && !busy.contains(&pid) => {
                 planned.push(PlannedSignal::Drain(pid, DrainCause::MemorySoft));
             }
             ByteAction::Drain | ByteAction::None => {}
@@ -710,13 +733,14 @@ pub fn plan_memory_signals(
                     planned.push(PlannedSignal::Kill(pid, KillCause::MemoryRatio));
                 }
             } else if let Some(pid) =
-                ratio_drain_not_already_planned(children, already_drained, &planned)
+                ratio_drain_not_already_planned(children, already_drained, busy, &planned)
             {
                 planned.push(PlannedSignal::Drain(pid, DrainCause::MemoryRatio));
             }
         }
         MemoryAction::Drain => {
-            if let Some(pid) = ratio_drain_not_already_planned(children, already_drained, &planned)
+            if let Some(pid) =
+                ratio_drain_not_already_planned(children, already_drained, busy, &planned)
             {
                 planned.push(PlannedSignal::Drain(pid, DrainCause::MemoryRatio));
             }
@@ -725,12 +749,14 @@ pub fn plan_memory_signals(
     planned
 }
 
-/// Largest RSS that has not been asked to drain and is not already in `planned`.
-/// A child this plan is killing is skipped. A child this plan is already
-/// draining is the one for this second, so the caller adds nobody else.
+/// Largest free RSS that has not been asked to drain and is not already in `planned`.
+/// A child this plan is killing is skipped. A busy child is skipped and is not
+/// marked drained. A child this plan is already draining is the one for this
+/// second, so the caller adds nobody else.
 fn ratio_drain_not_already_planned(
     children: &[(u32, u64)],
     already_drained: &[u32],
+    busy: &[u32],
     planned: &[PlannedSignal],
 ) -> Option<u32> {
     let killing = |pid: u32| {
@@ -746,7 +772,7 @@ fn ratio_drain_not_already_planned(
     let (pid, _) = children
         .iter()
         .copied()
-        .filter(|(pid, _)| !already_drained.contains(pid) && !killing(*pid))
+        .filter(|(pid, _)| !already_drained.contains(pid) && !busy.contains(pid) && !killing(*pid))
         .max_by_key(|(_, rss)| *rss)?;
     if draining(pid) { None } else { Some(pid) }
 }
@@ -932,8 +958,20 @@ fn apply_memory_pressure(
     memory_hard_ratio: f64,
     metrics: &ChildMemoryMetrics,
     roster: &Roster,
+    digits: Option<&crate::slot_busy::SlotDigits>,
 ) {
-    let pids: Vec<u32> = live.lock().expect("live pids").values().copied().collect();
+    let slots: Vec<(u32, u32)> = live
+        .lock()
+        .expect("live pids")
+        .iter()
+        .map(|(slot, pid)| (*slot, *pid))
+        .collect();
+    let pids: Vec<u32> = slots.iter().map(|(_, pid)| *pid).collect();
+    let busy: Vec<u32> = slots
+        .iter()
+        .filter(|(slot, _)| digits.is_some_and(|digits| digits.is_busy(*slot)))
+        .map(|(_, pid)| *pid)
+        .collect();
     pressure.drained.retain(|pid| pids.contains(pid));
     let children: Vec<(u32, u64)> = pids
         .iter()
@@ -958,6 +996,7 @@ fn apply_memory_pressure(
         memory_soft_ratio,
         memory_hard_ratio,
         &already,
+        &busy,
     );
     for signal in planned {
         match signal {
@@ -1452,7 +1491,7 @@ mod tests {
     }
 
     #[test]
-    fn rss_selection_does_not_read_whether_a_child_is_busy() {
+    fn rss_selection_when_no_slot_is_busy() {
         let children = [(11_u32, 100_u64), (22, 2_000), (33, 9_000)];
         let soft = 0.80;
         let hard = 0.95;
@@ -1466,6 +1505,7 @@ mod tests {
             soft,
             hard,
             &[],
+            &[],
         );
         assert_eq!(
             over,
@@ -1475,8 +1515,17 @@ mod tests {
             ]
         );
 
-        let first =
-            plan_memory_signals(&children, None, None, Some(80), Some(100), soft, hard, &[]);
+        let first = plan_memory_signals(
+            &children,
+            None,
+            None,
+            Some(80),
+            Some(100),
+            soft,
+            hard,
+            &[],
+            &[],
+        );
         assert_eq!(
             first,
             vec![PlannedSignal::Drain(33, DrainCause::MemoryRatio)]
@@ -1490,6 +1539,7 @@ mod tests {
             soft,
             hard,
             &[33],
+            &[],
         );
         assert_eq!(
             second,
@@ -1504,6 +1554,7 @@ mod tests {
             soft,
             hard,
             &[33, 22],
+            &[],
         );
         assert_eq!(
             third,
@@ -1519,6 +1570,7 @@ mod tests {
                 soft,
                 hard,
                 &[33, 22, 11],
+                &[],
             )
             .is_empty()
         );
@@ -1532,6 +1584,7 @@ mod tests {
             soft,
             hard,
             &[],
+            &[],
         );
         assert_eq!(owned, vec![PlannedSignal::Kill(9, KillCause::MemoryRatio)]);
         let shared = plan_memory_signals(
@@ -1542,6 +1595,7 @@ mod tests {
             Some(100),
             soft,
             hard,
+            &[],
             &[],
         );
         assert_eq!(
@@ -1557,7 +1611,8 @@ mod tests {
                 Some(100),
                 soft,
                 hard,
-                &[4]
+                &[4],
+                &[],
             ),
             Vec::<PlannedSignal>::new()
         );
@@ -1572,7 +1627,8 @@ mod tests {
                 Some(100),
                 soft,
                 hard,
-                &[]
+                &[],
+                &[],
             ),
             vec![PlannedSignal::Kill(1, KillCause::MemoryRatio)]
         );
@@ -1585,6 +1641,7 @@ mod tests {
                 Some(100),
                 soft,
                 hard,
+                &[],
                 &[],
             ),
             vec![PlannedSignal::Kill(1, KillCause::MemoryHard)]
@@ -1599,6 +1656,7 @@ mod tests {
             soft,
             hard,
             &[],
+            &[],
         );
         assert_eq!(
             already_soft,
@@ -1606,6 +1664,159 @@ mod tests {
                 PlannedSignal::Drain(22, DrainCause::MemorySoft),
                 PlannedSignal::Drain(33, DrainCause::MemorySoft),
             ]
+        );
+    }
+
+    #[test]
+    fn soft_signals_skip_a_busy_child() {
+        let children = [(11_u32, 100_u64), (22, 2_000), (33, 9_000)];
+        let soft = 0.80;
+        let hard = 0.95;
+
+        assert_eq!(
+            plan_memory_signals(
+                &children,
+                None,
+                None,
+                Some(80),
+                Some(100),
+                soft,
+                hard,
+                &[],
+                &[33],
+            ),
+            vec![PlannedSignal::Drain(22, DrainCause::MemoryRatio)]
+        );
+        assert_eq!(
+            plan_memory_signals(
+                &children,
+                None,
+                None,
+                Some(80),
+                Some(100),
+                soft,
+                hard,
+                &[],
+                &[33, 22],
+            ),
+            vec![PlannedSignal::Drain(11, DrainCause::MemoryRatio)]
+        );
+        assert!(
+            plan_memory_signals(
+                &children,
+                None,
+                None,
+                Some(80),
+                Some(100),
+                soft,
+                hard,
+                &[],
+                &[33, 22, 11],
+            )
+            .is_empty()
+        );
+
+        assert_eq!(
+            plan_memory_signals(
+                &children,
+                Some(1_500),
+                None,
+                None,
+                None,
+                soft,
+                hard,
+                &[],
+                &[33],
+            ),
+            vec![PlannedSignal::Drain(22, DrainCause::MemorySoft)]
+        );
+        assert_eq!(
+            plan_memory_signals(
+                &children,
+                Some(1_500),
+                None,
+                Some(80),
+                Some(100),
+                soft,
+                hard,
+                &[],
+                &[33],
+            ),
+            vec![PlannedSignal::Drain(22, DrainCause::MemorySoft)]
+        );
+        assert_eq!(
+            plan_memory_signals(
+                &children,
+                Some(1_500),
+                None,
+                Some(80),
+                Some(100),
+                soft,
+                hard,
+                &[],
+                &[33, 22],
+            ),
+            vec![PlannedSignal::Drain(11, DrainCause::MemoryRatio)]
+        );
+
+        assert_eq!(
+            plan_memory_signals(
+                &children,
+                Some(1_500),
+                Some(8_000),
+                None,
+                None,
+                soft,
+                hard,
+                &[],
+                &[33],
+            ),
+            vec![
+                PlannedSignal::Drain(22, DrainCause::MemorySoft),
+                PlannedSignal::Kill(33, KillCause::MemoryHard),
+            ]
+        );
+        assert_eq!(
+            plan_memory_signals(
+                &[(9, 80)],
+                None,
+                None,
+                Some(100),
+                Some(100),
+                soft,
+                hard,
+                &[],
+                &[9],
+            ),
+            vec![PlannedSignal::Kill(9, KillCause::MemoryRatio)]
+        );
+        assert_eq!(
+            plan_memory_signals(
+                &[(9, 80), (4, 30)],
+                None,
+                None,
+                Some(100),
+                Some(100),
+                soft,
+                hard,
+                &[],
+                &[9],
+            ),
+            vec![PlannedSignal::Kill(9, KillCause::MemoryRatio)]
+        );
+        assert_eq!(
+            plan_memory_signals(
+                &[(9, 40), (4, 30)],
+                None,
+                None,
+                Some(100),
+                Some(100),
+                soft,
+                hard,
+                &[],
+                &[9],
+            ),
+            vec![PlannedSignal::Drain(4, DrainCause::MemoryRatio)]
         );
     }
 

@@ -284,6 +284,7 @@ async fn handle_job(
     worker: WorkerContext,
     state: Data<QueueState>,
 ) -> Result<serde_json::Value, BoxDynError> {
+    let _busy = crate::slot_busy::enter();
     let task_id = task.task_id().to_owned();
     let mut conn = state.shared.redis.clone();
     if let Err(error) = simple_q_runtime::pages::note_delivery_start(

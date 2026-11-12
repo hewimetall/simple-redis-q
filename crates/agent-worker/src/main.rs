@@ -9,6 +9,7 @@ mod child;
 mod cli;
 mod commands;
 mod runtime;
+mod slot_busy;
 mod supervisor;
 mod telemetry;
 mod worker;

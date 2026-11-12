@@ -14,7 +14,7 @@ agent-worker worker --app module:create_app --factory --queues default
 
 ## How OOM differs
 
-The supervisor checks the cgroup about once a second. Usage is `memory.current` minus `inactive_file`. At `SIMPLE_Q_MEMORY_HARD_RATIO` (0.95) it `SIGKILL`s one child, the largest, when that child's RSS is at least half the usage. That kill is deliberate: the supervisor must `SIGKILL` the child first. When the largest child is below half the usage, it drains that child instead of killing a smaller one.
+The supervisor checks the cgroup about once a second. Usage is `memory.current` minus `inactive_file`. At `SIMPLE_Q_MEMORY_HARD_RATIO` (0.95) it `SIGKILL`s one child, the largest, when that child's RSS is at least half the usage. That kill does not look at the slot digit. It is deliberate: the supervisor must `SIGKILL` the child first. When the largest child is below half the usage, it drains the largest free child instead of killing a smaller one. A soft drain skips a child that is inside a delivery.
 
 A cgroup with `memory.oom.group` kills the whole container. Every process in the cgroup dies, including the supervisor, so the supervisor cannot start a replacement child. Kubernetes sets that grouping on a container cgroup. Set a memory limit, keep the hard ratio at 0.95, and let the supervisor kill the child before the kernel OOM runs.
 
