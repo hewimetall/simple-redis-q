@@ -40,3 +40,16 @@ nav:
   - Redis keys: redis-keys.md
   - Limitations: limitations.md
   - Architecture: architecture.md
+  - Architectural fork:
+      - Research index: research/README.md
+      - Baseline: research/baseline.md
+      - Capability matrix: research/capability-matrix.md
+      - Candidates: research/candidates.md
+      - Plan: architecture/plan.md
+      - Diagrams: architecture/diagrams.md
+      - Testing strategy: testing/strategy.md
+      - ADR 0001 Ports: adr/0001-ports-and-adapters.md
+      - ADR 0002 Queue backend: adr/0002-queue-backend-keep-apalis-pending-oxana-spike.md
+      - ADR 0003 Supervisor: adr/0003-process-mechanism-watchexec-supervisor.md
+      - ADR 0004 Parent no CPython: adr/0004-parent-without-cpython.md
+      - ADR 0005 License: adr/0005-license-undeclared.md
