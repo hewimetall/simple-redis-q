@@ -1,0 +1,9 @@
+[package]
+name = "simple-q-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Ports, attempt/drain state machines, and policy types (no Redis/PyO3)"
+publish = false
+
+[dependencies]

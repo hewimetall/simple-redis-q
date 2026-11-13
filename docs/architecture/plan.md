@@ -54,34 +54,16 @@ Delivery: **at-least-once**. No exactly-once promise.
 
 ---
 
-## 3. Ports (minimal)
+## 3. Ports (binding)
 
-Interfaces from **needed contracts**, not library mirroring.
+Full text: [`contracts.md`](contracts.md). Summary:
 
-```text
-QueuePort
-  enqueue(job, delay?)
-  claim / start worker loop hooks (or stream of Attempt)
-  renew / observe lease (or backend-driven with loss signal)
-  ack(attempt)
-  retry(attempt, delay)
-  dead(attempt, reason)
-  admin reads used by snapshot (segregated AdminPort if consumers differ)
-
-ProcessPort
-  spawn(spec) -> ChildId
-  signal(ChildId, Signal)
-  wait(ChildId) -> ExitStatus
-  # process-group semantics explicit in adapter
-
-PythonBridgePort  (child only)
-  load_app / dispatch(job) -> BridgeOutcome
-  request_cancel(execution_id)
-  hooks startup/shutdown
-
-ConfigPort / ClockPort / MetricsPort
-  as needed for tests (fake clock in unit)
-```
+- **Fetch loop:** owned by the queue **adapter** (Apalis `WorkerBuilder`). Core receives `Attempt`; no core `claim()` poll loop.
+- **Finish:** `finish(attempt_id, ownership, disposition) -> FinishDisposition` (includes stale reject and unconfirmed).
+- **Lease renewal:** backend-driven; loss via `AttemptEvent::LoseOwnership` / `BridgeOutcome::LeaseLost`.
+- **AdminPort** segregated from finish.
+- **ProcessPort:** spawn/signal/wait; candidate `watchexec-supervisor` **6.0.0**.
+- **PythonBridgePort** (child only): closed `BridgeOutcome`; cancel request ≠ confirmed stop.
 
 **Non-goals:** universal multi-backend queue; plugin framework; trait-per-type.
 
@@ -107,25 +89,18 @@ Starting → Running → Draining → Stopping → Exited
 
 ### 4.2 Attempt (child execution)
 
-```text
-Claimed → HandlerRunning → HandlerFinished → Finishing(Ack|Retry|Dead) → Terminal
-                ↘ LeaseLost / Cancelled / BridgeFailed
-```
-
-Handler return ≠ ACK complete. Finishing work registered in TaskTracker; fetch cancel does not cancel Finishing.
+See `contracts.md` and `simple_q_core::attempt`. Handler return ≠ ACK complete.  
+`CancelRequested` and `OwnershipLostWhileRunning` are **not** Terminal. Finishing is mandatory before Terminal.
 
 ### 4.3 Drain (child + parent)
 
-Ordered:
+Ordered (`DrainPhase` + `AdmissionGate` in `simple-q-core`):
 
-1. Close admission  
-2. Race with in-flight claim — explicit contract  
-3. Wait accepted work  
-4. Wait result/ACK/retry ops  
-5. Cleanup + shutdown hooks  
-6. Exit child  
-7. Parent wait/reap  
-8. Escalate on separate budgets  
+1. Close **admission** (pause/stop backend fetch) — not merely `TaskTracker::close`  
+2. In-flight claim race: default **accept-and-track** (`AcceptInflightAfterClose`); reject is explicit  
+3. Close tracker / wait registered handler+finish tasks  
+4. Cleanup + shutdown hooks  
+5. Exit child → parent reap → escalate on separate budgets  
 
 Empty Python task list ≠ drain complete.
 
@@ -205,13 +180,9 @@ outcome — свободная строка JSON
 
 ## 6. Parent without CPython
 
-**Problem:** parent calls `runtime::initialize()` + `bridge::read_client` to learn Redis URL/`Config`.
+Binding: [`adr/0004-parent-without-cpython.md`](../adr/0004-parent-without-cpython.md).
 
-**Plan:**
-
-1. Prefer `REDIS_URL` + `SIMPLE_Q_*` already used by enqueue/admin for parent composition.  
-2. Optional: write resolved effective config from a **one-shot child** or installer — only if product requires App object fields not expressible in env (ADR).  
-3. Positive process test: parent binary path never links/initializes interpreter (or feature-gate PyO3 out of parent target).
+Parent: CLI + `REDIS_URL` + `SIMPLE_Q_*`. Child: `App.client` unchanged. Mismatch logged via effective Redis host/db. One-shot export child deferred.
 
 ---
 

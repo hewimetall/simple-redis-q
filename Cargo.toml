@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/simple-q-runtime", "crates/agent-worker"]
+members = ["crates/simple-q-runtime", "crates/agent-worker", "crates/simple-q-core"]
 
 [workspace.package]
 version = "1.0.0-rc7"

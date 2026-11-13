@@ -214,12 +214,12 @@ who initializes CPython
 ## Packaging / API
 
 ```text
-wheel + embedded Rust parent binary
-→ simple-q-runtime (cdylib) + simple-q-worker (bin) via maturin
-→ keep one installable wheel family; parent without Py init
+one install command with embedded Rust parent
+→ two maturin artifacts: simple-q-runtime + simple-q-worker (depends on runtime)
+→ keep that layout; product install = pip install simple-q-worker (ADR 0006)
 → CI worker-wheel job
 → platforms only as declared Linux wheels; macOS local-only
-→ build scripts / launcher
+→ build scripts / launcher; parent without Py init (ADR 0004)
 ```
 
 ---

@@ -1,0 +1,9 @@
+[package]
+name = "spike-watchexec-job"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+tokio = { version = "1.54", features = ["full"] }
+watchexec-supervisor = "=6.0.0"

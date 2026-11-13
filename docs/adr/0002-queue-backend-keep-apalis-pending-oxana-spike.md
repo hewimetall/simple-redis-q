@@ -10,9 +10,9 @@ The brief requires comparing retention of Apalis with migration to Oxana. Migrat
 
 ## Decision
 
-1. **Default:** keep Apalis Redis as the queue adapter behind a new `QueuePort`.
+1. **Default:** keep Apalis Redis **1.1.1** as the queue adapter behind `QueuePort` (backend-owned fetch loop).
 2. Extract custom delivery/poison/unique-key/business-lock code as explicit modules owned by us — do not pretend Apalis covers them.
-3. Run an Oxana **spike** (question/hypothesis/experiment/criterion in `docs/research/candidates.md`) before any production migration.
+3. Oxana **2.5.0** opaque-Worker spike compiled (`OpaqueJob { message: Value }`); full migration still rejected unless ownership suite wins — claim/finish are inside Oxana dispatcher/executor.
 4. **Stop migration** if Oxana needs more workarounds or weakens claim/ACK/lease guarantees; record outcome in a superseding ADR.
 
 ## Consequences

@@ -40,8 +40,8 @@ Build parameters recorded from repository files (not from a fresh wheel build in
 | OS | Linux 6.12.113+ x86_64, glibc 2.39 (`Linux-6.12.113+-x86_64-with-glibc2.39`) |
 | rustc / cargo | `1.99.1` (auto-installed to match toolchain file) |
 | Python | `3.12.3` |
-| Redis server | **absent** in this VM — integration/contract Redis proofs deferred |
-| Working tree | clean checkout of `v1.2.0` on branch `cursor/arch-fork-research-ad8c` |
+| Redis server | **7.0.15** installed later in research (`PONG`); see `spikes/RESULTS.md` |
+| Working tree | research branch on `main` + docs; behavioral proofs run from worktree `v1.2.0` @ `9164eea` |
 
 ## 3. License audit
 
@@ -158,7 +158,9 @@ This is a primary Stage C gap: composition must obtain Redis URL / config withou
 | Lost Redis lease does not stop running coroutine (cancel requested; ping budget exits) | Confirmed (docs/limitations) |
 | Oxana reduces ownership custom code vs Apalis | **Hypothesis** |
 | watchexec-supervisor shrinks supervisor LOC without losing process-group semantics | **Hypothesis** |
-| Dual-worker fencing + A/B renewal pass on 1.2.0 | **Unproven** (Redis absent here; prior stand was rc7 / single-worker) |
+| Dual-worker fencing + A/B renewal pass on 1.2.0 | **Unproven** (Redis admin/poll/orphan green; dual-worker fencing still gap) |
+| watchexec-supervisor 6.0.0 start/signal/stop | **Confirmed** (spike ran) |
+| Oxana 2.5.0 single OpaqueJob Worker | **Confirmed** compile; migration still not selected |
 
 ## 8. Stage A deliverables
 

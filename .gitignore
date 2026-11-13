@@ -60,3 +60,6 @@ rustc-ice-*.txt
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+docs/research/spikes/**/target/
+docs/research/spikes/**/Cargo.lock

@@ -79,3 +79,15 @@ cargo test -p simple-q-runtime --test admin --test poll_interval -- --test-threa
 ```
 
 Record command + exit status in stage reports (brief §15.7).
+
+## Stage B verification log (this agent VM)
+
+| Suite | Result |
+| --- | --- |
+| Redis 7.0.15 `PING` | ok |
+| `v1.2.0` `admin` + `poll_interval` | 20 passed |
+| `v1.2.0` orphan / worker_info / queue_admin | 8 passed |
+| `simple-q-core` unit (AAA) | 9 passed, 1 ignored |
+| Stage C gate `--ignored` | **RED** (`PARENT_NO_CPYTHON_IMPLEMENTED == false`) |
+| watchexec 6.0.0 spike | ran ok |
+| oxana 2.5.0 opaque Worker | compile ok |

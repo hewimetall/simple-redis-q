@@ -9,7 +9,7 @@
 
 ## Decision
 
-1. Spike `watchexec-supervisor` (pin version in spike lockfile; crates.io observed 5.4.0 / docs 6.0.0).
+1. Pin **`watchexec-supervisor` 6.0.0** (spike compiled and ran: `docs/research/spikes/RESULTS.md`).
 2. If process tests prove equivalent or better reap/signal/group behavior, adopt it as `ProcessPort` adapter.
 3. Retain local policy: slot allocation, crash-loop budget, RSS/cgroup thresholds, recycling reasons, supervisor Redis telemetry.
 4. Do not move ACK/delivery decisions into the supervisor.

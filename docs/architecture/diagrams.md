@@ -1,6 +1,4 @@
-# Architecture diagrams (Stage B target)
-
-Baseline contrast: today the parent initializes CPython to read the App; target forbids that.
+# Architecture diagrams (Stage B binding)
 
 ## Target context
 
@@ -11,79 +9,56 @@ C4Context
   System_Ext(os, "OS", "Processes, signals, cgroups")
   Person(app_dev, "Application", "Python handlers, DI, FSM")
   Person(ops, "Operator", "info / QueueAdmin")
-  System_Boundary(sq, "simple-q wheel") {
-    System(parent, "Rust parent", "ProcessPort + policy; no CPython")
-    System(child, "Rust child + queue runtime", "QueuePort + drain barrier")
-    System(py, "CPython child side", "Bridge + App")
+  System_Boundary(sq, "pip install simple-q-worker") {
+    System(parent, "Rust parent", "ProcessPort + policy; no CPython; REDIS_URL")
+    System(child, "Rust child + queue runtime", "backend-owned fetch; Attempt finish")
+    System(py, "CPython child", "Bridge + App.client")
   }
   Rel(app_dev, py, "handlers / hooks")
   Rel(ops, child, "admin reads")
   Rel(parent, os, "spawn/signal/wait")
-  Rel(parent, child, "supervise children")
-  Rel(child, redis, "claim/renew/ack")
+  Rel(parent, child, "supervise")
+  Rel(child, redis, "claim/renew/finish via adapter")
   Rel(child, py, "dispatch / outcomes")
-  Rel(py, redis, "business lock via runtime API")
 ```
 
-## Ports & adapters
-
-```mermaid
-flowchart LR
-  subgraph core [crates/core]
-    SM[State machines]
-    Pol[Policy]
-    QP[QueuePort]
-    PP[ProcessPort]
-    BP[BridgePort]
-  end
-  subgraph adapters [adapters]
-    Apalis[backend/apalis]
-    Wx[supervisor/watchexec]
-    PyO3[python-bridge]
-  end
-  CLI[cli composition root] --> core
-  CLI --> adapters
-  Apalis -.implements.-> QP
-  Wx -.implements.-> PP
-  PyO3 -.implements.-> BP
-  SM --> QP
-  SM --> PP
-  SM --> BP
-  Pol --> PP
-```
-
-## Drain barrier (Tokio notify → wait)
+## Drain barrier (admission ≠ TaskTracker)
 
 ```mermaid
 sequenceDiagram
-  participant Adm as Admission
+  participant Gate as AdmissionGate
+  participant Backend as Queue adapter
   participant Tr as TaskTracker
-  participant Q as QueuePort
-  participant B as Bridge
-  Note over Adm,Tr: discover shutdown
-  Adm->>Adm: close admission
-  Adm->>Tr: close tracker (no new tasks)
-  par in-flight attempts
-    Q-->>Tr: Finishing ACK/retry still runs
-    B-->>Tr: handler may still finish
+  Note over Gate,Tr: 1 discover shutdown
+  Gate->>Gate: close admission
+  Backend->>Backend: pause/stop fetch loop
+  Note over Gate: 2 in-flight claim race: AcceptInflightAfterClose or Reject
+  Gate->>Tr: register accepted Attempts only
+  Tr->>Tr: tracker.close (no new tracked tasks)
+  par finishing work
+    Tr-->>Tr: handler + finish still run
   end
   Tr->>Tr: wait registered tasks
-  Note over Adm,Tr: then child exit → parent reap → escalate budgets
+  Note over Gate,Tr: hooks → child exit → parent reap → escalate
 ```
 
-## Attempt lifecycle
+## Attempt lifecycle (no early Terminal)
 
 ```mermaid
 stateDiagram-v2
   [*] --> Claimed
-  Claimed --> HandlerRunning
-  HandlerRunning --> HandlerFinished: bridge success/error
-  HandlerRunning --> LeaseLost
-  HandlerRunning --> Cancelled
-  HandlerRunning --> BridgeFailed
-  HandlerFinished --> Finishing: ack/retry/dead
-  Finishing --> Terminal
-  LeaseLost --> Terminal
-  Cancelled --> Terminal
-  BridgeFailed --> Terminal
+  Claimed --> HandlerRunning: StartHandler
+  HandlerRunning --> CancelRequested: RequestCancel
+  HandlerRunning --> OwnershipLostWhileRunning: LoseOwnership
+  HandlerRunning --> HandlerFinished: HandlerReturned
+  CancelRequested --> OwnershipLostWhileRunning: LoseOwnership
+  CancelRequested --> StoppingExecution: ConfirmExecutionStopped
+  CancelRequested --> HandlerFinished: HandlerReturned
+  OwnershipLostWhileRunning --> StoppingExecution: ConfirmExecutionStopped
+  OwnershipLostWhileRunning --> HandlerFinished: HandlerReturned
+  StoppingExecution --> Finishing: BeginFinish
+  HandlerFinished --> Finishing: BeginFinish
+  Finishing --> Terminal: FinishConfirmed
+  Finishing --> Terminal: FinishRejectedStale
+  Finishing --> Terminal: FinishUnconfirmed
 ```
