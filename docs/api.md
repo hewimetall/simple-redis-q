@@ -1,6 +1,6 @@
 # API
 
-These pages describe simple-q 1.1. The signatures below are the supported surface. `Config.from_env()` reads `SIMPLE_Q_*` only. An invalid value raises. There is no silent default.
+These pages describe simple-q 1.2. The signatures below are the supported surface. `Config.from_env()` reads `SIMPLE_Q_*` only. An invalid value raises. There is no silent default.
 
 ## `@actor`
 

@@ -1,6 +1,6 @@
 # Deploy
 
-These pages describe simple-q 1.1.
+These pages describe simple-q 1.2.
 
 Install `simple-q-runtime` and `simple-q-worker` on CPython 3.12, 3.13, 3.14, or 3.15 with the GIL, Linux x86_64 or aarch64, glibc 2.28 or newer (Ubuntu 22.04, RHEL 9). Free-threaded builds are not supported. The two packages can be different minor versions: the queue message is JSON, and the actor module is imported by the worker's interpreter. The supervisor command is `agent-worker`. In a virtualenv that command is a launcher: it reads `pyvenv.cfg`, adds the base interpreter's `lib` to `LD_LIBRARY_PATH`, and execs `agent-worker.bin`. That is how a uv-managed CPython finds `libpython3.X.so.1.0` for the minor in `version`. The ELF also has RPATH `$ORIGIN/../lib`. The virtualenv, including `pyvenv.cfg` and `bin`, must be writable only by the user that runs the service. The launcher trusts that tree. It forks children. Give the service a finite memory limit so the cgroup ratio backstop has a `memory.max` to read. Per-child RSS limits are optional and apply even when the ratio check is idle.
 

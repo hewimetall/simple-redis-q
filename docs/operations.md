@@ -1,6 +1,6 @@
 # Tracing and the admin board
 
-These pages describe simple-q 1.1.
+These pages describe simple-q 1.2.
 
 ## Tracing
 

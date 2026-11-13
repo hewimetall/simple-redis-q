@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0
 
 An idle worker fetches on `SIMPLE_Q_POLL_INTERVAL_MS` (default 500) through Apalis `poll_with_interval`. A task that arrives during that idle no longer waits for the heartbeat. The heartbeat, ack, retry, and orphan window are unchanged.
 

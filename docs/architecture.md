@@ -1,6 +1,6 @@
 # Architecture
 
-These pages describe simple-q 1.1.
+These pages describe simple-q 1.2.
 
 The containers inside simple-q are **Client**, **App**, **Config**, the **worker supervisor**, and **Redis**. Client sends. App runs the handler and the dead-letter hook. `Config.from_env` reads only `SIMPLE_Q_*`. The worker uses the Redis URL stored on the `App`'s `Client`. `agent-worker enqueue` and `agent-worker admin` read `REDIS_URL` themselves. `agent-worker info` uses the same client URL as `worker`. `SIMPLE_Q_APP` and `SIMPLE_Q_APP_FACTORY` are read by `worker` and `info`, not by `Config.from_env`. The factory variable enables a call only for `1`, `true`, `yes`, or `on`. In a virtualenv the `agent-worker` command is a launcher that execs `agent-worker.bin` after the dynamic linker can see `libpython3.X.so.1.0` for the minor in `pyvenv.cfg`. `HOSTNAME`, `BOARD_*`, `QUEUE`, `RUST_LOG`, and `DRAMATIQ_PROM_*` are read by the worker name, the board, the log filter, and the metrics process. The worker supervisor forks children, watches memory, and publishes its own Redis record. It does not take messages and it does not heartbeat as a queue worker. Redis holds the queue and that supervisor record.
 
