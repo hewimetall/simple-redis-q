@@ -94,7 +94,7 @@ jobs:
           PYO3_PYTHON: ${{ steps.setup-python.outputs.python-path }}
 
       - name: Snapshot tests
-        run: cargo test -p simple-q-runtime --test admin -- --test-threads=1
+        run: cargo test -p simple-q-runtime --test admin --test poll_interval -- --test-threads=1
         env:
           PYO3_PYTHON: ${{ steps.setup-python.outputs.python-path }}
 

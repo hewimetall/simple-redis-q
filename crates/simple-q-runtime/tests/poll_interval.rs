@@ -12,13 +12,15 @@ use simple_q_runtime::redis_api::{self, ConnectionManager};
 
 const REDIS_URL: &str = "redis://127.0.0.1:6379/15";
 
-fn redis(args: &[&str]) -> String {
-    let output = Command::new("redis-cli")
-        .args(["-n", "15"])
-        .args(args)
-        .output()
-        .expect("redis-cli");
-    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+async fn try_connect() -> Option<ConnectionManager> {
+    match tokio::time::timeout(Duration::from_secs(1), redis_api::connect(REDIS_URL)).await {
+        Ok(Ok(conn)) => Some(conn),
+        _ => None,
+    }
+}
+
+async fn connect() -> ConnectionManager {
+    try_connect().await.expect("redis on db 15")
 }
 
 fn job(queue: &str) -> Job {
@@ -42,7 +44,7 @@ fn job(queue: &str) -> Job {
     }
 }
 
-fn del_queue(queue: &str) {
+async fn del_queue(conn: &mut ConnectionManager, queue: &str) {
     for suffix in [
         "data",
         "active",
@@ -54,20 +56,25 @@ fn del_queue(queue: &str) {
         "workers",
         "inflight",
     ] {
-        let _ = redis(&["DEL", &format!("{queue}:{suffix}")]);
+        let _: redis::RedisResult<i64> = redis::cmd("DEL")
+            .arg(format!("{queue}:{suffix}"))
+            .query_async(conn)
+            .await;
     }
     for pattern in [
         format!("{queue}:meta:*"),
         format!("{queue}:inflight:*"),
         format!("{queue}:workers:metadata:*"),
     ] {
-        let listed = redis(&["KEYS", &pattern]);
-        if listed.is_empty() {
+        let keys: Vec<String> = redis::cmd("KEYS")
+            .arg(&pattern)
+            .query_async(conn)
+            .await
+            .unwrap_or_default();
+        if keys.is_empty() {
             continue;
         }
-        for key in listed.split_whitespace() {
-            let _ = redis(&["DEL", key]);
-        }
+        let _: redis::RedisResult<i64> = redis::cmd("DEL").arg(keys).query_async(conn).await;
     }
 }
 
@@ -79,29 +86,31 @@ fn settings(heartbeat_secs: u64, missed: u64, poll_ms: u64) -> Config {
     settings
 }
 
-async fn connect() -> ConnectionManager {
-    redis_api::connect(REDIS_URL).await.expect("redis on db 15")
-}
-
-fn workers(queue: &str) -> i64 {
-    redis(&["ZCARD", &format!("{queue}:workers")])
-        .parse()
+async fn workers(conn: &mut ConnectionManager, queue: &str) -> i64 {
+    redis::cmd("ZCARD")
+        .arg(format!("{queue}:workers"))
+        .query_async(conn)
+        .await
         .unwrap_or(0)
 }
 
-async fn wait_for_workers(queue: &str, want: i64) {
+async fn wait_for_workers(conn: &mut ConnectionManager, queue: &str, want: i64) {
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(10) {
-        if workers(queue) >= want {
+        if workers(conn, queue).await >= want {
             return;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    panic!("queue {queue} has {} workers", workers(queue));
+    panic!("queue {queue} has {} workers", workers(conn, queue).await);
 }
 
-fn info_number(section: &str, key: &str) -> f64 {
-    let text = redis(&["INFO", section]);
+async fn info_number(conn: &mut ConnectionManager, section: &str, key: &str) -> f64 {
+    let text: String = redis::cmd("INFO")
+        .arg(section)
+        .query_async(conn)
+        .await
+        .unwrap_or_default();
     for line in text.lines() {
         let Some(rest) = line.strip_prefix(&format!("{key}:")) else {
             continue;
@@ -114,12 +123,13 @@ fn info_number(section: &str, key: &str) -> f64 {
     0.0
 }
 
-fn script_calls() -> f64 {
-    info_number("commandstats", "cmdstat_eval") + info_number("commandstats", "cmdstat_evalsha")
+async fn script_calls(conn: &mut ConnectionManager) -> f64 {
+    info_number(conn, "commandstats", "cmdstat_eval").await
+        + info_number(conn, "commandstats", "cmdstat_evalsha").await
 }
 
-fn redis_cpu() -> f64 {
-    info_number("cpu", "used_cpu_user") + info_number("cpu", "used_cpu_sys")
+async fn redis_cpu(conn: &mut ConnectionManager) -> f64 {
+    info_number(conn, "cpu", "used_cpu_user").await + info_number(conn, "cpu", "used_cpu_sys").await
 }
 
 struct KillOnDrop(Option<Child>);
@@ -194,10 +204,12 @@ async fn poll_child_idles() {
 
 #[tokio::test]
 async fn one_task_after_idle_arrives_before_the_heartbeat() {
+    let Some(mut conn) = try_connect().await else {
+        return;
+    };
     let queue = format!("pollidle{}", std::process::id());
-    del_queue(&queue);
+    del_queue(&mut conn, &queue).await;
     let settings = settings(15, 4, 500);
-    let conn = connect().await;
     let storage = redis_api::worker_storage(conn.clone(), &queue, &settings).expect("storage");
     let seen = Arc::new(Mutex::new(None));
     let slot = seen.clone();
@@ -212,10 +224,9 @@ async fn one_task_after_idle_arrives_before_the_heartbeat() {
             }
         });
     let running = tokio::spawn(async move { worker.run().await });
-    wait_for_workers(&queue, 1).await;
+    wait_for_workers(&mut conn, &queue, 1).await;
     tokio::time::sleep(Duration::from_millis(700)).await;
 
-    let mut conn = conn;
     let job = job(&queue);
     let message_id = job.message_id.clone();
     let started = Instant::now();
@@ -239,15 +250,17 @@ async fn one_task_after_idle_arrives_before_the_heartbeat() {
         "pickup took {elapsed:?}; the heartbeat is 15s"
     );
     running.abort();
-    del_queue(&queue);
+    del_queue(&mut conn, &queue).await;
 }
 
 #[tokio::test]
 async fn a_batch_after_idle_is_drained_without_waiting_out_the_heartbeat() {
+    let Some(mut conn) = try_connect().await else {
+        return;
+    };
     let queue = format!("pollbatch{}", std::process::id());
-    del_queue(&queue);
+    del_queue(&mut conn, &queue).await;
     let settings = settings(15, 4, 500);
-    let conn = connect().await;
     let storage = redis_api::worker_storage(conn.clone(), &queue, &settings).expect("storage");
     let seen = Arc::new(Mutex::new(Vec::new()));
     let slot = seen.clone();
@@ -265,10 +278,9 @@ async fn a_batch_after_idle_is_drained_without_waiting_out_the_heartbeat() {
             }
         });
     let running = tokio::spawn(async move { worker.run().await });
-    wait_for_workers(&queue, 1).await;
+    wait_for_workers(&mut conn, &queue, 1).await;
     tokio::time::sleep(Duration::from_millis(700)).await;
 
-    let mut conn = conn;
     let started = Instant::now();
     for _ in 0..20 {
         redis_api::enqueue_job(&mut conn, &settings, job(&queue), None)
@@ -289,13 +301,16 @@ async fn a_batch_after_idle_is_drained_without_waiting_out_the_heartbeat() {
     assert_eq!(count, 20, "batch still short after {elapsed:?}");
     assert!(elapsed < deadline, "batch took {elapsed:?}");
     running.abort();
-    del_queue(&queue);
+    del_queue(&mut conn, &queue).await;
 }
 
 #[tokio::test]
 async fn sigkill_waits_for_the_orphan_window_then_the_poll() {
+    let Some(mut conn) = try_connect().await else {
+        return;
+    };
     let queue = format!("pollkill{}", std::process::id());
-    del_queue(&queue);
+    del_queue(&mut conn, &queue).await;
     let held = std::env::temp_dir().join(format!("{queue}.held"));
     let _ = std::fs::remove_file(&held);
     let settings = settings(2, 2, 200);
@@ -310,8 +325,7 @@ async fn sigkill_waits_for_the_orphan_window_then_the_poll() {
             ("SIMPLE_Q_POLL_INTERVAL_MS", "200"),
         ],
     )));
-    wait_for_workers(&queue, 1).await;
-    let mut conn = connect().await;
+    wait_for_workers(&mut conn, &queue, 1).await;
     let sent = job(&queue);
     let message_id = sent.message_id.clone();
     redis_api::enqueue_job(&mut conn, &settings, sent, None)
@@ -364,11 +378,14 @@ async fn sigkill_waits_for_the_orphan_window_then_the_poll() {
     assert!(elapsed < deadline, "redelivery took {elapsed:?}");
     running.abort();
     let _ = std::fs::remove_file(&held);
-    del_queue(&queue);
+    del_queue(&mut conn, &queue).await;
 }
 
 #[tokio::test]
 async fn idle_polls_are_measured_across_processes_and_queues() {
+    let Some(mut conn) = try_connect().await else {
+        return;
+    };
     let pid = std::process::id();
     let queues = [
         format!("pollpa{pid}"),
@@ -377,7 +394,7 @@ async fn idle_polls_are_measured_across_processes_and_queues() {
         format!("pollpd{pid}"),
     ];
     for queue in &queues {
-        del_queue(queue);
+        del_queue(&mut conn, queue).await;
     }
     let left = format!("{},{}", queues[0], queues[1]);
     let right = format!("{},{}", queues[2], queues[3]);
@@ -394,16 +411,16 @@ async fn idle_polls_are_measured_across_processes_and_queues() {
     let first = KillOnDrop(Some(spawn_harness("poll_child_idles", &left_env)));
     let second = KillOnDrop(Some(spawn_harness("poll_child_idles", &right_env)));
     for queue in &queues {
-        wait_for_workers(queue, 1).await;
+        wait_for_workers(&mut conn, queue, 1).await;
     }
     tokio::time::sleep(Duration::from_millis(700)).await;
 
-    let before_calls = script_calls();
-    let before_cpu = redis_cpu();
+    let before_calls = script_calls(&mut conn).await;
+    let before_cpu = redis_cpu(&mut conn).await;
     let window = Duration::from_secs(5);
     tokio::time::sleep(window).await;
-    let calls = script_calls() - before_calls;
-    let cpu = redis_cpu() - before_cpu;
+    let calls = script_calls(&mut conn).await - before_calls;
+    let cpu = redis_cpu(&mut conn).await - before_cpu;
     let per_sec = calls / window.as_secs_f64();
     println!(
         "POLL_MEASURE processes=2 queues=4 interval_ms=500 idle_secs=5 script_calls={calls:.0} scripts_per_sec={per_sec:.2} redis_cpu_seconds={cpu:.4}"
@@ -415,6 +432,6 @@ async fn idle_polls_are_measured_across_processes_and_queues() {
     drop(first);
     drop(second);
     for queue in &queues {
-        del_queue(queue);
+        del_queue(&mut conn, queue).await;
     }
 }
