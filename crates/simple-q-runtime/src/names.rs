@@ -15,6 +15,16 @@ pub const HEARTBEAT_INTERVAL_SECS: u64 = 15;
 pub const MISSED_HEARTBEATS: usize = 4;
 /// How often an idle worker asks Redis for a task. This is not the heartbeat.
 pub const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
+/// How often a child sends a Python ping. The lifecycle tick is what wakes it.
+pub const DEFAULT_PING_INTERVAL_MS: u64 = 2_000;
+/// Timeout of one `ping` stage. Scheduling and waiting each get this long.
+pub const DEFAULT_PING_TIMEOUT_MS: u64 = 3_000;
+/// How often the child wakes for drain and for a ping that is due.
+pub const DEFAULT_LIFECYCLE_INTERVAL_MS: u64 = 200;
+pub const DEFAULT_SWEEP_INTERVAL_SECS: u64 = 60;
+pub const DEFAULT_BATCH_SIZE: u64 = 1;
+pub const DEFAULT_IDEMPOTENCY_WAIT_MS: u64 = 20;
+pub const DEFAULT_IDEMPOTENCY_WAIT_MAX_MS: u64 = 5_000;
 pub const DEFAULT_TIME_LIMIT_MS: u64 = 30 * 60 * 1000;
 pub const DEFAULT_MIN_BACKOFF_MS: u64 = 15_000;
 pub const DEFAULT_MAX_BACKOFF_MS: u64 = 86_400_000 * 7;

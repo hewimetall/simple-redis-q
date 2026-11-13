@@ -162,6 +162,8 @@ async fn a_terminal_write_after_one_second_still_drops_the_key() {
             &unique_for_task,
             &mut stop,
             Duration::from_secs(10),
+            Duration::from_millis(20),
+            Duration::from_secs(5),
         )
         .await
     });
@@ -202,6 +204,8 @@ async fn shutdown_leaves_an_idempotency_key_that_is_not_terminal() {
         &unique,
         &mut stop,
         Duration::from_secs(30),
+        Duration::from_millis(20),
+        Duration::from_secs(5),
     )
     .await
     .expect("release");

@@ -4,6 +4,8 @@
 
 An idle worker fetches on `SIMPLE_Q_POLL_INTERVAL_MS` (default 500) through Apalis `poll_with_interval`. A task that arrives during that idle no longer waits for the heartbeat. The heartbeat, ack, retry, and orphan window are unchanged.
 
+Python ping interval and per-stage timeout, the lifecycle wake, the sweep interval and batch, the fetch batch size, and the idempotency wait are `SIMPLE_Q_*` settings. Omitted values stay 2000 ms, 3000 ms per ping stage, 200 ms, 60 s, 100, 1, 20 ms, and 5000 ms. `lock_tasks` stays on. Apalis `max_attempts` stays 1, because a retry is a new enqueue. The delivery-counter TTL follows `SIMPLE_Q_DEAD_TTL_SECS`. An omitted ping budget is 1860 seconds: the built-in 30 minute time limit plus 60 seconds, not each actor's `time_limit`.
+
 A soft memory signal skips a child that is inside a delivery. The supervisor keeps one anonymous memfd for its own lifetime, one `AtomicU32` per slot. The child maps that page after start, closes the descriptor, and counts each delivery. The parent stores 0 before it starts a child in that slot, so a digit left by `SIGKILL` does not mark the next child busy. A hard signal does not read the digit. On macOS there is no memfd, and a soft signal uses RSS only.
 
 ## 1.1.0

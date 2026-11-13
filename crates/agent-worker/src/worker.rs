@@ -329,7 +329,14 @@ async fn handle_job(
         state.shared.pool.pause_all();
     }
 
-    let deliveries = match redis_api::incr_delivery(&mut conn, &job.message_id, job.retries).await {
+    let deliveries = match redis_api::incr_delivery(
+        &mut conn,
+        &job.message_id,
+        job.retries,
+        state.shared.config.dead_ttl_secs,
+    )
+    .await
+    {
         Ok(value) => value,
         Err(error) => {
             tracing::error!(
@@ -494,6 +501,8 @@ fn release_unique_key_after_ack(shared: &Shared, job: &Job, task_id: &str) {
     let task_id = task_id.to_owned();
     let mut conn = shared.redis.clone();
     let budget = std::time::Duration::from_secs(shared.config.unique_ttl_secs.max(1));
+    let wait = shared.config.idempotency_wait();
+    let wait_max = shared.config.idempotency_wait_max();
     let mut stop = shared.stop_meta.subscribe();
     let handle = tokio::spawn(async move {
         // The handler returns before Apalis writes done or dead. Keep checking
@@ -506,6 +515,8 @@ fn release_unique_key_after_ack(shared: &Shared, job: &Job, task_id: &str) {
             &unique_key,
             &mut stop,
             budget,
+            wait,
+            wait_max,
         )
         .await
         {

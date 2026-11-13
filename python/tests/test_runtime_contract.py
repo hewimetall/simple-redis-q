@@ -913,6 +913,14 @@ def test_config_from_env_rejects_bad_values(monkeypatch):
         "SIMPLE_Q_HEARTBEAT_SECS",
         "SIMPLE_Q_MISSED_HEARTBEATS",
         "SIMPLE_Q_POLL_INTERVAL_MS",
+        "SIMPLE_Q_PING_INTERVAL_MS",
+        "SIMPLE_Q_PING_TIMEOUT_MS",
+        "SIMPLE_Q_LIFECYCLE_INTERVAL_MS",
+        "SIMPLE_Q_SWEEP_INTERVAL_SECS",
+        "SIMPLE_Q_SWEEP_BATCH",
+        "SIMPLE_Q_BATCH_SIZE",
+        "SIMPLE_Q_IDEMPOTENCY_WAIT_MS",
+        "SIMPLE_Q_IDEMPOTENCY_WAIT_MAX_MS",
         "SIMPLE_Q_PING_BUDGET_SECS",
         "SIMPLE_Q_DONE_TTL_SECS",
         "SIMPLE_Q_DEAD_TTL_SECS",
@@ -929,6 +937,15 @@ def test_config_from_env_rejects_bad_values(monkeypatch):
     assert config.heartbeat_secs == 15
     assert config.missed_heartbeats == 4
     assert config.poll_interval_ms == 500
+    assert config.ping_interval_ms == 2000
+    assert config.ping_timeout_ms == 3000
+    assert config.lifecycle_interval_ms == 200
+    assert config.sweep_interval_secs == 60
+    assert config.sweep_batch == 100
+    assert config.batch_size == 1
+    assert config.idempotency_wait_ms == 20
+    assert config.idempotency_wait_max_ms == 5000
+    assert config.ping_budget_secs == 1860
     assert config.unique_ttl_secs == 86400
     assert config.max_deliveries == 5
     assert config.memory_soft_ratio == pytest.approx(0.80)

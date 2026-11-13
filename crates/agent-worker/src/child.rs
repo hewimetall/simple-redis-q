@@ -6,7 +6,6 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use anyhow::Result;
 use tokio::runtime::Builder;
@@ -15,7 +14,6 @@ use tokio::sync::watch;
 
 use simple_q_runtime::cleanup::sweep_queue;
 use simple_q_runtime::lock;
-use simple_q_runtime::names;
 use simple_q_runtime::ping::PingWatch;
 use simple_q_runtime::python::adopt_runtime;
 use simple_q_runtime::registry;
@@ -23,9 +21,6 @@ use simple_q_runtime::registry;
 use crate::bridge;
 use crate::runtime;
 use crate::worker::{Shared, WorkerPool, run};
-
-const PING_EVERY: Duration = Duration::from_secs(2);
-const PING_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub fn run_child(
     app: String,
@@ -76,12 +71,20 @@ pub fn run_child(
 
         let terminate = signal(SignalKind::terminate())?;
         let user = signal(SignalKind::user_defined1())?;
-        let lifecycle = lifecycle(shared.clone(), terminate, user, config.ping_budget());
+        let lifecycle = lifecycle(
+            shared.clone(),
+            terminate,
+            user,
+            config.ping_budget(),
+            config.ping_interval(),
+            config.ping_timeout(),
+            config.lifecycle_interval(),
+        );
         let sweep_queues = queues.clone();
         let sweep_redis = shared.redis.clone();
         let sweep_config = config.clone();
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(Duration::from_secs(60));
+            let mut tick = tokio::time::interval(sweep_config.sweep_interval());
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tick.tick().await;
@@ -96,7 +99,7 @@ pub fn run_child(
                         now,
                         sweep_config.done_ttl_secs,
                         sweep_config.dead_ttl_secs,
-                        names::SWEEP_BATCH,
+                        sweep_config.sweep_batch_size(),
                     )
                     .await
                     {
@@ -142,6 +145,9 @@ async fn lifecycle(
     mut terminate: tokio::signal::unix::Signal,
     mut user: tokio::signal::unix::Signal,
     ping_budget: std::time::Duration,
+    ping_interval: std::time::Duration,
+    ping_timeout: std::time::Duration,
+    lifecycle_interval: std::time::Duration,
 ) -> Result<i32> {
     let mut watch = PingWatch::new(ping_budget);
     let mut next_ping = tokio::time::Instant::now();
@@ -163,10 +169,10 @@ async fn lifecycle(
                 shared.shutdown.store(true, Ordering::SeqCst);
                 shared.pool.pause_all();
             }
-            _ = tokio::time::sleep(Duration::from_millis(200)) => {
+            _ = tokio::time::sleep(lifecycle_interval) => {
                 if tokio::time::Instant::now() >= next_ping {
-                    next_ping = tokio::time::Instant::now() + PING_EVERY;
-                    let ok = bridge::ping(PING_TIMEOUT).await;
+                    next_ping = tokio::time::Instant::now() + ping_interval;
+                    let ok = bridge::ping(ping_timeout).await;
                     let budget_elapsed = watch.observe(ok, std::time::Instant::now());
                     // A missed ping leaves renewal running. The budget is what stops it.
                     lock::note_ping(ok, budget_elapsed);

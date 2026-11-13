@@ -12,7 +12,7 @@ pub use redis::aio::ConnectionManager;
 
 use crate::config::Config;
 use crate::job::Job;
-use crate::names::{self, WORKER_NAME_PREFIX, validate_queue};
+use crate::names::{WORKER_NAME_PREFIX, validate_queue};
 
 pub async fn connect(url: &str) -> Result<ConnectionManager> {
     connect_redis(url.to_owned())
@@ -26,7 +26,7 @@ pub fn queue_config(queue: &str, settings: &Config) -> Result<QueueConfig> {
     // message inflight. Finished payloads are removed by the sweeper instead.
     let config = QueueConfig::default()
         .queue(queue)
-        .batch_size(1)
+        .batch_size(settings.fetch_batch_size())
         .lock_tasks(true)
         .heartbeat_interval(Duration::from_secs(settings.heartbeat_secs))
         .missed_heartbeats(settings.missed_heartbeats as usize)
@@ -304,13 +304,9 @@ pub async fn release_idempotency(
     Ok(())
 }
 
-/// First pause before checking `done` or `dead`, then double, capped at 5 seconds.
-pub fn next_idempotency_wait(current: Duration) -> Duration {
-    const MAX_WAIT: Duration = Duration::from_secs(5);
-    current
-        .saturating_mul(2)
-        .min(MAX_WAIT)
-        .max(Duration::from_millis(20))
+/// Double the pause, then clamp it to `floor..=ceiling`.
+pub fn next_idempotency_wait(current: Duration, floor: Duration, ceiling: Duration) -> Duration {
+    current.saturating_mul(2).min(ceiling).max(floor)
 }
 
 /// Delete `{queue}:idempotency:{unique_key}` once `task_id` is in `done` or `dead`.
@@ -326,12 +322,14 @@ pub async fn release_idempotency_when_terminal(
     unique_key: &str,
     stop: &mut tokio::sync::watch::Receiver<bool>,
     budget: Duration,
+    wait: Duration,
+    wait_max: Duration,
 ) -> Result<bool> {
     if unique_key.is_empty() {
         return Ok(true);
     }
     let started = std::time::Instant::now();
-    let mut delay = Duration::from_millis(20);
+    let mut delay = wait;
     loop {
         if !idempotency_stop(stop) {
             tokio::select! {
@@ -351,7 +349,7 @@ pub async fn release_idempotency_when_terminal(
             Err(error) if finished => return Err(error),
             Ok(false) | Err(_) => {}
         }
-        delay = next_idempotency_wait(delay);
+        delay = next_idempotency_wait(delay, wait, wait_max);
     }
 }
 
@@ -390,18 +388,22 @@ fn delivery_counter() -> &'static redis::Script {
 
 /// Count a worker delivery. Orphan requeue does not call this.
 ///
-/// The TTL is only the crash backstop. A finished ack deletes the key.
-/// Poison and dead keep it, so a later delivery of the same attempt still
-/// sees a count above `max_deliveries`.
+/// `ttl_secs` is `SIMPLE_Q_DEAD_TTL_SECS`. It is only the crash backstop.
+/// A finished ack deletes the key. Poison and dead keep it, so a later
+/// delivery of the same attempt still sees a count above `max_deliveries`.
+/// Zero is stored as one second: Redis deletes a key on `EXPIRE 0`.
 pub async fn incr_delivery(
     conn: &mut ConnectionManager,
     message_id: &str,
     retries: u32,
+    ttl_secs: u64,
 ) -> Result<u64> {
     let key = delivery_key(message_id, retries);
+    // Redis deletes a key on EXPIRE 0. A sweeper TTL of 0 still leaves the counter.
+    let ttl_secs = ttl_secs.max(1);
     let value: i64 = delivery_counter()
         .key(&key)
-        .arg(names::DEFAULT_DEAD_TTL_SECS)
+        .arg(ttl_secs)
         .invoke_async(conn)
         .await
         .context("failed to count a delivery")?;
@@ -429,18 +431,17 @@ mod tests {
 
     #[test]
     fn the_idempotency_wait_doubles_until_five_seconds() {
+        let floor = Duration::from_millis(20);
+        let ceiling = Duration::from_secs(5);
         assert_eq!(
-            next_idempotency_wait(Duration::from_millis(20)),
+            next_idempotency_wait(floor, floor, ceiling),
             Duration::from_millis(40)
         );
         assert_eq!(
-            next_idempotency_wait(Duration::from_secs(3)),
-            Duration::from_secs(5)
+            next_idempotency_wait(Duration::from_secs(3), floor, ceiling),
+            ceiling
         );
-        assert_eq!(
-            next_idempotency_wait(Duration::from_secs(5)),
-            Duration::from_secs(5)
-        );
+        assert_eq!(next_idempotency_wait(ceiling, floor, ceiling), ceiling);
     }
 
     #[test]

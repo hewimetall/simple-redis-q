@@ -7,9 +7,12 @@ use pyo3::prelude::*;
 use pyo3::types::PyType;
 
 use crate::names::{
-    DEFAULT_DEAD_TTL_SECS, DEFAULT_DONE_TTL_SECS, DEFAULT_MAX_DELIVERIES, DEFAULT_POLL_INTERVAL_MS,
-    DEFAULT_TIME_LIMIT_MS, DEFAULT_UNIQUE_TTL_SECS, HEARTBEAT_INTERVAL_SECS, MISSED_HEARTBEATS,
-    PING_MARGIN_SECS,
+    DEFAULT_BATCH_SIZE, DEFAULT_DEAD_TTL_SECS, DEFAULT_DONE_TTL_SECS,
+    DEFAULT_IDEMPOTENCY_WAIT_MAX_MS, DEFAULT_IDEMPOTENCY_WAIT_MS, DEFAULT_LIFECYCLE_INTERVAL_MS,
+    DEFAULT_MAX_DELIVERIES, DEFAULT_PING_INTERVAL_MS, DEFAULT_PING_TIMEOUT_MS,
+    DEFAULT_POLL_INTERVAL_MS, DEFAULT_SWEEP_INTERVAL_SECS, DEFAULT_TIME_LIMIT_MS,
+    DEFAULT_UNIQUE_TTL_SECS, HEARTBEAT_INTERVAL_SECS, MISSED_HEARTBEATS, PING_MARGIN_SECS,
+    SWEEP_BATCH,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -46,6 +49,30 @@ pub struct Config {
     /// Milliseconds between idle fetches. Independent of `heartbeat_secs`.
     #[pyo3(get)]
     pub poll_interval_ms: u64,
+    /// Milliseconds between Python pings. The lifecycle tick is the wake-up.
+    #[pyo3(get)]
+    pub ping_interval_ms: u64,
+    /// Milliseconds for one stage of `ping`: schedule the callback, then wait for it.
+    #[pyo3(get)]
+    pub ping_timeout_ms: u64,
+    /// Milliseconds between lifecycle wakes. Drain and a due ping are noticed here.
+    #[pyo3(get)]
+    pub lifecycle_interval_ms: u64,
+    /// Seconds between sweeps of done and dead records.
+    #[pyo3(get)]
+    pub sweep_interval_secs: u64,
+    /// Records removed in one sweep cursor step.
+    #[pyo3(get)]
+    pub sweep_batch: u64,
+    /// Tasks fetched in one Redis read. Ack and retry stay on `lock_tasks` and re-enqueue.
+    #[pyo3(get)]
+    pub batch_size: u64,
+    /// First pause before the next idempotency terminal check.
+    #[pyo3(get)]
+    pub idempotency_wait_ms: u64,
+    /// Cap of that pause. The pause doubles until it reaches this.
+    #[pyo3(get)]
+    pub idempotency_wait_max_ms: u64,
     #[pyo3(get)]
     pub ping_budget_secs: u64,
     #[pyo3(get)]
@@ -72,6 +99,14 @@ impl Config {
             heartbeat_secs: HEARTBEAT_INTERVAL_SECS,
             missed_heartbeats: MISSED_HEARTBEATS as u64,
             poll_interval_ms: DEFAULT_POLL_INTERVAL_MS,
+            ping_interval_ms: DEFAULT_PING_INTERVAL_MS,
+            ping_timeout_ms: DEFAULT_PING_TIMEOUT_MS,
+            lifecycle_interval_ms: DEFAULT_LIFECYCLE_INTERVAL_MS,
+            sweep_interval_secs: DEFAULT_SWEEP_INTERVAL_SECS,
+            sweep_batch: SWEEP_BATCH as u64,
+            batch_size: DEFAULT_BATCH_SIZE,
+            idempotency_wait_ms: DEFAULT_IDEMPOTENCY_WAIT_MS,
+            idempotency_wait_max_ms: DEFAULT_IDEMPOTENCY_WAIT_MAX_MS,
             ping_budget_secs: DEFAULT_TIME_LIMIT_MS / 1000 + PING_MARGIN_SECS,
             done_ttl_secs: DEFAULT_DONE_TTL_SECS,
             dead_ttl_secs: DEFAULT_DEAD_TTL_SECS,
@@ -94,6 +129,41 @@ impl Config {
         )?;
         let poll_interval_ms =
             read_u64("SIMPLE_Q_POLL_INTERVAL_MS", defaults.poll_interval_ms, true)?;
+        let ping_interval_ms =
+            read_u64("SIMPLE_Q_PING_INTERVAL_MS", defaults.ping_interval_ms, true)?;
+        let ping_timeout_ms = read_u64("SIMPLE_Q_PING_TIMEOUT_MS", defaults.ping_timeout_ms, true)?;
+        let lifecycle_interval_ms = read_u64(
+            "SIMPLE_Q_LIFECYCLE_INTERVAL_MS",
+            defaults.lifecycle_interval_ms,
+            true,
+        )?;
+        let sweep_interval_secs = read_u64(
+            "SIMPLE_Q_SWEEP_INTERVAL_SECS",
+            defaults.sweep_interval_secs,
+            true,
+        )?;
+        let sweep_batch = read_u64("SIMPLE_Q_SWEEP_BATCH", defaults.sweep_batch, true)?;
+        let batch_size = read_u64("SIMPLE_Q_BATCH_SIZE", defaults.batch_size, true)?;
+        let idempotency_wait_ms = read_u64(
+            "SIMPLE_Q_IDEMPOTENCY_WAIT_MS",
+            defaults.idempotency_wait_ms,
+            true,
+        )?;
+        let idempotency_wait_max_ms = read_u64(
+            "SIMPLE_Q_IDEMPOTENCY_WAIT_MAX_MS",
+            defaults.idempotency_wait_max_ms,
+            true,
+        )?;
+        if idempotency_wait_max_ms < idempotency_wait_ms {
+            return Err(ConfigError::new(
+                "SIMPLE_Q_IDEMPOTENCY_WAIT_MAX_MS must be at least SIMPLE_Q_IDEMPOTENCY_WAIT_MS",
+            ));
+        }
+        if usize::try_from(sweep_batch).is_err() || usize::try_from(batch_size).is_err() {
+            return Err(ConfigError::new(
+                "SIMPLE_Q_SWEEP_BATCH or SIMPLE_Q_BATCH_SIZE is out of range",
+            ));
+        }
         let ping_budget_secs =
             read_u64("SIMPLE_Q_PING_BUDGET_SECS", defaults.ping_budget_secs, true)?;
         let done_ttl_secs = read_u64("SIMPLE_Q_DONE_TTL_SECS", defaults.done_ttl_secs, false)?;
@@ -128,6 +198,14 @@ impl Config {
             heartbeat_secs,
             missed_heartbeats,
             poll_interval_ms,
+            ping_interval_ms,
+            ping_timeout_ms,
+            lifecycle_interval_ms,
+            sweep_interval_secs,
+            sweep_batch,
+            batch_size,
+            idempotency_wait_ms,
+            idempotency_wait_max_ms,
             ping_budget_secs,
             done_ttl_secs,
             dead_ttl_secs,
@@ -161,6 +239,39 @@ impl Config {
     /// Idle fetch period. The worker heartbeat stays on `heartbeat_secs`.
     pub fn poll_interval(&self) -> Duration {
         Duration::from_millis(self.poll_interval_ms)
+    }
+
+    pub fn ping_interval(&self) -> Duration {
+        Duration::from_millis(self.ping_interval_ms)
+    }
+
+    /// One stage of `ping`. Scheduling and the callback wait each use this.
+    pub fn ping_timeout(&self) -> Duration {
+        Duration::from_millis(self.ping_timeout_ms)
+    }
+
+    pub fn lifecycle_interval(&self) -> Duration {
+        Duration::from_millis(self.lifecycle_interval_ms)
+    }
+
+    pub fn sweep_interval(&self) -> Duration {
+        Duration::from_secs(self.sweep_interval_secs)
+    }
+
+    pub fn sweep_batch_size(&self) -> usize {
+        self.sweep_batch as usize
+    }
+
+    pub fn fetch_batch_size(&self) -> usize {
+        self.batch_size as usize
+    }
+
+    pub fn idempotency_wait(&self) -> Duration {
+        Duration::from_millis(self.idempotency_wait_ms)
+    }
+
+    pub fn idempotency_wait_max(&self) -> Duration {
+        Duration::from_millis(self.idempotency_wait_max_ms)
     }
 }
 
@@ -304,6 +415,14 @@ mod tests {
             "SIMPLE_Q_HEARTBEAT_SECS",
             "SIMPLE_Q_MISSED_HEARTBEATS",
             "SIMPLE_Q_POLL_INTERVAL_MS",
+            "SIMPLE_Q_PING_INTERVAL_MS",
+            "SIMPLE_Q_PING_TIMEOUT_MS",
+            "SIMPLE_Q_LIFECYCLE_INTERVAL_MS",
+            "SIMPLE_Q_SWEEP_INTERVAL_SECS",
+            "SIMPLE_Q_SWEEP_BATCH",
+            "SIMPLE_Q_BATCH_SIZE",
+            "SIMPLE_Q_IDEMPOTENCY_WAIT_MS",
+            "SIMPLE_Q_IDEMPOTENCY_WAIT_MAX_MS",
             "SIMPLE_Q_PING_BUDGET_SECS",
             "SIMPLE_Q_DONE_TTL_SECS",
             "SIMPLE_Q_DEAD_TTL_SECS",
@@ -326,6 +445,15 @@ mod tests {
         assert_eq!(config.heartbeat_secs, 15);
         assert_eq!(config.missed_heartbeats, 4);
         assert_eq!(config.poll_interval_ms, 500);
+        assert_eq!(config.ping_interval_ms, 2_000);
+        assert_eq!(config.ping_timeout_ms, 3_000);
+        assert_eq!(config.lifecycle_interval_ms, 200);
+        assert_eq!(config.sweep_interval_secs, 60);
+        assert_eq!(config.sweep_batch, 100);
+        assert_eq!(config.batch_size, 1);
+        assert_eq!(config.idempotency_wait_ms, 20);
+        assert_eq!(config.idempotency_wait_max_ms, 5_000);
+        assert_eq!(config.ping_budget_secs, 1_860);
         assert_eq!(config.unique_ttl_secs, 86_400);
         assert!(config.unique_ttl_secs > 0);
         assert!(config.memory_soft_ratio < config.memory_hard_ratio);
@@ -349,6 +477,15 @@ mod tests {
             let _poll = EnvGuard::set("SIMPLE_Q_POLL_INTERVAL_MS", "0");
             let error = Config::from_env().unwrap_err().to_string();
             assert!(error.contains("SIMPLE_Q_POLL_INTERVAL_MS"), "{error}");
+        }
+        {
+            let _wait = EnvGuard::set("SIMPLE_Q_IDEMPOTENCY_WAIT_MS", "1000");
+            let _cap = EnvGuard::set("SIMPLE_Q_IDEMPOTENCY_WAIT_MAX_MS", "100");
+            let error = Config::from_env().unwrap_err().to_string();
+            assert!(
+                error.contains("SIMPLE_Q_IDEMPOTENCY_WAIT_MAX_MS"),
+                "{error}"
+            );
         }
         {
             let _ratio = EnvGuard::set("SIMPLE_Q_MEMORY_SOFT_RATIO", "1.5");
