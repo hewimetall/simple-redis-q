@@ -912,6 +912,7 @@ def test_config_from_env_rejects_bad_values(monkeypatch):
     names = [
         "SIMPLE_Q_HEARTBEAT_SECS",
         "SIMPLE_Q_MISSED_HEARTBEATS",
+        "SIMPLE_Q_POLL_INTERVAL_MS",
         "SIMPLE_Q_PING_BUDGET_SECS",
         "SIMPLE_Q_DONE_TTL_SECS",
         "SIMPLE_Q_DEAD_TTL_SECS",
@@ -927,6 +928,7 @@ def test_config_from_env_rejects_bad_values(monkeypatch):
     config = Config.from_env()
     assert config.heartbeat_secs == 15
     assert config.missed_heartbeats == 4
+    assert config.poll_interval_ms == 500
     assert config.unique_ttl_secs == 86400
     assert config.max_deliveries == 5
     assert config.memory_soft_ratio == pytest.approx(0.80)

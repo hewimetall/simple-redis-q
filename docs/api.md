@@ -196,6 +196,7 @@ A middleware class registers the hooks in `install(client, app)`. The running ex
 class Config:
     heartbeat_secs: int
     missed_heartbeats: int
+    poll_interval_ms: int
     ping_budget_secs: int
     done_ttl_secs: int
     dead_ttl_secs: int

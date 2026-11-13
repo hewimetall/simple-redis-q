@@ -13,6 +13,8 @@ pub const DEFAULT_QUEUE: &str = "default";
 pub const WORKER_NAME_PREFIX: &str = "agent-worker";
 pub const HEARTBEAT_INTERVAL_SECS: u64 = 15;
 pub const MISSED_HEARTBEATS: usize = 4;
+/// How often an idle worker asks Redis for a task. This is not the heartbeat.
+pub const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
 pub const DEFAULT_TIME_LIMIT_MS: u64 = 30 * 60 * 1000;
 pub const DEFAULT_MIN_BACKOFF_MS: u64 = 15_000;
 pub const DEFAULT_MAX_BACKOFF_MS: u64 = 86_400_000 * 7;

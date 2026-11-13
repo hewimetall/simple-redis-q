@@ -17,7 +17,6 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use apalis::prelude::*;
-use apalis_redis::RedisStorage;
 use simple_q_runtime::redis_api::ConnectionManager;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -30,7 +29,7 @@ use simple_q_runtime::cleanup::delete_worker_metadata;
 use simple_q_runtime::config::Config;
 use simple_q_runtime::ids::worker_name;
 use simple_q_runtime::job::{Decision, Job, decide};
-use simple_q_runtime::redis_api::{self, queue_config};
+use simple_q_runtime::redis_api;
 use simple_q_runtime::registry;
 
 #[derive(Clone)]
@@ -135,8 +134,7 @@ pub async fn run(queues: Vec<String>, concurrency: usize, shared: Shared) -> Res
     let mut monitor = Monitor::new();
 
     for queue in queues {
-        let backend = RedisStorage::<Job>::new(shared.redis.clone())
-            .with_config(queue_config(&queue, &shared.config)?);
+        let backend = redis_api::worker_storage(shared.redis.clone(), &queue, &shared.config)?;
         let state = QueueState {
             shared: shared.clone(),
         };

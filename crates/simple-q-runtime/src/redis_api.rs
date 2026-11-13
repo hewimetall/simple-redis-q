@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use apalis::prelude::{TaskBuilder, TaskSink};
+use apalis::prelude::{BackendExt, IntervalStrategy, PollWith, TaskBuilder, TaskSink};
 use apalis_redis::{Config as QueueConfig, RedisStorage, connect as connect_redis, queries};
 pub use redis::aio::ConnectionManager;
 
@@ -37,6 +37,19 @@ pub fn queue_config(queue: &str, settings: &Config) -> Result<QueueConfig> {
         settings.orphan_window_secs()
     );
     Ok(config)
+}
+
+/// The worker backend. Heartbeat, ack, and orphan recovery stay on `queue_config`.
+/// `poll_with_interval` only wakes an empty fetch. It does not publish, subscribe,
+/// or replace the Redis transport.
+pub fn worker_storage(
+    conn: ConnectionManager,
+    queue: &str,
+    settings: &Config,
+) -> Result<PollWith<RedisStorage<Job, ConnectionManager>, IntervalStrategy>> {
+    Ok(RedisStorage::new(conn)
+        .with_config(queue_config(queue, settings)?)
+        .poll_with_interval(settings.poll_interval()))
 }
 
 /// Queue encoded in a worker name.

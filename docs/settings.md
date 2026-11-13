@@ -18,6 +18,7 @@ The child-memory counters `simple_q_child_memory_drains_total` and `simple_q_chi
 | --- | --- | --- |
 | `SIMPLE_Q_HEARTBEAT_SECS` | `15` | Seconds between worker heartbeats. Must be a positive integer. |
 | `SIMPLE_Q_MISSED_HEARTBEATS` | `4` | Missed heartbeats before a worker is not alive. The window is this value times the heartbeat. The default window is 60 seconds. |
+| `SIMPLE_Q_POLL_INTERVAL_MS` | `500` | Milliseconds between idle fetches. Must be a positive integer. This does not change the heartbeat or the orphan window. |
 | `SIMPLE_Q_PING_BUDGET_SECS` | time limit + 60s | How long the Python loop may stay silent before the child exits 2. The default time limit is 30 minutes, so the omitted budget is 1860 seconds. A positive integer replaces that budget. |
 | `SIMPLE_Q_UNIQUE_TTL_SECS` | `86400` | How long a first send may hold `unique_key`. Must be a positive integer. Zero is not a TTL. |
 | `SIMPLE_Q_MAX_DELIVERIES` | `5` | Poison when `deliveries` is greater than this. The delivery that lands on the limit still runs. Must be a positive integer. |

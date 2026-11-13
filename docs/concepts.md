@@ -14,6 +14,8 @@ The worker name has the shape `agent-worker.{queue}.{hostname}.{pid}.{suffix}`. 
 
 While any worker for the queue is inside the window, its heartbeat asks Redis to put abandoned inflight messages back on the queue. That requeue does not increment the delivery counter. The next time a worker starts the attempt, it does. If no worker for the queue is heartbeating, inflight messages stay where they are.
 
+An idle worker asks Redis for a task on its own timer, `SIMPLE_Q_POLL_INTERVAL_MS`, default 500. That timer is Apalis `poll_with_interval`. It does not change the heartbeat, the ack, or the orphan window. A task that arrives while the worker is idle waits for the rest of this interval. It does not wait for the next heartbeat.
+
 A child pings the Python loop every 2 seconds with a 3 second timeout. `PingWatch` exits the child only after the loop has stayed silent for the whole ping budget. The budget is the actor time limit plus 60 seconds unless `SIMPLE_Q_PING_BUDGET_SECS` sets it. The default time limit is 30 minutes, so the default budget is 1860 seconds. One minute of silence does not exhaust that budget, and it does not stop renewal of a business lock. A Redis error while extending the lock is retried on the next period. A successful ping clears the silence clock. When the budget elapses, the child stops renewing business locks, asks the running tasks to cancel, and exits 2. Cancelling `dispatch` while the unlock is in progress still deletes the key. Inflight messages are left for another worker. Exit 2 does not flush spans.
 
 The child ignores `SIGTERM`. The supervisor owns process recycling.

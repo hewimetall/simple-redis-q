@@ -7,8 +7,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyType;
 
 use crate::names::{
-    DEFAULT_DEAD_TTL_SECS, DEFAULT_DONE_TTL_SECS, DEFAULT_MAX_DELIVERIES, DEFAULT_TIME_LIMIT_MS,
-    DEFAULT_UNIQUE_TTL_SECS, HEARTBEAT_INTERVAL_SECS, MISSED_HEARTBEATS, PING_MARGIN_SECS,
+    DEFAULT_DEAD_TTL_SECS, DEFAULT_DONE_TTL_SECS, DEFAULT_MAX_DELIVERIES, DEFAULT_POLL_INTERVAL_MS,
+    DEFAULT_TIME_LIMIT_MS, DEFAULT_UNIQUE_TTL_SECS, HEARTBEAT_INTERVAL_SECS, MISSED_HEARTBEATS,
+    PING_MARGIN_SECS,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +43,9 @@ pub struct Config {
     pub heartbeat_secs: u64,
     #[pyo3(get)]
     pub missed_heartbeats: u64,
+    /// Milliseconds between idle fetches. Independent of `heartbeat_secs`.
+    #[pyo3(get)]
+    pub poll_interval_ms: u64,
     #[pyo3(get)]
     pub ping_budget_secs: u64,
     #[pyo3(get)]
@@ -67,6 +71,7 @@ impl Config {
         Self {
             heartbeat_secs: HEARTBEAT_INTERVAL_SECS,
             missed_heartbeats: MISSED_HEARTBEATS as u64,
+            poll_interval_ms: DEFAULT_POLL_INTERVAL_MS,
             ping_budget_secs: DEFAULT_TIME_LIMIT_MS / 1000 + PING_MARGIN_SECS,
             done_ttl_secs: DEFAULT_DONE_TTL_SECS,
             dead_ttl_secs: DEFAULT_DEAD_TTL_SECS,
@@ -82,18 +87,29 @@ impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
         let defaults = Self::defaults();
         let heartbeat_secs = read_u64("SIMPLE_Q_HEARTBEAT_SECS", defaults.heartbeat_secs, true)?;
-        let missed_heartbeats =
-            read_u64("SIMPLE_Q_MISSED_HEARTBEATS", defaults.missed_heartbeats, true)?;
+        let missed_heartbeats = read_u64(
+            "SIMPLE_Q_MISSED_HEARTBEATS",
+            defaults.missed_heartbeats,
+            true,
+        )?;
+        let poll_interval_ms =
+            read_u64("SIMPLE_Q_POLL_INTERVAL_MS", defaults.poll_interval_ms, true)?;
         let ping_budget_secs =
             read_u64("SIMPLE_Q_PING_BUDGET_SECS", defaults.ping_budget_secs, true)?;
         let done_ttl_secs = read_u64("SIMPLE_Q_DONE_TTL_SECS", defaults.done_ttl_secs, false)?;
         let dead_ttl_secs = read_u64("SIMPLE_Q_DEAD_TTL_SECS", defaults.dead_ttl_secs, false)?;
         let unique_ttl_secs = read_u64("SIMPLE_Q_UNIQUE_TTL_SECS", defaults.unique_ttl_secs, true)?;
-        let max_deliveries = read_u64("SIMPLE_Q_MAX_DELIVERIES", u64::from(defaults.max_deliveries), true)?;
+        let max_deliveries = read_u64(
+            "SIMPLE_Q_MAX_DELIVERIES",
+            u64::from(defaults.max_deliveries),
+            true,
+        )?;
         let max_deliveries = u32::try_from(max_deliveries)
             .map_err(|_| ConfigError::new("SIMPLE_Q_MAX_DELIVERIES is out of range"))?;
-        let memory_soft_ratio = read_ratio("SIMPLE_Q_MEMORY_SOFT_RATIO", defaults.memory_soft_ratio)?;
-        let memory_hard_ratio = read_ratio("SIMPLE_Q_MEMORY_HARD_RATIO", defaults.memory_hard_ratio)?;
+        let memory_soft_ratio =
+            read_ratio("SIMPLE_Q_MEMORY_SOFT_RATIO", defaults.memory_soft_ratio)?;
+        let memory_hard_ratio =
+            read_ratio("SIMPLE_Q_MEMORY_HARD_RATIO", defaults.memory_hard_ratio)?;
         if memory_soft_ratio >= memory_hard_ratio {
             return Err(ConfigError::new(
                 "SIMPLE_Q_MEMORY_SOFT_RATIO must be below SIMPLE_Q_MEMORY_HARD_RATIO",
@@ -111,6 +127,7 @@ impl Config {
         Ok(Self {
             heartbeat_secs,
             missed_heartbeats,
+            poll_interval_ms,
             ping_budget_secs,
             done_ttl_secs,
             dead_ttl_secs,
@@ -140,15 +157,21 @@ impl Config {
     pub fn ping_budget(&self) -> Duration {
         Duration::from_secs(self.ping_budget_secs)
     }
+
+    /// Idle fetch period. The worker heartbeat stays on `heartbeat_secs`.
+    pub fn poll_interval(&self) -> Duration {
+        Duration::from_millis(self.poll_interval_ms)
+    }
 }
 
 fn read_u64(name: &str, default: u64, positive: bool) -> Result<u64, ConfigError> {
     let Ok(raw) = std::env::var(name) else {
         return Ok(default);
     };
-    let value: u64 = raw.trim().parse().map_err(|_| {
-        ConfigError::new(format!("{name}={raw} does not parse as an integer"))
-    })?;
+    let value: u64 = raw
+        .trim()
+        .parse()
+        .map_err(|_| ConfigError::new(format!("{name}={raw} does not parse as an integer")))?;
     if positive && value == 0 {
         return Err(ConfigError::new(format!(
             "{name} must be greater than zero"
@@ -161,13 +184,12 @@ fn read_ratio(name: &str, default: f64) -> Result<f64, ConfigError> {
     let Ok(raw) = std::env::var(name) else {
         return Ok(default);
     };
-    let value: f64 = raw.trim().parse().map_err(|_| {
-        ConfigError::new(format!("{name}={raw} does not parse as a number"))
-    })?;
+    let value: f64 = raw
+        .trim()
+        .parse()
+        .map_err(|_| ConfigError::new(format!("{name}={raw} does not parse as a number")))?;
     if !value.is_finite() || value <= 0.0 || value >= 1.0 {
-        return Err(ConfigError::new(format!(
-            "{name} must be in (0, 1)"
-        )));
+        return Err(ConfigError::new(format!("{name} must be in (0, 1)")));
     }
     Ok(value)
 }
@@ -176,9 +198,9 @@ fn read_bytes(name: &str) -> Result<Option<u64>, ConfigError> {
     let Ok(raw) = std::env::var(name) else {
         return Ok(None);
     };
-    parse_byte_size(raw.trim()).map(Some).map_err(|error| {
-        ConfigError::new(format!("{name} {}", error.message))
-    })
+    parse_byte_size(raw.trim())
+        .map(Some)
+        .map_err(|error| ConfigError::new(format!("{name} {}", error.message)))
 }
 
 #[derive(Debug)]
@@ -281,6 +303,7 @@ mod tests {
         let names = [
             "SIMPLE_Q_HEARTBEAT_SECS",
             "SIMPLE_Q_MISSED_HEARTBEATS",
+            "SIMPLE_Q_POLL_INTERVAL_MS",
             "SIMPLE_Q_PING_BUDGET_SECS",
             "SIMPLE_Q_DONE_TTL_SECS",
             "SIMPLE_Q_DEAD_TTL_SECS",
@@ -302,6 +325,7 @@ mod tests {
         assert_eq!(config, Config::defaults());
         assert_eq!(config.heartbeat_secs, 15);
         assert_eq!(config.missed_heartbeats, 4);
+        assert_eq!(config.poll_interval_ms, 500);
         assert_eq!(config.unique_ttl_secs, 86_400);
         assert!(config.unique_ttl_secs > 0);
         assert!(config.memory_soft_ratio < config.memory_hard_ratio);
@@ -320,6 +344,11 @@ mod tests {
             let _heartbeat = EnvGuard::set("SIMPLE_Q_HEARTBEAT_SECS", "abc");
             let error = Config::from_env().unwrap_err().to_string();
             assert!(error.contains("SIMPLE_Q_HEARTBEAT_SECS"), "{error}");
+        }
+        {
+            let _poll = EnvGuard::set("SIMPLE_Q_POLL_INTERVAL_MS", "0");
+            let error = Config::from_env().unwrap_err().to_string();
+            assert!(error.contains("SIMPLE_Q_POLL_INTERVAL_MS"), "{error}");
         }
         {
             let _ratio = EnvGuard::set("SIMPLE_Q_MEMORY_SOFT_RATIO", "1.5");

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+An idle worker fetches on `SIMPLE_Q_POLL_INTERVAL_MS` (default 500) through Apalis `poll_with_interval`. A task that arrives during that idle no longer waits for the heartbeat. The heartbeat, ack, retry, and orphan window are unchanged.
+
 A soft memory signal skips a child that is inside a delivery. The supervisor keeps one anonymous memfd for its own lifetime, one `AtomicU32` per slot. The child maps that page after start, closes the descriptor, and counts each delivery. The parent stores 0 before it starts a child in that slot, so a digit left by `SIGKILL` does not mark the next child busy. A hard signal does not read the digit. On macOS there is no memfd, and a soft signal uses RSS only.
 
 ## 1.1.0

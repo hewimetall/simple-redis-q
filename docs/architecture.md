@@ -57,6 +57,8 @@ A dead delivery (`poison`, `invalid`, a Python `dead` outcome, or an exception f
 
 ### Worker heartbeat
 
+Idle fetches use Apalis `poll_with_interval` at `SIMPLE_Q_POLL_INTERVAL_MS` (default 500). The heartbeat below is only liveness, lease renewal, and orphan requeue.
+
 `Client.worker_alive` uses the connection opened by a previous send. A client that has never connected returns `False` and does not call Redis. Otherwise the runtime parses `agent-worker.{queue}.{host}.{pid}.{suffix}`, reads `ZSCORE {queue}:workers`, and compares the score with Redis `TIME` against `heartbeat_secs * missed_heartbeats`.
 
 ### In-memory drain
