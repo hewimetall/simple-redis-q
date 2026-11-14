@@ -27,9 +27,10 @@ rustup run 1.99.1 cargo run
 # spike-watchexec-job: ok watchexec-supervisor=6.0.0
 ```
 
-**Confirmed API:** `start_job`, `job.start/signal/stop/to_wait/delete_now`, `Signal::User1`, `Program::Exec`, process-wrap available via crate.  
+**Confirmed API only:** `start_job`, `job.start/signal/stop/to_wait/delete_now`, `Signal::User1`, `Program::Exec`.  
+**Not proven:** graceful drain equivalent to agent-worker (child that handles SIGUSR1, READY handshake, exit-status assert). `/bin/sleep` ignores USR1; spike fails hard on wait timeout.  
 **Checksum (crates.io 6.0.0):** `f1da1c4eb0277893e2ab8c888db407d979e31c9ce94c9d3664c49789691a3441`  
-**Decision lean:** adopt as ProcessPort mechanism after process-group policy tests (Stage C/D).
+**Decision lean:** adopt as ProcessPort mechanism after a real drain child-fixture + process-group tests (Stage C/D).
 
 ## oxana **2.5.0** (pinned)
 

@@ -89,18 +89,18 @@ Starting → Running → Draining → Stopping → Exited
 
 ### 4.2 Attempt (child execution)
 
-See `contracts.md` and `simple_q_core::attempt`. Handler return ≠ ACK complete.  
-`CancelRequested` and `OwnershipLostWhileRunning` are **not** Terminal. Finishing is mandatory before Terminal.
+See `contracts.md` and `AttemptLifecycle` (execution × ownership × finish).  
+`HandlerReturned` must not clear `ownership = Lost`. `ExecutionState::Stopped` means stop already confirmed.
 
 ### 4.3 Drain (child + parent)
 
-Ordered (`DrainPhase` + `AdmissionGate` in `simple-q-core`):
+Ordered (`DrainPhase` + `AdmissionGate`):
 
-1. Close **admission** (pause/stop backend fetch) — not merely `TaskTracker::close`  
-2. In-flight claim race: default **accept-and-track** (`AcceptInflightAfterClose`); reject is explicit  
-3. Close tracker / wait registered handler+finish tasks  
-4. Cleanup + shutdown hooks  
-5. Exit child → parent reap → escalate on separate budgets  
+1. Close **admission**  
+2. Settle in-flight claims; register accepted Attempts; `mark_inflight_settled`  
+3. `TaskTracker::close` (allows empty wait — does **not** block new registration by itself)  
+4. `tracker.wait`  
+5. Hooks → child exit → parent reap → escalate  
 
 Empty Python task list ≠ drain complete.
 

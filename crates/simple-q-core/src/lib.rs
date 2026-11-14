@@ -7,8 +7,11 @@ pub mod drain;
 pub mod parent;
 pub mod ports;
 
-pub use attempt::{AttemptEvent, AttemptState, AttemptTransitionError};
-pub use drain::{AdmissionGate, DrainPhase};
+pub use attempt::{
+    AttemptEvent, AttemptLifecycle, AttemptTransitionError, ExecutionState, FinishState,
+    OwnershipState,
+};
+pub use drain::{AdmissionGate, ClaimAdmission, DrainPhase};
 pub use parent::{ParentBootstrap, ParentConfigSource, ParentInitError};
 pub use ports::{
     AttemptId, BridgeOutcome, FinishDisposition, OwnershipToken, QueueMessageId, WorkerId,
