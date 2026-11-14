@@ -22,26 +22,40 @@ pub struct OwnershipToken(pub String);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeOutcome {
     Ok,
-    Retry { delay: Duration },
-    Dead { reason: String },
+    Retry {
+        delay: Duration,
+    },
+    Dead {
+        reason: String,
+    },
     Skipped,
-    ApplicationError { message: String },
+    ApplicationError {
+        message: String,
+    },
     Timeout,
     /// Cancel was requested and Python confirmed stop.
     CancelConfirmed,
     /// Lease/ownership lost while work may still be running locally.
     LeaseLost,
-    BridgeFailure { message: String },
+    BridgeFailure {
+        message: String,
+    },
 }
 
 /// Backend disposition after local execution ends (or is abandoned).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FinishDisposition {
     Ack,
-    Retry { delay: Duration },
-    Dead { reason: String },
+    Retry {
+        delay: Duration,
+    },
+    Dead {
+        reason: String,
+    },
     /// Ownership no longer valid; must not ack/retry as this attempt.
     RejectedStaleOwnership,
     /// Finish could not be confirmed (transport). Local attempt still recorded.
-    FinishUnconfirmed { detail: String },
+    FinishUnconfirmed {
+        detail: String,
+    },
 }
