@@ -9,9 +9,15 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn killing_the_supervisor_drains_the_accepted_task() {
+    // Arrange
+
     let url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/15".to_string());
+    // Act
+
     let pong = redis(&url, &["PING"]);
+    // Assert
+
     assert_eq!(pong, "PONG", "Redis at {url} did not answer PING");
 
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -207,12 +213,11 @@ fn wait_task_id(url: &str, queue: &str, timeout: Duration) -> Option<String> {
 fn wait_pid_file(path: &Path, timeout: Duration) -> Option<u32> {
     let deadline = Instant::now() + timeout;
     loop {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            if let Ok(pid) = text.trim().parse::<u32>() {
-                if pid > 0 {
-                    return Some(pid);
-                }
-            }
+        if let Ok(text) = std::fs::read_to_string(path)
+            && let Ok(pid) = text.trim().parse::<u32>()
+            && pid > 0
+        {
+            return Some(pid);
         }
         if Instant::now() >= deadline {
             return None;
