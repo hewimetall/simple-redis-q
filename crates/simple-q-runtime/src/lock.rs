@@ -227,46 +227,5 @@ async fn renew(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_missed_ping_keeps_renewal_until_the_budget_elapses() {
-        assert!(health_after_ping(true, false, false));
-        assert!(!health_after_ping(true, false, true));
-        assert!(health_after_ping(false, true, false));
-        assert!(!health_after_ping(true, true, true));
-        assert!(should_extend(true, true));
-        assert!(!should_extend(true, false));
-        assert!(!should_extend(false, true));
-    }
-
-    #[test]
-    fn a_redis_error_does_not_count_as_losing_the_lock() {
-        assert!(!renew_lost(Ok(true)));
-        assert!(renew_lost(Ok(false)));
-        assert!(!renew_lost(Err(())));
-    }
-
-    #[test]
-    fn dropping_an_acquire_before_python_sees_the_owner_stops_renewal() {
-        let alive = Arc::new(AtomicBool::new(true));
-        let held = Hold {
-            alive: Arc::clone(&alive),
-            armed: true,
-            pending: None,
-        };
-        drop(held);
-        assert!(!alive.load(Ordering::SeqCst));
-
-        let alive = Arc::new(AtomicBool::new(true));
-        let mut held = Hold {
-            alive: Arc::clone(&alive),
-            armed: true,
-            pending: None,
-        };
-        held.disarm();
-        drop(held);
-        assert!(alive.load(Ordering::SeqCst));
-    }
-}
+#[path = "lock_tests.rs"]
+mod tests;

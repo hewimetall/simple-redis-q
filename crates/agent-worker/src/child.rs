@@ -240,21 +240,5 @@ fn request_drain_once(shutdown: &AtomicBool, pause: impl FnOnce()) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-    use super::request_drain_once;
-
-    #[test]
-    fn drain_is_requested_once() {
-        let shutdown = AtomicBool::new(false);
-        let pauses = AtomicUsize::new(0);
-        let pause = || {
-            pauses.fetch_add(1, Ordering::SeqCst);
-        };
-        assert!(request_drain_once(&shutdown, pause));
-        assert!(!request_drain_once(&shutdown, pause));
-        assert!(shutdown.load(Ordering::SeqCst));
-        assert_eq!(pauses.load(Ordering::SeqCst), 1);
-    }
-}
+#[path = "child_tests.rs"]
+mod tests;

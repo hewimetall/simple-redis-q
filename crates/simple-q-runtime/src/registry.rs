@@ -77,3 +77,7 @@ pub fn lines() -> Vec<String> {
         })
         .collect()
 }
+
+#[cfg(test)]
+#[path = "registry_tests.rs"]
+mod tests;
