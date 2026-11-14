@@ -9,6 +9,10 @@ publish = false
 name = "agent-worker"
 path = "src/main.rs"
 
+[features]
+# The queue test needs Redis. `cargo test --workspace` does not enable this.
+parent-exit-redis = []
+
 [dependencies]
 actix-web = "4.19.0"
 anyhow = "1.0.104"
@@ -22,9 +26,15 @@ opentelemetry_sdk = { version = "0.33.1", features = ["trace"] }
 pyo3 = "0.30.1"
 pyo3-async-runtimes = { version = "0.30.0", features = ["tokio-runtime", "attributes"] }
 redis = { version = "1.8.1", features = ["aio", "tokio-comp", "connection-manager"] }
+rustix = { version = "1.0", default-features = false, features = ["std", "process"] }
 serde_json = "1.0.154"
 simple-q-runtime = { path = "../simple-q-runtime" }
 tokio = { version = "1.54.1", features = ["full"] }
 tracing = "0.1.44"
 tracing-opentelemetry = "0.34.0"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[[test]]
+name = "parent_exit_queue"
+path = "tests/parent_exit_queue.rs"
+required-features = ["parent-exit-redis"]

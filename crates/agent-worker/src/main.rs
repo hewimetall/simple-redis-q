@@ -8,6 +8,7 @@ mod bridge;
 mod child;
 mod cli;
 mod commands;
+mod parent_pidfd;
 mod runtime;
 mod slot_busy;
 mod supervisor;

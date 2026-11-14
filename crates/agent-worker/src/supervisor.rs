@@ -19,6 +19,10 @@
 //! RSS is at least half the usage. The hard path does not read the digit.
 //! Otherwise nobody is killed for the ratio and the largest free child that
 //! has not been asked to drain is drained instead.
+//!
+//! On Linux, before any worker starts, the supervisor opens one pidfd for its
+//! own pid and keeps it for the life of this function. Each worker inherits
+//! that descriptor. `spawn_metrics` does not.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -77,6 +81,8 @@ pub async fn run(
         return Ok(());
     }
 
+    let parent_pidfd = crate::parent_pidfd::open_supervisor()?;
+
     let prom_dir = prom_dir();
     std::fs::create_dir_all(&prom_dir).context("failed to create the metrics directory")?;
     wipe_db_files(&prom_dir).context("failed to clear the metrics directory")?;
@@ -117,6 +123,7 @@ pub async fn run(
         let live = live.clone();
         let roster = roster.clone();
         let digits = digits.clone();
+        let parent_pidfd = parent_pidfd.clone();
         slots.spawn(async move {
             supervise_slot(
                 index,
@@ -131,6 +138,7 @@ pub async fn run(
                 live,
                 roster,
                 digits,
+                parent_pidfd,
             )
             .await
         });
@@ -223,6 +231,7 @@ async fn supervise_slot(
     live: LivePids,
     roster: Roster,
     digits: Option<std::sync::Arc<crate::slot_busy::SlotDigits>>,
+    parent_pidfd: Option<std::sync::Arc<crate::parent_pidfd::SupervisorPidfd>>,
 ) -> Result<()> {
     let mut backoff = Duration::from_secs(1);
 
@@ -244,6 +253,7 @@ async fn supervise_slot(
             index,
             &prom_dir,
             digits.as_ref().map(|digits| digits.raw_fd()),
+            parent_pidfd.as_deref(),
         )?;
         let pid = child.id().context("child process has no pid")?;
         tracing::info!(index, pid, "worker process started");
@@ -332,6 +342,7 @@ fn spawn_child(
     slot: u32,
     prom_dir: &std::path::Path,
     slot_fd: Option<i32>,
+    parent_pidfd: Option<&crate::parent_pidfd::SupervisorPidfd>,
 ) -> Result<Child> {
     let executable = std::env::current_exe().context("failed to resolve the worker executable")?;
     let mut command = Command::new(executable);
@@ -362,6 +373,12 @@ fn spawn_child(
             command.pre_exec(move || crate::slot_busy::clear_cloexec(fd));
         }
     }
+    #[cfg(target_os = "linux")]
+    if let Some(parent_pidfd) = parent_pidfd {
+        crate::parent_pidfd::inherit(&mut command, parent_pidfd);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = parent_pidfd;
     command.spawn().context("failed to spawn a worker process")
 }
 

@@ -118,6 +118,15 @@ jobs:
           PYTHONPATH: python
           PYO3_PYTHON: ${{ steps.setup-python.outputs.python-path }}
 
+      - name: Supervisor pidfd queue test
+        run: |
+          . .venv/bin/activate
+          cargo test -p agent-worker --features parent-exit-redis --test parent_exit_queue -- --test-threads=1
+        env:
+          PYO3_PYTHON: ${{ steps.setup-python.outputs.python-path }}
+          REDIS_URL: redis://127.0.0.1:6379/15
+          PYTHONPATH: python:python/tests
+
   worker-wheel:
     runs-on: ubuntu-latest
     steps:

@@ -16,6 +16,12 @@ The worker does not enable Apalis `catch_panic`. A panic takes down the child, a
 
 A gap inside two minutes is sent again on the same worker, so the running handler is not cancelled. Fetch is the exception: a lost fetch reply ends that worker name, and another name in the same process picks the task up after the orphan window. A gap longer than `heartbeat_secs * missed_heartbeats` (60 seconds at the defaults) can still run the body twice. The score stays where it was while Redis accepts nothing, and another worker's heartbeat requeues the inflight set.
 
+## Supervisor exit
+
+On Linux a worker notices that its supervisor process has exited, including `SIGKILL`, and then drains the way `SIGUSR1` does. The watch starts after the descriptor is claimed and the Tokio runtime is up, and before the Python application is imported. It sees an exit. It does not see a supervisor that is still running but stuck.
+
+The child is not forced out when it is not scheduled, when the Rust lifecycle is blocked, when startup has not reached that runtime yet, or when the existing drain or the Python `shutdown` hook does not return. There is no extra deadline and no extra kill. A kernel without `pidfd_open` does not start the supervisor. Other operating systems keep the previous behavior.
+
 ## Queue names
 
 A queue name is one lowercase ASCII word of letters and digits. `default` is the example. An empty name, an uppercase letter, a hyphen, or an underscore is rejected at enqueue and again when a worker parses the message.
