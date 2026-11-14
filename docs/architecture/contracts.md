@@ -27,19 +27,26 @@ An `Attempt` is one owned delivery:
 
 ```text
 Claimed
-  → HandlerRunning
-      → CancelRequested          # request only; Python may still run
-      → OwnershipLostWhileRunning # lease gone; Python may still run
-      → HandlerFinished
-  → StoppingExecution            # execution stop confirmed
-  → HandlerFinished
-      → Finishing                # ack/retry/dead/reject in flight
-          → Terminal             # only after finish confirmed|rejected|unconfirmed
+  → HandlerRunning                 # only via StartHandler
+       → CancelRequested           # request only; Python may still run
+            → StoppingExecution    # after ConfirmExecutionStopped
+            → OwnershipLostWhileRunning
+            → HandlerFinished      # HandlerReturned before stop confirmed
+       → OwnershipLostWhileRunning # lease gone; Python may still run
+            → StoppingExecution    # after ConfirmExecutionStopped
+            → HandlerFinished
+       → HandlerFinished           # HandlerReturned while still owning
+            → Finishing            # BeginFinish: ack/retry/dead/reject
+                 → Terminal        # FinishConfirmed | RejectedStale | Unconfirmed
+
+StoppingExecution → Finishing → Terminal
 ```
+
+Only `Claimed → HandlerRunning` is allowed from `Claimed`. There is no `Claimed → HandlerFinished` or `Claimed → StoppingExecution`.
 
 **Forbidden:** `LeaseLost → Terminal`, `CancelRequested → Terminal`, `BridgeFailed → Terminal` without `Finishing`.
 
-Cancel **request** ≠ cancel **confirmed**. Ownership loss while running is a first-class state.
+Cancel **request** ≠ cancel **confirmed**. Ownership loss while running is a first-class state. Source of truth for transitions: `simple_q_core::attempt::AttemptState::transition`.
 
 ## 3. Finish / lease-loss results
 

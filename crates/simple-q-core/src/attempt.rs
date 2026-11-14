@@ -6,7 +6,8 @@ pub enum AttemptState {
     HandlerRunning,
     /// Cancel requested; Python may still be running.
     CancelRequested,
-    /// Waiting for Python stop after cancel or lease loss.
+    /// Execution stop already confirmed (`ConfirmExecutionStopped`).
+    /// Next step is `BeginFinish`, not another wait for Python stop.
     StoppingExecution,
     /// Ownership lost; local handler may still run until stop confirms.
     OwnershipLostWhileRunning,
