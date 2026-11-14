@@ -22,7 +22,9 @@ pub enum ParentInitError {
 impl ParentBootstrap {
     /// Target composition root for the non-`--child` worker path.
     pub fn from_env_and_cli(redis_url: Option<String>) -> Result<Self, ParentInitError> {
-        let redis_url = redis_url.filter(|u| !u.is_empty()).ok_or(ParentInitError::MissingRedisUrl)?;
+        let redis_url = redis_url
+            .filter(|u| !u.is_empty())
+            .ok_or(ParentInitError::MissingRedisUrl)?;
         Ok(Self {
             source: ParentConfigSource::EnvAndCli,
             redis_url,
@@ -66,6 +68,7 @@ mod tests {
     /// stops calling `runtime::initialize()`. Until then this documents the gap.
     #[test]
     #[ignore = "stage-c-vertical-slice: remove ignore and assert true after parent change"]
+    #[allow(clippy::assertions_on_constants)]
     fn given_stage_c_when_parent_path_shipped_then_no_cpython_flag_is_true() {
         assert!(
             PARENT_NO_CPYTHON_IMPLEMENTED,
