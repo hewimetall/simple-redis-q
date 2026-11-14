@@ -17,15 +17,13 @@ from simple_q.dispatch import MESSAGE_VERSION, build_message, usable_lock_key
 from simple_q.message import current_message
 from simple_q.metrics import (
     DURATION_BUCKETS,
+    _METRICS,
     finish_attempt,
-    hold_delay,
     note_retry,
     q_name,
     reject,
-    release_delay,
     setup,
     start_attempt,
-    value,
 )
 
 
@@ -102,10 +100,20 @@ def test_dramatiq_metric_names_and_labels_are_frozen():
     assert found == frozen
 
 
+def metric_value(metric: str, queue: str, actor: str) -> float:
+    setup()
+    collector = _METRICS[metric]
+    labels = (q_name(queue), actor)
+    if metric == "duration":
+        sample = collector.labels(*labels)._sum.get()
+        return float(sample)
+    return float(collector.labels(*labels)._value.get())
+
+
 def test_dispatch_does_not_count_a_retry_before_enqueue():
     setup(multiprocess=False)
     app, _seen = _discover()
-    before = value("retries", "quota", "discover")
+    before = metric_value("retries", "quota", "discover")
     message = build_message(
         actor_name="discover",
         queue="quota",
@@ -118,42 +126,36 @@ def test_dispatch_does_not_count_a_retry_before_enqueue():
     )
     result = asyncio.run(app.dispatch(message))
     assert result["outcome"] == "retry"
-    assert value("retries", "quota", "discover") == before
+    assert metric_value("retries", "quota", "discover") == before
 
 
 def test_retry_is_counted_once_on_the_canonical_queue():
     setup(multiprocess=False)
     note_retry("quota.DQ", "discover")
-    assert value("retries", "quota", "discover") >= 1
-    assert value("delayed", "quota", "discover") == 0
-    assert value("retries", "quota.DQ", "discover") == value("retries", "quota", "discover")
+    assert metric_value("retries", "quota", "discover") >= 1
+    assert metric_value("delayed", "quota", "discover") == 0
+    assert metric_value("retries", "quota.DQ", "discover") == metric_value("retries", "quota", "discover")
 
 
-def test_in_memory_delay_returns_to_zero_and_processing_does_not_touch_it():
+def test_processing_does_not_move_the_delayed_gauge():
     setup(multiprocess=False)
-    before = value("delayed", "default", "discover")
-    hold_delay("m-1", "default.DQ", "discover")
-    hold_delay("m-1", "default", "discover")
-    assert value("delayed", "default", "discover") == before + 1
+    before = metric_value("delayed", "default", "discover")
     start_attempt("m-1", "default", "discover")
-    assert value("delayed", "default", "discover") == before + 1
     finish_attempt("m-1", "default", "discover")
-    release_delay("m-1")
-    release_delay("m-1")
-    assert value("delayed", "default", "discover") == before
+    assert metric_value("delayed", "default", "discover") == before
 
 
 def test_skip_counts_as_processed_without_an_error_and_reject_is_separate():
     setup(multiprocess=False)
-    total = value("total", "default", "gated")
-    errors = value("errors", "default", "gated")
+    total = metric_value("total", "default", "gated")
+    errors = metric_value("errors", "default", "gated")
     start_attempt("skip-1", "default", "gated")
     finish_attempt("skip-1", "default", "gated", error=False, rejected=False)
-    assert value("total", "default", "gated") == total + 1
-    assert value("errors", "default", "gated") == errors
-    rejects = value("rejects", "quota", "discover")
+    assert metric_value("total", "default", "gated") == total + 1
+    assert metric_value("errors", "default", "gated") == errors
+    rejects = metric_value("rejects", "quota", "discover")
     reject("quota", "discover")
-    assert value("rejects", "quota", "discover") == rejects + 1
+    assert metric_value("rejects", "quota", "discover") == rejects + 1
 
 
 def test_message_version_and_headers_are_separate_from_kwargs():
@@ -373,7 +375,7 @@ def test_poison_delivery_calls_on_dead_and_rejects():
     app, seen = _discover()
     calls = []
     app.on_dead(_letter(calls))
-    before = value("rejects", "quota", "discover")
+    before = metric_value("rejects", "quota", "discover")
     message = build_message(
         actor_name="discover",
         queue="quota",
@@ -390,7 +392,7 @@ def test_poison_delivery_calls_on_dead_and_rejects():
     assert calls[0].message_id == "poison-1"
     assert calls[0].error is None
     assert seen == []
-    assert value("rejects", "quota", "discover") == before + 1
+    assert metric_value("rejects", "quota", "discover") == before + 1
 
 
 def test_lock_skip_counts_as_a_processed_message_without_an_error():
@@ -401,8 +403,8 @@ def test_lock_skip_counts_as_a_processed_message_without_an_error():
         raise AssertionError("handler ran")
 
     app = App(client=client, actors=[gated])
-    before_total = value("total", "default", "gated")
-    before_errors = value("errors", "default", "gated")
+    before_total = metric_value("total", "default", "gated")
+    before_errors = metric_value("errors", "default", "gated")
     message = build_message(
         actor_name="gated",
         queue="default",
@@ -415,8 +417,8 @@ def test_lock_skip_counts_as_a_processed_message_without_an_error():
     )
     result = asyncio.run(app.dispatch(message))
     assert result["outcome"] == "skipped"
-    assert value("total", "default", "gated") == before_total + 1
-    assert value("errors", "default", "gated") == before_errors
+    assert metric_value("total", "default", "gated") == before_total + 1
+    assert metric_value("errors", "default", "gated") == before_errors
 
 
 def test_release_failure_keeps_a_successful_result():
@@ -690,29 +692,29 @@ def test_memory_drain_runs_messages_sent_by_a_handler():
 def test_lock_key_template_is_filled_from_kwargs():
     client = FakeClient()
 
-    @actor(name="calc", queue="default", lock_key="cache:calc:{project_name}", max_retries=0)
-    async def calc(project_name: str):
-        return project_name
+    @actor(name="calc", queue="default", lock_key="demo:item:{name}", max_retries=0)
+    async def calc(name: str):
+        return name
 
     app = App(client=client, actors=[calc])
     message = build_message(
         actor_name="calc",
         queue="default",
-        kwargs={"project_name": "alpha"},
+        kwargs={"name": "alpha"},
         headers={},
         max_retries=0,
-        lock_key="cache:calc:{project_name}",
+        lock_key="demo:item:{name}",
         message_id="lock-1",
     )
     result = asyncio.run(app.dispatch(message))
     assert result["outcome"] == "ok"
-    assert client.keys == ["cache:calc:alpha"]
+    assert client.keys == ["demo:item:alpha"]
 
 
 def test_lock_key_template_rejects_a_missing_placeholder():
-    @actor(name="calc", queue="default", lock_key="cache:calc:{project_name}", max_retries=0)
-    async def calc(project_name: str = "x"):
-        return project_name
+    @actor(name="calc", queue="default", lock_key="demo:item:{name}", max_retries=0)
+    async def calc(name: str = "x"):
+        return name
 
     app = App(client=FakeClient(), actors=[calc])
     message = build_message(
@@ -721,33 +723,33 @@ def test_lock_key_template_rejects_a_missing_placeholder():
         kwargs={},
         headers={},
         max_retries=0,
-        lock_key="cache:calc:{project_name}",
+        lock_key="demo:item:{name}",
         message_id="lock-missing",
     )
     try:
         asyncio.run(app.dispatch(message))
     except KeyError as error:
-        assert "project_name" in str(error)
+        assert "name" in str(error)
     else:
         raise AssertionError("missing lock_key placeholder was accepted")
 
 
 def test_lock_key_rejects_a_non_canonical_character():
-    assert usable_lock_key("cache:calc:alpha")
-    assert not usable_lock_key("cache:acme\u200b")
+    assert usable_lock_key("demo:item:alpha")
+    assert not usable_lock_key("demo:bad\u200b")
 
-    @actor(name="calc", queue="default", lock_key="cache:calc:{project_name}", max_retries=0)
-    async def calc(project_name: str):
-        return project_name
+    @actor(name="calc", queue="default", lock_key="demo:item:{name}", max_retries=0)
+    async def calc(name: str):
+        return name
 
     app = App(client=FakeClient(), actors=[calc])
     message = build_message(
         actor_name="calc",
         queue="default",
-        kwargs={"project_name": "acme\u200b"},
+        kwargs={"name": "acme\u200b"},
         headers={},
         max_retries=0,
-        lock_key="cache:calc:{project_name}",
+        lock_key="demo:item:{name}",
         message_id="lock-zwsp",
     )
     try:
@@ -912,6 +914,15 @@ def test_config_from_env_rejects_bad_values(monkeypatch):
     names = [
         "SIMPLE_Q_HEARTBEAT_SECS",
         "SIMPLE_Q_MISSED_HEARTBEATS",
+        "SIMPLE_Q_POLL_INTERVAL_MS",
+        "SIMPLE_Q_PING_INTERVAL_MS",
+        "SIMPLE_Q_PING_TIMEOUT_MS",
+        "SIMPLE_Q_LIFECYCLE_INTERVAL_MS",
+        "SIMPLE_Q_SWEEP_INTERVAL_SECS",
+        "SIMPLE_Q_SWEEP_BATCH",
+        "SIMPLE_Q_BATCH_SIZE",
+        "SIMPLE_Q_IDEMPOTENCY_WAIT_MS",
+        "SIMPLE_Q_IDEMPOTENCY_WAIT_MAX_MS",
         "SIMPLE_Q_PING_BUDGET_SECS",
         "SIMPLE_Q_DONE_TTL_SECS",
         "SIMPLE_Q_DEAD_TTL_SECS",
@@ -927,6 +938,16 @@ def test_config_from_env_rejects_bad_values(monkeypatch):
     config = Config.from_env()
     assert config.heartbeat_secs == 15
     assert config.missed_heartbeats == 4
+    assert config.poll_interval_ms == 500
+    assert config.ping_interval_ms == 2000
+    assert config.ping_timeout_ms == 3000
+    assert config.lifecycle_interval_ms == 200
+    assert config.sweep_interval_secs == 60
+    assert config.sweep_batch == 100
+    assert config.batch_size == 1
+    assert config.idempotency_wait_ms == 20
+    assert config.idempotency_wait_max_ms == 5000
+    assert config.ping_budget_secs == 1860
     assert config.unique_ttl_secs == 86400
     assert config.max_deliveries == 5
     assert config.memory_soft_ratio == pytest.approx(0.80)

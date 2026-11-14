@@ -1,6 +1,6 @@
 # Concepts
 
-These pages describe simple-q 1.0.
+These pages describe simple-q 1.2.
 
 A send stores one version-1 message. `message_id` stays the same across retries. `retries` counts handler failures. `deliveries` counts how many times a worker has started that attempt. Those two numbers are independent.
 
@@ -14,7 +14,11 @@ The worker name has the shape `agent-worker.{queue}.{hostname}.{pid}.{suffix}`. 
 
 While any worker for the queue is inside the window, its heartbeat asks Redis to put abandoned inflight messages back on the queue. That requeue does not increment the delivery counter. The next time a worker starts the attempt, it does. If no worker for the queue is heartbeating, inflight messages stay where they are.
 
-A child pings the Python loop every 2 seconds with a 3 second timeout. `PingWatch` exits the child only after the loop has stayed silent for the whole ping budget. The budget is the actor time limit plus 60 seconds unless `SIMPLE_Q_PING_BUDGET_SECS` sets it. The default time limit is 30 minutes, so the default budget is 1860 seconds. One minute of silence does not exhaust that budget, and it does not stop renewal of a business lock. A Redis error while extending the lock is retried on the next period. A successful ping clears the silence clock. When the budget elapses, the child stops renewing business locks, asks the running tasks to cancel, and exits 2. Cancelling `dispatch` while the unlock is in progress still deletes the key. Inflight messages are left for another worker. Exit 2 does not flush spans.
+An idle worker asks Redis for a task on its own timer, `SIMPLE_Q_POLL_INTERVAL_MS`, default 500. That timer is Apalis `poll_with_interval`. It does not change the heartbeat, the ack, or the orphan window. A task that arrives while the worker is idle waits for the rest of this interval. It does not wait for the next heartbeat.
+
+A child wakes every `SIMPLE_Q_LIFECYCLE_INTERVAL_MS` milliseconds, default 200, to notice drain and to send a Python ping that is due. A ping is due every `SIMPLE_Q_PING_INTERVAL_MS` milliseconds, default 2000. `bridge::ping` applies `SIMPLE_Q_PING_TIMEOUT_MS`, default 3000, to each of two stages: scheduling the callback onto the Python loop, then waiting for that callback to run. That is not one deadline for the whole ping.
+
+`PingWatch` exits the child only after the loop has stayed silent for the whole ping budget. An omitted `SIMPLE_Q_PING_BUDGET_SECS` is the built-in default time limit, 1_800_000 ms, plus 60 seconds, so 1860 seconds. It does not follow the `time_limit` of the actor that is running. One minute of silence does not exhaust that budget, and it does not stop renewal of a business lock. A Redis error while extending the lock is retried on the next period. A successful ping clears the silence clock. When the budget elapses, the child stops renewing business locks, asks the running tasks to cancel, and exits 2. Cancelling `dispatch` while the unlock is in progress still deletes the key. Inflight messages are left for another worker. Exit 2 does not flush spans.
 
 The child ignores `SIGTERM`. The supervisor owns process recycling.
 
@@ -40,13 +44,13 @@ Restarting a child does not change poison. A delivery that already passed `max_d
 
 ## Memory
 
-The supervisor checks memory about once a second. It does not take messages. The Redis record it publishes for `agent-worker info` is on the [architecture](architecture.md) page.
+The supervisor checks memory about once a second. It does not take messages and it does not ask Redis whether a child is inside a delivery. Each slot has one `AtomicU32` on a single anonymous memfd the supervisor creates for its own lifetime. The child adds one around a delivery and subtracts one when that delivery returns. A soft signal skips a slot whose digit is not zero. A hard signal does not read the digit. The parent stores 0 in the slot before every spawn, including the spawn after `SIGKILL`. The page is sealed against shrink and grow, it has no name in `/dev/shm`, and the child closes the descriptor after it maps the page. Each child that maps it adds that page to its own RSS. The cgroup counts the page once. On macOS there is no memfd, so a soft signal uses RSS only. The Redis record it publishes for `agent-worker info` is on the [architecture](architecture.md) page.
 
 ### Per-child RSS
 
 `--child-memory-soft` and `--child-memory-hard`, or `SIMPLE_Q_CHILD_MEMORY_SOFT` and `SIMPLE_Q_CHILD_MEMORY_HARD`, set an RSS limit for one child. The flag wins when both the flag and the variable are set. `K`, `M`, and `G` are powers of 1024. An optional `B` is the same unit. A bare number is bytes. Zero, a fraction, and any other shape are invalid and the supervisor exits 3 before it starts a child. When both limits are set, soft must be below hard.
 
-On Linux, RSS comes from `/proc/<pid>/statm` (resident pages times the page size). On macOS it comes from `proc_pid_rusage` (`ri_resident_size`). A failed read leaves that child out of the limit check. At the soft limit that pid receives `SIGUSR1` once and drains: it finishes current work and takes nothing new. At the hard limit that pid receives `SIGKILL`. A later child is a new process. The queue and the poison rule stay as they were.
+On Linux, RSS comes from `/proc/<pid>/statm` (resident pages times the page size). On macOS it comes from `proc_pid_rusage` (`ri_resident_size`). A failed read leaves that child out of the limit check. Each child is compared with its own threshold. At the soft limit a free child receives `SIGUSR1` once and drains: it finishes current work and takes nothing new. A child whose digit is not zero is left alone, and that skip is not recorded, so a later second can still ask it. At the hard limit that pid receives `SIGKILL` whether or not the digit is set. Several children can be signaled in the same second when several have crossed their own limit. A later child is a new process. The queue and the poison rule stay as they were.
 
 If `processes * hard` is greater than a finite cgroup `memory.max`, the supervisor logs a warning and keeps running.
 
@@ -54,7 +58,7 @@ If `processes * hard` is greater than a finite cgroup `memory.max`, the supervis
 
 The ratio backstop uses the cgroup working set: `memory.current` minus `inactive_file` from `memory.stat`. That is the same subtraction kubelet uses. When `inactive_file` is absent, the usage is `memory.current`. `working_set` is that subtraction.
 
-`SIMPLE_Q_MEMORY_SOFT_RATIO` defaults to 0.80. `SIMPLE_Q_MEMORY_HARD_RATIO` defaults to 0.95. Both must be finite numbers in the open interval `(0, 1)`. At the soft ratio the supervisor sends `SIGUSR1` to the child with the largest RSS that has not already been asked to drain. The next tick picks another child if usage is still high. At the hard ratio the supervisor sends `SIGKILL` to the largest child when that child's RSS is at least half the working set (`rss * 2 >= usage`). A child that does not own the usage is drained instead of killed, because killing it would not stop the cgroup from running out of memory.
+`SIMPLE_Q_MEMORY_SOFT_RATIO` defaults to 0.80. `SIMPLE_Q_MEMORY_HARD_RATIO` defaults to 0.95. Both must be finite numbers in the open interval `(0, 1)`. At the soft ratio the supervisor sends `SIGUSR1` to the free child with the largest RSS that has not already been asked to drain. A busy child is skipped and is not marked asked. If every eligible child is busy, that second sends nothing. The next tick picks the next largest free child if usage is still high. A child already selected for its own soft limit in that same second is the one child for the ratio, so the next child waits. At the hard ratio the supervisor sends `SIGKILL` to one child, the largest, when that child's RSS is at least half the working set (`rss * 2 >= usage`). The digit is not read for that kill. If that child is already being killed for its own hard byte limit, no second child is killed for the ratio. When even the largest RSS is below half the working set, nobody is killed for the ratio. The largest free child that has not already been asked to drain gets `SIGUSR1`, because killing a child that does not own the usage would not stop the cgroup from running out of memory.
 
 Without a finite `memory.max` (`max`, empty, or missing), the ratio check does nothing. On macOS `/proc/self/cgroup` is absent, so the ratio stays off. The per-child byte limits still apply.
 

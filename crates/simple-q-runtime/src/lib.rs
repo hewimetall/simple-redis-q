@@ -18,6 +18,7 @@ pub mod cleanup;
 pub mod lock;
 pub mod pages;
 pub mod redis_api;
+mod redis_retry;
 pub mod slots;
 
 // User side. The importable module and the in-process execution table.

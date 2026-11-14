@@ -7,10 +7,10 @@ is the same object.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
+from typing import Any
 
-from simple_q._runtime import Admin
+from simple_q._runtime import Admin, Client
 
 
 @dataclass(frozen=True)
@@ -130,13 +130,11 @@ class Snapshot:
 class QueueAdmin:
     """Read a snapshot through the caller's ``Client`` connection."""
 
-    def __init__(self, client) -> None:
+    def __init__(self, client: Client) -> None:
         self._admin = Admin(client)
 
     async def snapshot(self, queues: list[str], host: str | None = None) -> Snapshot:
-        raw = await self._admin.snapshot(list(queues), host)
-        payload = json.loads(raw)
-        return _snapshot(payload)
+        return _snapshot(_mapping(await self._admin.snapshot(list(queues), host)))
 
     async def dead(self, queue: str, limit: int = 50, cursor: str | None = None) -> DeadPage:
         """Page dead messages newest-first.
@@ -145,8 +143,7 @@ class QueueAdmin:
         is opaque and exclusive. The next page omits the task the cursor names.
         """
 
-        raw = await self._admin.dead(queue, _page_limit(limit), cursor)
-        return _dead_page(json.loads(raw))
+        return _dead_page(_mapping(await self._admin.dead(queue, _page_limit(limit), cursor)))
 
     async def peek(
         self,
@@ -164,8 +161,13 @@ class QueueAdmin:
 
         if state not in {"active", "scheduled"}:
             raise ValueError("state must be active or scheduled")
-        raw = await self._admin.peek(queue, state, _page_limit(limit), cursor)
-        return _task_page(json.loads(raw))
+        return _task_page(_mapping(await self._admin.peek(queue, state, _page_limit(limit), cursor)))
+
+
+def _mapping(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError("admin result must be a dict")
+    return value
 
 
 def _page_limit(limit: int) -> int:
@@ -174,13 +176,13 @@ def _page_limit(limit: int) -> int:
     return min(limit, 200)
 
 
-def _opt_int(value) -> int | None:
+def _opt_int(value: Any) -> int | None:
     if value is None:
         return None
     return int(value)
 
 
-def _held(value: dict) -> HeldTask:
+def _held(value: dict[str, Any]) -> HeldTask:
     deliveries = value.get("deliveries")
     return HeldTask(
         queue=value["queue"],
@@ -197,7 +199,7 @@ def _held(value: dict) -> HeldTask:
     )
 
 
-def _process(value: dict) -> ProcessInfo:
+def _process(value: dict[str, Any]) -> ProcessInfo:
     return ProcessInfo(
         host=value.get("host") or "",
         pid=int(value["pid"]),
@@ -218,7 +220,7 @@ def _process(value: dict) -> ProcessInfo:
     )
 
 
-def _queue(value: dict) -> QueueStats:
+def _queue(value: dict[str, Any]) -> QueueStats:
     return QueueStats(
         name=value["name"],
         active=int(value.get("active") or 0),
@@ -231,7 +233,7 @@ def _queue(value: dict) -> QueueStats:
     )
 
 
-def _supervisor(value: dict) -> SupervisorInfo:
+def _supervisor(value: dict[str, Any]) -> SupervisorInfo:
     return SupervisorInfo(
         host=value["host"],
         pid=int(value["pid"]),
@@ -254,7 +256,7 @@ def _supervisor(value: dict) -> SupervisorInfo:
     )
 
 
-def _dead_message(value: dict) -> DeadMessage:
+def _dead_message(value: dict[str, Any]) -> DeadMessage:
     return DeadMessage(
         task_id=value.get("task_id") or "",
         message_id=value.get("message_id") or "",
@@ -268,14 +270,14 @@ def _dead_message(value: dict) -> DeadMessage:
     )
 
 
-def _dead_page(value: dict) -> DeadPage:
+def _dead_page(value: dict[str, Any]) -> DeadPage:
     return DeadPage(
         messages=tuple(_dead_message(item) for item in value.get("messages") or []),
         cursor=value.get("cursor"),
     )
 
 
-def _queued(value: dict) -> QueuedTask:
+def _queued(value: dict[str, Any]) -> QueuedTask:
     return QueuedTask(
         task_id=value.get("task_id") or "",
         message_id=value.get("message_id") or "",
@@ -288,20 +290,20 @@ def _queued(value: dict) -> QueuedTask:
     )
 
 
-def _task_page(value: dict) -> TaskPage:
+def _task_page(value: dict[str, Any]) -> TaskPage:
     return TaskPage(
         tasks=tuple(_queued(item) for item in value.get("tasks") or []),
         cursor=value.get("cursor"),
     )
 
 
-def _object(value) -> dict:
+def _object(value: object) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
     return {}
 
 
-def _snapshot(value: dict) -> Snapshot:
+def _snapshot(value: dict[str, Any]) -> Snapshot:
     return Snapshot(
         taken_at=int(value.get("taken_at") or 0),
         queues=[_queue(item) for item in value.get("queues") or []],

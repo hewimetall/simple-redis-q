@@ -1,6 +1,6 @@
 # Quick start
 
-These pages describe simple-q 1.0.
+These pages describe simple-q 1.2.
 
 simple-q runs Python async tasks on Redis. `simple-q-runtime` is the importable package (`import simple_q`). `simple-q-worker` installs the `agent-worker` supervisor. Importing `simple_q` does not open Redis. `Client` does.
 
@@ -16,7 +16,7 @@ Declare an actor, build an `App`, and send on the `default` queue:
 from simple_q import App, Client, Config, actor
 
 
-@actor(queue="default", max_retries=2, lock_key="cache:discovery")
+@actor(queue="default", max_retries=2, lock_key="demo:gate")
 async def recalc(project_id: int) -> None:
     ...
 

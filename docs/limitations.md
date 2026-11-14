@@ -1,6 +1,6 @@
 # Limitations
 
-These pages describe simple-q 1.0.
+These pages describe simple-q 1.2.
 
 ## No synchronous send
 
@@ -11,6 +11,16 @@ These pages describe simple-q 1.0.
 The worker does not enable Apalis `catch_panic`. A panic takes down the child, and the supervisor restarts it.
 
 `catch_panic` is off because Apalis retries `Failed` on its own. A handler failure that should stay dead is returned as an abort, which the worker records as killed, and Python enqueues the retry itself when `max_retries` allows one. A panic converted into `Failed` would be scheduled again by the backend, past the actor's `max_retries`.
+
+## A long Redis gap
+
+A gap inside two minutes is sent again on the same worker, so the running handler is not cancelled. Fetch is the exception: a lost fetch reply ends that worker name, and another name in the same process picks the task up after the orphan window. A gap longer than `heartbeat_secs * missed_heartbeats` (60 seconds at the defaults) can still run the body twice. The score stays where it was while Redis accepts nothing, and another worker's heartbeat requeues the inflight set.
+
+## Supervisor exit
+
+On Linux a worker notices that its supervisor process has exited, including `SIGKILL`, and then drains the way `SIGUSR1` does. The watch starts after the descriptor is claimed and the Tokio runtime is up, and before the Python application is imported. It sees an exit. It does not see a supervisor that is still running but stuck.
+
+The child is not forced out when it is not scheduled, when the Rust lifecycle is blocked, when startup has not reached that runtime yet, or when the existing drain or the Python `shutdown` hook does not return. There is no extra deadline and no extra kill. A kernel without `pidfd_open` does not start the supervisor. Other operating systems keep the previous behavior.
 
 ## Queue names
 

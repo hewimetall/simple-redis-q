@@ -9,8 +9,9 @@ use std::time::Duration;
 
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyModule};
+use pyo3::types::{PyAny, PyDict, PyModule};
 use redis::aio::ConnectionManager;
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::config::Config;
@@ -94,13 +95,13 @@ impl Client {
         self.state.config.clone()
     }
 
-    fn on_send(&self, py: Python<'_>, hook: Py<PyAny>) -> Py<PyAny> {
+    fn on_send(&self, py: Python<'_>, r#fn: Py<PyAny>) -> Py<PyAny> {
         self.state
             .on_send
             .lock()
             .expect("on_send hooks")
-            .push(hook.clone_ref(py));
-        hook
+            .push(r#fn.clone_ref(py));
+        r#fn
     }
 
     #[pyo3(signature = (actor, **kwargs))]
@@ -171,12 +172,15 @@ impl Client {
         })
     }
 
+    #[pyo3(signature = (key, ttl_seconds=None, *, ttl=None))]
     fn acquire_lock<'py>(
         &self,
         py: Python<'py>,
         key: String,
-        ttl_seconds: u64,
+        ttl_seconds: Option<u64>,
+        ttl: Option<u64>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let ttl_seconds = resolve_lock_ttl(ttl_seconds, ttl).map_err(PyTypeError::new_err)?;
         let state = Arc::clone(&self.state);
         let _runtime = ensure_runtime();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -225,10 +229,10 @@ fn prepare(
     headers: Option<&Bound<'_, PyDict>>,
     unique_key: Option<String>,
 ) -> PyResult<Prepared> {
-    if let Some(key) = unique_key.as_deref() {
-        if key.is_empty() {
-            return Err(PyValueError::new_err("unique_key must not be empty"));
-        }
+    if let Some(key) = unique_key.as_deref()
+        && key.is_empty()
+    {
+        return Err(PyValueError::new_err("unique_key must not be empty"));
     }
     let actor_name: String = actor.getattr("name")?.extract()?;
     let queue: String = actor.getattr("queue")?.extract()?;
@@ -246,12 +250,8 @@ fn prepare(
             .map_err(|_| PyTypeError::new_err("on_send hook must return a headers dict"))?;
         header_map = string_dict(updated)?;
     }
-    let kwargs_json: String = py
-        .import("json")?
-        .call_method1("dumps", (kwargs,))?
-        .extract()?;
-    let kwargs_value: Value = serde_json::from_str(&kwargs_json)
-        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    let kwargs_value: Value = pythonize::depythonize(kwargs.as_any())
+        .map_err(|error| PyTypeError::new_err(format!("kwargs must be a JSON object: {error}")))?;
     if !kwargs_value.is_object() {
         return Err(PyTypeError::new_err("kwargs must be a dict"));
     }
@@ -332,7 +332,7 @@ impl Admin {
         }
     }
 
-    /// JSON object for `queues`. `host` limits the process tree to that machine.
+    /// Snapshot dict for `queues`. `host` limits the process tree to that machine.
     #[pyo3(signature = (queues, host=None))]
     fn snapshot<'py>(
         &self,
@@ -351,12 +351,11 @@ impl Admin {
                 crate::admin::snapshot(&mut conn, &state.config, &queues, host.as_deref())
                     .await
                     .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
-            serde_json::to_string(&snapshot)
-                .map_err(|error| PyRuntimeError::new_err(error.to_string()))
+            Ok(AsPython(snapshot))
         })
     }
 
-    /// JSON page of dead messages. `limit` defaults to 50, rejects 0, and caps at 200.
+    /// Page of dead messages. `limit` defaults to 50, rejects 0, and caps at 200.
     #[pyo3(signature = (queue, limit=50, cursor=None))]
     fn dead<'py>(
         &self,
@@ -381,11 +380,11 @@ impl Admin {
             )
             .await
             .map_err(page_error)?;
-            serde_json::to_string(&page).map_err(|error| PyRuntimeError::new_err(error.to_string()))
+            Ok(AsPython(page))
         })
     }
 
-    /// JSON page of `active` (`LRANGE`) or `scheduled` (`ZRANGE`) tasks.
+    /// Page of `active` (`LRANGE`) or `scheduled` (`ZRANGE`) tasks.
     #[pyo3(signature = (queue, state, limit=50, cursor=None))]
     fn peek<'py>(
         &self,
@@ -412,8 +411,34 @@ impl Admin {
             )
             .await
             .map_err(page_error)?;
-            serde_json::to_string(&page).map_err(|error| PyRuntimeError::new_err(error.to_string()))
+            Ok(AsPython(page))
         })
+    }
+}
+
+fn resolve_lock_ttl(ttl_seconds: Option<u64>, ttl: Option<u64>) -> Result<u64, &'static str> {
+    match (ttl_seconds, ttl) {
+        (Some(left), Some(right)) if left != right => {
+            Err("acquire_lock received both ttl_seconds and ttl with different values")
+        }
+        (Some(value), _) | (None, Some(value)) => Ok(value),
+        (None, None) => Err("acquire_lock() missing required argument: 'ttl_seconds'"),
+    }
+}
+
+/// `pythonize` conversion for a value produced off the GIL.
+struct AsPython<T>(T);
+
+impl<'py, T> IntoPyObject<'py> for AsPython<T>
+where
+    T: Serialize,
+{
+    type Target = PyAny;
+    type Output = Bound<'py, PyAny>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        Ok(pythonize::pythonize(py, &self.0)?)
     }
 }
 
@@ -449,7 +474,16 @@ fn page_error_is_value(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{page_error_is_value, page_error_text};
+    use super::{page_error_is_value, page_error_text, resolve_lock_ttl};
+
+    #[test]
+    fn lock_ttl_accepts_either_name() {
+        assert_eq!(resolve_lock_ttl(Some(30), None).unwrap(), 30);
+        assert_eq!(resolve_lock_ttl(None, Some(30)).unwrap(), 30);
+        assert_eq!(resolve_lock_ttl(Some(30), Some(30)).unwrap(), 30);
+        assert!(resolve_lock_ttl(None, None).is_err());
+        assert!(resolve_lock_ttl(Some(1), Some(2)).is_err());
+    }
 
     #[test]
     fn a_wrapped_cursor_error_is_a_value_error() {

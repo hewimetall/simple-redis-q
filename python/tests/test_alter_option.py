@@ -33,7 +33,7 @@ def test_alter_option_example():
 
 
 def test_alter_kwargs_survive_the_json_message_the_worker_hands_to_python():
-    """The worker serializes the job to JSON before ``App.dispatch``."""
+    """Stored kwargs are JSON. Dispatch sees the values that survive that encoding."""
 
     example = _example()
     client = MemoryClient()

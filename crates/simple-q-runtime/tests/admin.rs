@@ -162,6 +162,8 @@ async fn a_terminal_write_after_one_second_still_drops_the_key() {
             &unique_for_task,
             &mut stop,
             Duration::from_secs(10),
+            Duration::from_millis(20),
+            Duration::from_secs(5),
         )
         .await
     });
@@ -202,6 +204,8 @@ async fn shutdown_leaves_an_idempotency_key_that_is_not_terminal() {
         &unique,
         &mut stop,
         Duration::from_secs(30),
+        Duration::from_millis(20),
+        Duration::from_secs(5),
     )
     .await
     .expect("release");
@@ -424,9 +428,14 @@ async fn snapshot_tree_has_a_running_child_and_a_held_task() {
     .await
     .expect("publish");
 
-    let snap = admin::snapshot(&mut conn, &settings, &[queue.clone()], Some(&host))
-        .await
-        .expect("snapshot");
+    let snap = admin::snapshot(
+        &mut conn,
+        &settings,
+        std::slice::from_ref(&queue),
+        Some(&host),
+    )
+    .await
+    .expect("snapshot");
     assert_eq!(snap.supervisors.len(), 1);
     assert_eq!(snap.supervisors[0].host, host);
     assert_eq!(snap.supervisors[0].pid, sup_pid);
@@ -484,9 +493,14 @@ async fn stale_metadata_is_a_killed_orphan_and_a_missing_hash_is_exited() {
         &gone_name,
     ]);
 
-    let snap = admin::snapshot(&mut conn, &settings, &[queue.clone()], Some(&host))
-        .await
-        .expect("snapshot");
+    let snap = admin::snapshot(
+        &mut conn,
+        &settings,
+        std::slice::from_ref(&queue),
+        Some(&host),
+    )
+    .await
+    .expect("snapshot");
     assert!(snap.supervisors.is_empty());
     let stale = snap
         .orphans
@@ -533,9 +547,14 @@ async fn queue_counts_follow_active_inflight_done_and_dead() {
         let _ = redis(&["DEL", key]);
     }
 
-    let before = admin::snapshot(&mut conn, &settings, &[queue.clone()], Some(&host))
-        .await
-        .expect("before");
+    let before = admin::snapshot(
+        &mut conn,
+        &settings,
+        std::slice::from_ref(&queue),
+        Some(&host),
+    )
+    .await
+    .expect("before");
     assert_eq!(before.queues[0].active, 0);
     assert_eq!(before.queues[0].inflight, 0);
     assert_eq!(before.queues[0].done, 0);
@@ -546,9 +565,14 @@ async fn queue_counts_follow_active_inflight_done_and_dead() {
         .await
         .expect("enqueue")
         .expect("queued");
-    let queued = admin::snapshot(&mut conn, &settings, &[queue.clone()], Some(&host))
-        .await
-        .expect("queued");
+    let queued = admin::snapshot(
+        &mut conn,
+        &settings,
+        std::slice::from_ref(&queue),
+        Some(&host),
+    )
+    .await
+    .expect("queued");
     assert_eq!(queued.queues[0].active, 0);
     assert_eq!(queued.queues[0].scheduled, 1);
 
@@ -560,9 +584,14 @@ async fn queue_counts_follow_active_inflight_done_and_dead() {
     let _ = redis(&["ZADD", &workers, &now.to_string(), &name]);
     let _ = redis(&["ZREM", &scheduled, &task_id]);
     let _ = redis(&["SADD", &inflight, &task_id]);
-    let holding = admin::snapshot(&mut conn, &settings, &[queue.clone()], Some(&host))
-        .await
-        .expect("holding");
+    let holding = admin::snapshot(
+        &mut conn,
+        &settings,
+        std::slice::from_ref(&queue),
+        Some(&host),
+    )
+    .await
+    .expect("holding");
     assert_eq!(holding.queues[0].active, 0);
     assert_eq!(holding.queues[0].inflight, 1);
     assert_eq!(holding.queues[0].workers, 1);
@@ -570,25 +599,40 @@ async fn queue_counts_follow_active_inflight_done_and_dead() {
 
     let _ = redis(&["SREM", &inflight, &task_id]);
     let _ = redis(&["SADD", &done, &task_id]);
-    let finished = admin::snapshot(&mut conn, &settings, &[queue.clone()], Some(&host))
-        .await
-        .expect("done");
+    let finished = admin::snapshot(
+        &mut conn,
+        &settings,
+        std::slice::from_ref(&queue),
+        Some(&host),
+    )
+    .await
+    .expect("done");
     assert_eq!(finished.queues[0].inflight, 0);
     assert_eq!(finished.queues[0].done, 1);
 
     let dead_id = format!("{task_id}-dead");
     let _ = redis(&["SADD", &dead, &dead_id]);
-    let buried = admin::snapshot(&mut conn, &settings, &[queue.clone()], Some(&host))
-        .await
-        .expect("dead");
+    let buried = admin::snapshot(
+        &mut conn,
+        &settings,
+        std::slice::from_ref(&queue),
+        Some(&host),
+    )
+    .await
+    .expect("dead");
     assert_eq!(buried.queues[0].dead, 1);
 
     let _ = redis(&["DEL", &done, &dead]);
     let _ = redis(&["ZADD", &done, "1", &task_id]);
     let _ = redis(&["ZADD", &dead, "1", &dead_id]);
-    let sorted = admin::snapshot(&mut conn, &settings, &[queue.clone()], Some(&host))
-        .await
-        .expect("sorted");
+    let sorted = admin::snapshot(
+        &mut conn,
+        &settings,
+        std::slice::from_ref(&queue),
+        Some(&host),
+    )
+    .await
+    .expect("sorted");
     assert_eq!(sorted.queues[0].done, 1);
     assert_eq!(sorted.queues[0].dead, 1);
 }
@@ -688,18 +732,28 @@ async fn started_at_stays_while_locked_at_moves() {
     .await
     .expect("publish");
 
-    let first = admin::snapshot(&mut conn, &settings, &[queue.clone()], Some(&host))
-        .await
-        .expect("snapshot");
+    let first = admin::snapshot(
+        &mut conn,
+        &settings,
+        std::slice::from_ref(&queue),
+        Some(&host),
+    )
+    .await
+    .expect("snapshot");
     let task = &first.supervisors[0].children[0].tasks[0];
     assert_eq!(task.started_at, Some(started));
     assert_eq!(task.locked_at, Some(started + 10));
 
     let moved = started.saturating_add(40).to_string();
     let _ = redis(&["HSET", &meta, "locked_at", &moved]);
-    let second = admin::snapshot(&mut conn, &settings, &[queue.clone()], Some(&host))
-        .await
-        .expect("snapshot");
+    let second = admin::snapshot(
+        &mut conn,
+        &settings,
+        std::slice::from_ref(&queue),
+        Some(&host),
+    )
+    .await
+    .expect("snapshot");
     let task = &second.supervisors[0].children[0].tasks[0];
     assert_eq!(task.started_at, Some(started));
     assert_eq!(task.locked_at, Some(started + 40));
@@ -715,9 +769,14 @@ async fn started_at_stays_while_locked_at_moves() {
     }
     assert!(overwritten > started, "next delivery overwrites started_at");
     assert_eq!(redis(&["HGET", &meta, "locked_at"]), moved);
-    let third = admin::snapshot(&mut conn, &settings, &[queue.clone()], Some(&host))
-        .await
-        .expect("snapshot");
+    let third = admin::snapshot(
+        &mut conn,
+        &settings,
+        std::slice::from_ref(&queue),
+        Some(&host),
+    )
+    .await
+    .expect("snapshot");
     assert_eq!(
         third.supervisors[0].children[0].tasks[0].started_at,
         Some(overwritten)
@@ -1191,9 +1250,14 @@ async fn snapshot_includes_tasks_from_every_supervisor_queue() {
     .await
     .expect("publish");
 
-    let snap = admin::snapshot(&mut conn, &settings, &[quota.clone()], Some(&host))
-        .await
-        .expect("snapshot");
+    let snap = admin::snapshot(
+        &mut conn,
+        &settings,
+        std::slice::from_ref(&quota),
+        Some(&host),
+    )
+    .await
+    .expect("snapshot");
     assert_eq!(snap.queues.len(), 1);
     assert_eq!(snap.queues[0].name, quota);
     assert_eq!(snap.queues[0].inflight, 1);

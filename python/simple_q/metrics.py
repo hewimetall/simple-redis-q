@@ -4,10 +4,8 @@
 ``queue_name`` is always canonical: a ``.DQ`` or ``.XQ`` suffix is removed.
 Both gauges use ``multiprocess_mode="livesum"``. A retry increments
 ``dramatiq_message_retries_total`` once, on the canonical queue, when the
-retry is enqueued with a delay. Messages waiting in Redis are not in-memory
-delay, so they do not move ``dramatiq_delayed_messages_inprogress``. That gauge
-moves only while this process holds the message, and it returns to zero when
-this process releases it.
+retry is enqueued with a delay. A delayed message waits in Redis, so
+``dramatiq_delayed_messages_inprogress`` stays at zero.
 """
 
 from __future__ import annotations
@@ -42,7 +40,6 @@ DURATION_BUCKETS = (
 _LABELS = ["queue_name", "actor_name"]
 _READY = False
 _LOCK = threading.Lock()
-_DELAYED: dict[str, tuple[str, str]] = {}
 _STARTED: dict[str, float] = {}
 _METRICS: dict[str, Any] = {}
 
@@ -143,16 +140,6 @@ def _labels(queue: str, actor: str) -> tuple[str, str]:
     return (q_name(queue), actor)
 
 
-def value(metric: str, queue: str, actor: str) -> float:
-    setup()
-    collector = _METRICS[metric]
-    labels = _labels(queue, actor)
-    if metric == "duration":
-        sample = collector.labels(*labels)._sum.get()
-        return float(sample)
-    return float(collector.labels(*labels)._value.get())
-
-
 def note_retry(queue: str, actor: str) -> None:
     """One retry enqueue that carries a delay. The canonical queue is the label."""
 
@@ -160,31 +147,8 @@ def note_retry(queue: str, actor: str) -> None:
     _METRICS["retries"].labels(*_labels(queue, actor)).inc()
 
 
-def hold_delay(message_id: str, queue: str, actor: str) -> None:
-    """Count a message held in this process. A second hold of the same id is a no-op."""
-
-    setup()
-    labels = _labels(queue, actor)
-    with _LOCK:
-        if message_id in _DELAYED:
-            return
-        _DELAYED[message_id] = labels
-    _METRICS["delayed"].labels(*labels).inc()
-
-
-def release_delay(message_id: str) -> None:
-    """Drop an in-memory hold. A second release does not push the gauge negative."""
-
-    setup()
-    with _LOCK:
-        labels = _DELAYED.pop(message_id, None)
-    if labels is None:
-        return
-    _METRICS["delayed"].labels(*labels).dec()
-
-
 def start_attempt(message_id: str, queue: str, actor: str) -> None:
-    """Begin processing. This does not touch the delayed gauge."""
+    """Begin processing. This does not touch the delayed gauge, which stays at zero."""
 
     setup()
     _METRICS["inprogress"].labels(*_labels(queue, actor)).inc()

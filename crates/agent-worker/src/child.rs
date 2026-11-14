@@ -1,21 +1,25 @@
 //! One child process: interpreter, Redis workers, and the silence watch.
 //!
-//! Order is fixed. Import the application and read its tracing config before
-//! the subscriber exists, then start workers. On a normal return, flush the
-//! exporter and only then call `shutdown` in Python. Exit 2 does not flush.
+//! Order is fixed. Claim the supervisor pidfd, import the application, and
+//! read its tracing config before the subscriber exists, then start workers.
+//! On a normal return, flush the exporter and only then call `shutdown` in
+//! Python. Exit 2 does not flush.
+//!
+//! The pidfd wait is a task on this runtime, started before the application
+//! import. Parent exit sets the same shutdown flag as `SIGUSR1`. It is not a
+//! branch of the `select` that waits for workers: that branch would drop the
+//! worker future and cancel accepted work.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tokio::runtime::Builder;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 
 use simple_q_runtime::cleanup::sweep_queue;
 use simple_q_runtime::lock;
-use simple_q_runtime::names;
 use simple_q_runtime::ping::PingWatch;
 use simple_q_runtime::python::adopt_runtime;
 use simple_q_runtime::registry;
@@ -24,9 +28,6 @@ use crate::bridge;
 use crate::runtime;
 use crate::worker::{Shared, WorkerPool, run};
 
-const PING_EVERY: Duration = Duration::from_secs(2);
-const PING_TIMEOUT: Duration = Duration::from_secs(3);
-
 pub fn run_child(
     app: String,
     factory: bool,
@@ -34,6 +35,10 @@ pub fn run_child(
     concurrency: usize,
     max_tasks: u64,
 ) -> Result<()> {
+    // Take the descriptor before anything else can close or inherit it.
+    // Restoring cloexec and dropping the env var happen inside claim.
+    let parent_fd = crate::parent_pidfd::claim()?;
+    crate::slot_busy::install()?;
     runtime::initialize();
     let runtime = Builder::new_multi_thread().enable_all().build()?;
     let runtime: &'static tokio::runtime::Runtime = Box::leak(Box::new(runtime));
@@ -41,6 +46,14 @@ pub fn run_child(
         .map_err(|_| anyhow::anyhow!("Tokio runtime was already installed"))?;
 
     adopt_runtime(runtime);
+    let parent_exit = crate::parent_pidfd::Signal::new();
+    if let Some(fd) = parent_fd {
+        // The wait task is polled by the runtime workers from here on, including
+        // while `bridge::start` imports the application on this thread.
+        runtime
+            .block_on(crate::parent_pidfd::serve(fd, parent_exit.clone()))
+            .context("failed to watch the supervisor pidfd")?;
+    }
     let tracing = match bridge::start(&app, factory) {
         Ok(tracing) => tracing,
         Err(error) => {
@@ -75,12 +88,21 @@ pub fn run_child(
 
         let terminate = signal(SignalKind::terminate())?;
         let user = signal(SignalKind::user_defined1())?;
-        let lifecycle = lifecycle(shared.clone(), terminate, user, config.ping_budget());
+        let lifecycle = lifecycle(
+            shared.clone(),
+            terminate,
+            user,
+            config.ping_budget(),
+            config.ping_interval(),
+            config.ping_timeout(),
+            config.lifecycle_interval(),
+            parent_exit,
+        );
         let sweep_queues = queues.clone();
         let sweep_redis = shared.redis.clone();
         let sweep_config = config.clone();
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(Duration::from_secs(60));
+            let mut tick = tokio::time::interval(sweep_config.sweep_interval());
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tick.tick().await;
@@ -95,7 +117,7 @@ pub fn run_child(
                         now,
                         sweep_config.done_ttl_secs,
                         sweep_config.dead_ttl_secs,
-                        names::SWEEP_BATCH,
+                        sweep_config.sweep_batch_size(),
                     )
                     .await
                     {
@@ -107,6 +129,9 @@ pub fn run_child(
         let workers = run(queues, concurrency, shared.clone());
 
         tokio::pin!(lifecycle);
+        // Parent exit must not be a branch here. It only sets `shutdown` inside
+        // `lifecycle`. Dropping `workers` would cancel the monitor and the
+        // accepted delivery.
         let worker_result = tokio::select! {
             result = workers => result,
             code = &mut lifecycle => {
@@ -136,16 +161,27 @@ pub fn run_child(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn lifecycle(
     shared: Shared,
     mut terminate: tokio::signal::unix::Signal,
     mut user: tokio::signal::unix::Signal,
     ping_budget: std::time::Duration,
+    ping_interval: std::time::Duration,
+    ping_timeout: std::time::Duration,
+    lifecycle_interval: std::time::Duration,
+    parent: crate::parent_pidfd::Signal,
 ) -> Result<i32> {
     let mut watch = PingWatch::new(ping_budget);
     let mut next_ping = tokio::time::Instant::now();
 
     loop {
+        if let Some(error) = parent.failure() {
+            anyhow::bail!("supervisor pidfd watch failed: {error}");
+        }
+        if parent.exited() && request_graceful_drain(&shared) {
+            tracing::info!("supervisor exited; draining accepted work");
+        }
         let stop_for_drain =
             shared.draining.load(Ordering::SeqCst) || shared.shutdown.load(Ordering::SeqCst);
         if stop_for_drain && !shared.pool.is_empty() && registry::len() == 0 {
@@ -158,14 +194,19 @@ async fn lifecycle(
                 tracing::debug!("child ignored SIGTERM; the supervisor owns process recycling");
             }
             _ = user.recv() => {
-                tracing::info!("drain requested");
-                shared.shutdown.store(true, Ordering::SeqCst);
-                shared.pool.pause_all();
+                if request_graceful_drain(&shared) {
+                    tracing::info!("drain requested");
+                }
             }
-            _ = tokio::time::sleep(Duration::from_millis(200)) => {
+            _ = parent.notified() => {
+                // Exit and watch failure are handled at the top of the loop.
+                // This arm does not finish `lifecycle`, so the caller keeps
+                // waiting for accepted work.
+            }
+            _ = tokio::time::sleep(lifecycle_interval) => {
                 if tokio::time::Instant::now() >= next_ping {
-                    next_ping = tokio::time::Instant::now() + PING_EVERY;
-                    let ok = bridge::ping(PING_TIMEOUT).await;
+                    next_ping = tokio::time::Instant::now() + ping_interval;
+                    let ok = bridge::ping(ping_timeout).await;
                     let budget_elapsed = watch.observe(ok, std::time::Instant::now());
                     // A missed ping leaves renewal running. The budget is what stops it.
                     lock::note_ping(ok, budget_elapsed);
@@ -180,5 +221,40 @@ async fn lifecycle(
                 }
             }
         }
+    }
+}
+
+/// First transition into shutdown pauses workers. A second request, from
+/// `SIGUSR1` and the pidfd together, does not pause again and does not run
+/// cleanup twice. Cleanup stays after the worker monitor finishes.
+fn request_graceful_drain(shared: &Shared) -> bool {
+    request_drain_once(&shared.shutdown, || shared.pool.pause_all())
+}
+
+fn request_drain_once(shutdown: &AtomicBool, pause: impl FnOnce()) -> bool {
+    if shutdown.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    pause();
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use super::request_drain_once;
+
+    #[test]
+    fn drain_is_requested_once() {
+        let shutdown = AtomicBool::new(false);
+        let pauses = AtomicUsize::new(0);
+        let pause = || {
+            pauses.fetch_add(1, Ordering::SeqCst);
+        };
+        assert!(request_drain_once(&shutdown, pause));
+        assert!(!request_drain_once(&shutdown, pause));
+        assert!(shutdown.load(Ordering::SeqCst));
+        assert_eq!(pauses.load(Ordering::SeqCst), 1);
     }
 }

@@ -140,24 +140,22 @@ async fn a_delayed_message_stays_on_its_own_queue(conn: &mut ConnectionManager, 
     let stored = redis(&["HVALS", "qtest:data"]);
     assert!(stored.contains(&message_id), "{stored}");
     assert_eq!(
-        redis_api::incr_delivery(conn, &message_id, 0)
+        redis_api::incr_delivery(conn, &message_id, 0, 120)
             .await
             .expect("delivery"),
         1
     );
     let key = format!("delivery:{message_id}:0");
     assert_eq!(redis(&["GET", &key]), "1");
-    let ttl = redis(&["TTL", &key]);
-    assert!(ttl.parse::<i64>().expect("ttl") > 0, "{ttl}");
+    let ttl = redis(&["TTL", &key]).parse::<i64>().expect("ttl");
+    assert!((1..=120).contains(&ttl), "{ttl}");
     redis_api::release_delivery(conn, &message_id, 0)
         .await
         .expect("release");
     assert_eq!(redis(&["GET", &key]), "");
 }
 
-async fn sweep_removes_worker_metadata_absent_from_the_workers_set(
-    conn: &mut ConnectionManager,
-) {
+async fn sweep_removes_worker_metadata_absent_from_the_workers_set(conn: &mut ConnectionManager) {
     let queue = "wmeta745b";
     let workers = format!("{queue}:workers");
     let gone_name = "agent-worker.wmeta745b.host.1.gone0001";
@@ -226,9 +224,10 @@ async fn a_unique_key_is_held_until_a_terminal_delete(
     let idem = redis_api::idempotency_redis_key(queue, unique);
 
     let first_id = new_message_id();
-    let queued = redis_api::enqueue_job(conn, settings, job(queue, &first_id, 0, Some(unique)), None)
-        .await
-        .expect("enqueue");
+    let queued =
+        redis_api::enqueue_job(conn, settings, job(queue, &first_id, 0, Some(unique)), None)
+            .await
+            .expect("enqueue");
     assert_eq!(queued.as_deref(), Some(first_id.as_str()));
     assert_eq!(hlen(queue), 1);
     let held = redis(&["GET", &idem]);
@@ -239,10 +238,14 @@ async fn a_unique_key_is_held_until_a_terminal_delete(
     assert!(stored.contains(&first_id), "{stored}");
     assert!(stored.contains(unique), "{stored}");
 
-    let duplicate =
-        redis_api::enqueue_job(conn, settings, job(queue, &new_message_id(), 0, Some(unique)), None)
-        .await
-        .expect("duplicate");
+    let duplicate = redis_api::enqueue_job(
+        conn,
+        settings,
+        job(queue, &new_message_id(), 0, Some(unique)),
+        None,
+    )
+    .await
+    .expect("duplicate");
     assert_eq!(duplicate, None);
     assert_eq!(
         hlen(queue),
@@ -253,8 +256,8 @@ async fn a_unique_key_is_held_until_a_terminal_delete(
 
     let retry =
         redis_api::enqueue_job(conn, settings, job(queue, &first_id, 1, Some(unique)), None)
-        .await
-        .expect("retry");
+            .await
+            .expect("retry");
     assert_eq!(retry.as_deref(), Some(first_id.as_str()));
     assert_eq!(hlen(queue), 2);
     assert_eq!(
@@ -271,8 +274,8 @@ async fn a_unique_key_is_held_until_a_terminal_delete(
     let again_id = new_message_id();
     let again =
         redis_api::enqueue_job(conn, settings, job(queue, &again_id, 0, Some(unique)), None)
-        .await
-        .expect("reenqueue");
+            .await
+            .expect("reenqueue");
     assert_eq!(again.as_deref(), Some(again_id.as_str()));
     assert_eq!(hlen(queue), 3);
     assert!(!redis(&["GET", &idem]).is_empty());

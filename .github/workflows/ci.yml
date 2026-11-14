@@ -12,6 +12,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        id: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: rust-lint-py3.12
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      # One x86_64 job. rustfmt on the aarch64 wheel image collides with the
+      # cargo-fmt proxy, and these checks do not depend on the Python minor.
+      # extension-module is the wheel link. parent-exit-redis compiles the
+      # Redis queue test. The default workspace build is what the binary links.
+      - name: Clippy
+        env:
+          PYO3_PYTHON: ${{ steps.setup-python.outputs.python-path }}
+        run: |
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo clippy -p simple-q-runtime --all-targets --locked --features extension-module -- -D warnings
+          cargo clippy -p agent-worker --all-targets --locked --features parent-exit-redis -- -D warnings
+
   test:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -46,9 +83,9 @@ jobs:
           python3 -m venv .venv
           . .venv/bin/activate
           python -m pip install --upgrade pip
-          python -m pip install pytest "prometheus_client>=0.26" "maturin>=1.16,<2"
+          python -m pip install pytest pyright==1.1.414 "prometheus_client>=0.26" "maturin>=1.16,<2"
           maturin develop
-          python -m pytest python/tests/test_runtime_contract.py python/tests/test_lock_release.py python/tests/test_version_source.py python/tests/test_alter_option.py python/tests/test_middleware_stack.py python/tests/test_worker_launch.py -q
+          python -m pytest python/tests/test_runtime_contract.py python/tests/test_lock_release.py python/tests/test_version_source.py python/tests/test_alter_option.py python/tests/test_middleware_stack.py python/tests/test_worker_launch.py python/tests/test_interfaces.py python/tests/test_typecheck.py -q
           cargo test --workspace
 
   integration:
@@ -94,7 +131,7 @@ jobs:
           PYO3_PYTHON: ${{ steps.setup-python.outputs.python-path }}
 
       - name: Snapshot tests
-        run: cargo test -p simple-q-runtime --test admin -- --test-threads=1
+        run: cargo test -p simple-q-runtime --test admin --test poll_interval -- --test-threads=1
         env:
           PYO3_PYTHON: ${{ steps.setup-python.outputs.python-path }}
 
@@ -117,6 +154,15 @@ jobs:
           REDIS_URL_8: redis://127.0.0.1:6380/15
           PYTHONPATH: python
           PYO3_PYTHON: ${{ steps.setup-python.outputs.python-path }}
+
+      - name: Supervisor pidfd queue test
+        run: |
+          . .venv/bin/activate
+          cargo test -p agent-worker --features parent-exit-redis --test parent_exit_queue -- --test-threads=1
+        env:
+          PYO3_PYTHON: ${{ steps.setup-python.outputs.python-path }}
+          REDIS_URL: redis://127.0.0.1:6379/15
+          PYTHONPATH: python:python/tests
 
   worker-wheel:
     runs-on: ubuntu-latest

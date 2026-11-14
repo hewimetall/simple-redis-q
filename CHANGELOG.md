@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+A dropped or timed-out heartbeat, renewal, or ack is sent again for up to two minutes. redis-rs reconnects and leaves the retry to the caller; the worker follows `RedisError::retry_method`. Fetch and enqueue are not sent again. A backend error that still ends the worker restarts it in the same process under a new name. The child no longer exits on the first broken pipe. A gap longer than the orphan window can still run the body twice.
+
+On Linux the supervisor opens one pidfd and each worker waits on it. Supervisor exit, including `SIGKILL`, requests the existing drain. The accepted delivery finishes and is acked. The queue monitor is not cancelled. Fetch, heartbeat, and memory policy are unchanged. A kernel without `pidfd_open` cannot start the supervisor.
+
+CI runs `cargo fmt` and `cargo clippy -D warnings` on the pinned 1.99.1 toolchain, including the wheel link and the Redis queue test.
+
+`dramatiq_delayed_messages_inprogress` stays at zero. A delayed message waits in Redis, and this process does not keep a second in-memory hold. The child-memory byte parser is the one in `Config`.
+
+The worker passes the job to `App.dispatch` as a dict. The extension's admin reads return that same kind of value. `QueueAdmin` still returns `Snapshot`, `DeadPage`, and `TaskPage`. The Redis payload stays JSON. `Client.acquire_lock` and `MemoryClient.acquire_lock` take `ttl_seconds` positionally or by keyword, and also the keyword `ttl`. `@actor` keeps the handler's parameters. `simple_q.interfaces` is the client, app, and hook contract. `send` stays keyword-only.
+
+## 1.2.0
+
+An idle worker fetches on `SIMPLE_Q_POLL_INTERVAL_MS` (default 500) through Apalis `poll_with_interval`. A task that arrives during that idle no longer waits for the heartbeat. The heartbeat, ack, retry, and orphan window are unchanged.
+
+Python ping interval and per-stage timeout, the lifecycle wake, the sweep interval and batch, the fetch batch size, and the idempotency wait are `SIMPLE_Q_*` settings. Omitted values stay 2000 ms, 3000 ms per ping stage, 200 ms, 60 s, 100, 1, 20 ms, and 5000 ms. `lock_tasks` stays on. Apalis `max_attempts` stays 1, because a retry is a new enqueue. The delivery-counter TTL follows `SIMPLE_Q_DEAD_TTL_SECS`. An omitted ping budget is 1860 seconds: the built-in 30 minute time limit plus 60 seconds, not each actor's `time_limit`.
+
+A soft memory signal skips a child that is inside a delivery. The supervisor keeps one anonymous memfd for its own lifetime, one `AtomicU32` per slot. The child maps that page after start, closes the descriptor, and counts each delivery. The parent stores 0 before it starts a child in that slot, so a digit left by `SIGKILL` does not mark the next child busy. A hard signal does not read the digit. On macOS there is no memfd, and a soft signal uses RSS only.
+
+## 1.1.0
+
+The supervisor chooses a child for a memory limit by RSS. It does not look at whether that child is running a task. A per-child soft limit sends one `SIGUSR1` to every child over its own threshold, and a per-child hard limit sends `SIGKILL`. Several children can be signaled in the same second. At 80% of the cgroup working set, one not-yet-drained child, the largest RSS, gets `SIGUSR1`. If usage is still high a second later, the next largest gets it. At 95%, one child, the largest, is `SIGKILL`ed when its RSS is at least half the working set. If that child is already being killed for its own hard limit, no second child is killed. When the largest is below half, nobody is killed for the ratio, and the largest child that has not been asked to drain gets `SIGUSR1`. A `SIGUSR1` that the kernel does not deliver is not recorded, so the next second tries that child again.
+
+Lock-key examples are `demo:gate` and `demo:item:{name}`.
+
 The worker keeps trying to delete `unique_key` until the task is in `done` or `dead`, the process stops, or `SIMPLE_Q_UNIQUE_TTL_SECS` elapses. A Redis error during that wait is retried. A slow ack no longer leaves the key for the rest of the TTL while the process is still up. The default TTL stays 86400 seconds.
 
 CI keeps a separate Rust cache for each Python version. `PYO3_PYTHON` is the interpreter path from the job, so `agent-worker` links that version's `libpython`.

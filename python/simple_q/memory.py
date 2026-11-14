@@ -9,24 +9,42 @@ the key. This client does not open Redis.
 
 from __future__ import annotations
 
-from simple_q.dispatch import build_message
+from typing import Any, ParamSpec, TypeVar
+
+from simple_q.dispatch import Actor, build_message
+from simple_q.interfaces import OnSend, WorkerApp
+
+P = ParamSpec("P")
+R = TypeVar("R")
+S = TypeVar("S", bound=OnSend)
+
+
+def _require_lock_ttl(ttl_seconds: int | None, ttl: int | None) -> None:
+    """Accept the Redis name and the older ``ttl`` keyword."""
+
+    if ttl_seconds is not None and ttl is not None and ttl_seconds != ttl:
+        raise TypeError("acquire_lock received both ttl_seconds and ttl with different values")
+    if ttl_seconds is None and ttl is None:
+        raise TypeError("acquire_lock() missing required argument: 'ttl_seconds'")
 
 
 class MemoryClient:
-    def __init__(self, config=None):
+    def __init__(self, config: Any = None) -> None:
         self.config = config
-        self._queues: dict[str, list[dict]] = {}
+        self._queues: dict[str, list[dict[str, Any]]] = {}
         self._held: set[tuple[str, str]] = set()
-        self._on_send = []
+        self._on_send: list[OnSend] = []
         self._locks: dict[str, str] = {}
         self._alive: set[str] = set()
         self._closed = False
 
-    def on_send(self, fn):
+    def on_send(self, fn: S) -> S:
         self._on_send.append(fn)
         return fn
 
-    def _apply_on_send(self, actor_name: str, kwargs: dict, headers: dict) -> dict:
+    def _apply_on_send(
+        self, actor_name: str, kwargs: dict[str, Any], headers: dict[str, str]
+    ) -> dict[str, str]:
         current = dict(headers)
         for hook in self._on_send:
             updated = hook(actor_name, kwargs, current)
@@ -39,7 +57,7 @@ class MemoryClient:
             raise TypeError("headers must be dict[str, str]")
         return current
 
-    async def send(self, actor, **kwargs) -> str:
+    async def send(self, actor: Actor[P, R], **kwargs: Any) -> str:
         message_id = await self.send_with_options(actor, kwargs=kwargs)
         if message_id is None:
             raise RuntimeError("send did not enqueue a message")
@@ -47,11 +65,11 @@ class MemoryClient:
 
     async def send_with_options(
         self,
-        actor,
+        actor: Actor[P, R],
         *,
-        kwargs: dict | None = None,
+        kwargs: dict[str, Any] | None = None,
         delay: int | None = None,
-        headers: dict | None = None,
+        headers: dict[str, str] | None = None,
         unique_key: str | None = None,
     ) -> str | None:
         if self._closed:
@@ -97,7 +115,14 @@ class MemoryClient:
     async def close(self) -> None:
         self._closed = True
 
-    async def acquire_lock(self, key: str, ttl: int) -> str | None:
+    async def acquire_lock(
+        self,
+        key: str,
+        ttl_seconds: int | None = None,
+        *,
+        ttl: int | None = None,
+    ) -> str | None:
+        _require_lock_ttl(ttl_seconds, ttl)
         if key in self._locks:
             return None
         self._locks[key] = "memory"
@@ -109,7 +134,7 @@ class MemoryClient:
         del self._locks[key]
         return True
 
-    async def drain(self, app) -> None:
+    async def drain(self, app: WorkerApp) -> None:
         await app.startup()
         try:
             while True:
@@ -135,13 +160,13 @@ class MemoryClient:
     def depth(self, queue: str) -> int:
         return len(self._queues.get(str(queue), ()))
 
-    def _token(self, message: dict) -> tuple[str, str] | None:
+    def _token(self, message: dict[str, Any]) -> tuple[str, str] | None:
         key = message.get("unique_key")
         if not isinstance(key, str) or not key:
             return None
         return (str(message.get("queue")), key)
 
-    def _push(self, message: dict) -> bool:
+    def _push(self, message: dict[str, Any]) -> bool:
         token = self._token(message)
         if token is not None and token in self._held:
             return False
@@ -150,16 +175,16 @@ class MemoryClient:
         self._queues.setdefault(str(message["queue"]), []).append(message)
         return True
 
-    def _pop(self) -> dict | None:
+    def _pop(self) -> dict[str, Any] | None:
         for pending in self._queues.values():
             if pending:
                 return pending.pop(0)
         return None
 
-    def _requeue(self, message: dict) -> None:
+    def _requeue(self, message: dict[str, Any]) -> None:
         self._queues.setdefault(str(message["queue"]), []).append(message)
 
-    def _release_unique(self, message: dict) -> None:
+    def _release_unique(self, message: dict[str, Any]) -> None:
         token = self._token(message)
         if token is not None:
             self._held.discard(token)

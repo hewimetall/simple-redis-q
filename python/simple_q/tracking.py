@@ -1,7 +1,11 @@
 import asyncio
+from collections.abc import Awaitable
+from typing import TypeVar
+
+T = TypeVar("T")
 
 
-async def tracked(awaitable, name: str):
+async def tracked(awaitable: Awaitable[T], name: str) -> T:
     """Name the running asyncio task so the supervisor can request cancellation.
 
     The name is diagnostic. Cancelling it does not stop native code that holds

@@ -102,10 +102,10 @@ async fn discover_queues(
             .await
             .with_context(|| format!("failed to read supervisor {member}"))?;
         let stored_host = field(&fields, 0).or_else(|| field(&fields, 1));
-        if let Some(host) = host_filter {
-            if !member_is_host(&member, host, stored_host) {
-                continue;
-            }
+        if let Some(host) = host_filter
+            && !member_is_host(&member, host, stored_host)
+        {
+            continue;
         }
         if let Some(raw) = field(&fields, 3) {
             names.extend(parse_queue_field(raw));
@@ -137,10 +137,10 @@ fn parse_queue_field(raw: &str) -> Vec<String> {
     if trimmed.is_empty() {
         return Vec::new();
     }
-    if trimmed.starts_with('[') {
-        if let Ok(names) = serde_json::from_str::<Vec<String>>(trimmed) {
-            return names;
-        }
+    if trimmed.starts_with('[')
+        && let Ok(names) = serde_json::from_str::<Vec<String>>(trimmed)
+    {
+        return names;
     }
     trimmed
         .split(|ch: char| ch == ',' || ch.is_whitespace())
@@ -432,7 +432,7 @@ fn bytes_or_dash(bytes: Option<u64>) -> String {
 fn format_bytes(bytes: u64) -> String {
     const UNITS: [(u64, &str); 3] = [(1024 * 1024 * 1024, "G"), (1024 * 1024, "M"), (1024, "K")];
     for (unit, suffix) in UNITS {
-        if bytes >= unit && bytes % unit == 0 {
+        if bytes >= unit && bytes.is_multiple_of(unit) {
             let whole = bytes / unit;
             if whole < 10_000 {
                 return format!("{whole}{suffix}");
@@ -509,6 +509,7 @@ mod tests {
         assert_eq!(format_uptime(1_000, 1_000 + 38 * 60), "38m");
         assert_eq!(format_uptime(1_000, 1_000 + 2 * 3_600 + 5 * 60), "2h5m");
         assert_eq!(display_version("1.0.0-rc7"), "1.0.0rc7");
+        assert_eq!(display_version("1.1.0"), "1.1.0");
     }
 
     #[test]
@@ -538,7 +539,7 @@ mod tests {
                 pid: 1,
                 started_at,
                 last_seen: taken_at,
-                version: "1.0.0-rc7".to_owned(),
+                version: "1.1.0".to_owned(),
                 queues: vec!["quota".to_owned()],
                 processes: 3,
                 concurrency: 1,
@@ -618,7 +619,7 @@ mod tests {
         };
         let text = render_text(&snapshot, false);
         let expected = "\
-supervisor  worker-quota-6f8b9c7d4-x2k9p  pid 1  up 38m  simple-q 1.0.0rc7
+supervisor  worker-quota-6f8b9c7d4-x2k9p  pid 1  up 38m  simple-q 1.1.0
 queues      quota  processes 3/3  concurrency 1  max_tasks 500
 memory      cgroup 2.1G / 4G  child soft 1G / hard 1500M
 counters    recycled 14  soft 2  hard 1  restarts 0
@@ -649,6 +650,7 @@ quota  12      1          4         9873  0";
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn child(
         slot: u32,
         pid: u32,

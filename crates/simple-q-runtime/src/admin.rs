@@ -1389,15 +1389,15 @@ fn process_state(
     alive: bool,
 ) -> (String, Option<String>) {
     if let Some(child) = &proc.child {
-        if child.state == ChildState::Running.as_str() {
-            if let (Some(done), Some(max)) = (tasks_done, max_tasks) {
-                if max > 0 && done >= max {
-                    return (
-                        ChildState::Draining.as_str().to_owned(),
-                        Some(ChildReason::MaxTasks.as_str().to_owned()),
-                    );
-                }
-            }
+        if child.state == ChildState::Running.as_str()
+            && let (Some(done), Some(max)) = (tasks_done, max_tasks)
+            && max > 0
+            && done >= max
+        {
+            return (
+                ChildState::Draining.as_str().to_owned(),
+                Some(ChildReason::MaxTasks.as_str().to_owned()),
+            );
         }
         return (child.state.clone(), child.reason.clone());
     }
@@ -1777,10 +1777,10 @@ fn scored_members(value: &redis::Value) -> Vec<(String, f64)> {
     let mut members = Vec::new();
     let mut index = 0;
     while index + 1 < items.len() {
-        if let Some(member) = value_string(&items[index]) {
-            if let Some(score) = value_f64(&items[index + 1]) {
-                members.push((member, score));
-            }
+        if let Some(member) = value_string(&items[index])
+            && let Some(score) = value_f64(&items[index + 1])
+        {
+            members.push((member, score));
         }
         index += 2;
     }
