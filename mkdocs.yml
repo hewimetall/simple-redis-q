@@ -39,33 +39,21 @@ nav:
   - Migration from Dramatiq: migration.md
   - Redis keys: redis-keys.md
   - Limitations: limitations.md
-  - Architecture:
-      - How it runs: architecture.md
+  - Architecture: architecture.md
+  - Research example:
+      - Index: research/README.md
+      - Crate: research/example/README.md
       - Plan: architecture/plan.md
       - Contracts: architecture/contracts.md
       - Diagrams: architecture/diagrams.md
-  - Decisions:
-      - Ports and adapters: adr/0001-ports-and-adapters.md
-      - Queue backend: adr/0002-queue-backend-keep-apalis-pending-oxana-spike.md
-      - Process mechanism: adr/0003-process-mechanism-watchexec-supervisor.md
-      - Parent without CPython: adr/0004-parent-without-cpython.md
-      - License: adr/0005-license-undeclared.md
-      - Wheels: adr/0006-wheel-delivery.md
-  - Research: research/README.md
-  - Testing: testing/strategy.md
-  - Architectural fork:
-      - Research index: research/README.md
       - Baseline: research/baseline.md
       - Capability matrix: research/capability-matrix.md
       - Candidates: research/candidates.md
       - Spike results: research/spikes/RESULTS.md
-      - Plan: architecture/plan.md
-      - Contracts: architecture/contracts.md
-      - Diagrams: architecture/diagrams.md
-      - Testing strategy: testing/strategy.md
+      - Testing notes: testing/strategy.md
       - ADR 0001 Ports: adr/0001-ports-and-adapters.md
       - ADR 0002 Queue backend: adr/0002-queue-backend-keep-apalis-pending-oxana-spike.md
       - ADR 0003 Supervisor: adr/0003-process-mechanism-watchexec-supervisor.md
       - ADR 0004 Parent no CPython: adr/0004-parent-without-cpython.md
       - ADR 0005 License: adr/0005-license-undeclared.md
-      - ADR 0006 Wheel delivery: adr/0006-wheel-delivery.md
+      - ADR 0006 Wheels: adr/0006-wheel-delivery.md

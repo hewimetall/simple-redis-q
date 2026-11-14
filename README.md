@@ -43,4 +43,4 @@ async def enqueue() -> None:
 
 ## Documentation
 
-These pages describe main, package 1.2.0: [docs/index.md](docs/index.md). The running worker is `agent-worker` and `simple-q-runtime`. `simple-q-core` is the fork contract crate and is not linked into that worker. The split is on the [architecture](docs/architecture.md) page.
+These pages describe main, package 1.2.0: [docs/index.md](docs/index.md). The running worker is `agent-worker` and `simple-q-runtime`. A research example of a later fork is under `docs/research/example` and is not part of the build.

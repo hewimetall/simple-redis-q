@@ -16,5 +16,5 @@ GitHub reports no license for `hewimetall/simple-redis-q`. The `v1.2.0` tree has
 ## Consequences
 
 - Research and internal architectural work may continue on a branch.
-- The tree on main still publishes `simple-q-runtime` and `simple-q-worker` from a version tag. This record does not change that workflow. `simple-q-core` is `publish = false`.
+- The tree on main still publishes `simple-q-runtime` and `simple-q-worker` from a version tag. This record does not change that workflow. The research example is not a workspace member and is not published.
 - A public redistribution of the fork stays blocked until the repository has an SPDX license. This record does not add one.

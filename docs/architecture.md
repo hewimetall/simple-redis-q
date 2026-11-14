@@ -6,25 +6,9 @@ The containers inside simple-q are **Client**, **App**, **Config**, the **worker
 
 `simple_q.interfaces` is the structural contract. The Redis `Client` and `MemoryClient` both satisfy `Client` without inheriting it: `send`, `send_with_options`, `on_send`, `worker_alive`, `close`, `acquire_lock`, and `release_lock`. `acquire_lock` takes `ttl_seconds` by position or by name, and also the keyword `ttl`. The same number may be passed under both names. Two different numbers raise `TypeError`. `App` satisfies `WorkerApp`. The child calls `client`, `tracing`, `startup`, `shutdown`, `dispatch`, and `note_dead`. `dispatch` receives the job as a dict and returns a dict. Hooks are callback protocols. An object may `install(client, app)`. There is no required middleware base class. `@actor` returns `Actor` with the handler's parameters. `send` passes those arguments by keyword. `CurrentMessage` stays the per-task context object.
 
-## What runs, and what is only specified
+The workspace members are `simple-q-runtime` and `agent-worker`. A research example of a later fork sits at [docs/research/example](research/example/README.md). It is excluded from the workspace. Nothing in the worker or the extension depends on it, and `cargo test --workspace` does not build it. The parent still calls `runtime::initialize` and `bridge::read_client`. It loads the `App` and takes the Redis URL from that client. The supervisor is still `supervisor.rs`. The queue is still Apalis 1.1.1 inside the worker.
 
-Three crates are in the workspace. Two of them run.
-
-| Crate | On main |
-| --- | --- |
-| `simple-q-runtime` | Redis, locks, admin, and the importable extension |
-| `agent-worker` | The supervisor and the child that calls Python |
-| `simple-q-core` | Attempt, drain, and parent types for the fork. `publish = false`. The worker and the extension do not depend on it |
-
-The parent still calls `runtime::initialize` and `bridge::read_client`. It loads the `App` and takes the Redis URL from that client. `PARENT_NO_CPYTHON_IMPLEMENTED` in `simple-q-core` is `false`. [ADR 0004](adr/0004-parent-without-cpython.md) is the target for a later stage, not this process.
-
-The call chains below describe the process that ships. The [plan](architecture/plan.md), the [contracts](architecture/contracts.md), and the [diagrams](architecture/diagrams.md) describe the fork. Stage B is those contracts and the unit tests in `simple-q-core`. Stage C, a parent that does not start CPython, has not started. `watchexec-supervisor` is a spike. The supervisor on main is still `supervisor.rs`. The queue on main is still Apalis 1.1.1 inside the worker, not a `QueuePort` adapter.
-
-[ADR 0005](adr/0005-license-undeclared.md) records that the repository has no `LICENSE` file. It does not change the tag workflow. `simple-q-core` is not a wheel.
-
-CI runs the Python matrix, the Redis integration jobs, the worker wheel, and one Rust job: `cargo fmt --check` and `cargo clippy -D warnings` for the default build, the `extension-module` wheel link, and `parent-exit-redis`.
-
-This is the context diagram for the process that ships.
+This is the context diagram for that process.
 
 ```mermaid
 C4Context

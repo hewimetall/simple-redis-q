@@ -10,16 +10,17 @@ This plan does **not** rewrite `worker.rs` wholesale. Stage C has not started. `
 
 ## 1. Target crate layout
 
-What main has, and what this plan still wants:
+What main runs, and where the example sits:
 
 ```text
-Landed, and running:
+Workspace, and running:
   crates/simple-q-runtime/   # Redis, locks, admin, extension
   crates/agent-worker/       # supervisor.rs and the Python child
 
-Landed, not linked:
-  crates/simple-q-core/      # Attempt, drain, parent bootstrap, port types
-                             # publish = false; no Redis, PyO3, or OS types
+Research example, excluded from the workspace:
+  docs/research/example/simple-q-core/
+                             # Attempt, drain, parent bootstrap, port types
+                             # not linked; cargo test --workspace does not build it
 
 Target, not created:
   crates/runtime/            # orchestration, attempt lifecycle, drain barrier
@@ -33,7 +34,7 @@ tests/ contract/ integration/ process/ e2e/   # not split yet
 benchmarks/                  # not added
 ```
 
-**Composition root:** the target `crates/cli` wires adapters. `simple-q-core` never constructs Redis clients or `pyo3::Python`. The binary that ships still wires Redis and Python inside `agent-worker`.
+**Composition root:** the target `crates/cli` would wire adapters. The example never constructs Redis clients or `pyo3::Python`. The binary that ships still wires Redis and Python inside `agent-worker`.
 
 ---
 
@@ -110,7 +111,7 @@ Format: `проблема → решение → место → альтерна
 ```text
 ядро смешано с Redis/PyO3/OS
 → порты + адаптеры; composition root в cli
-→ crates/simple-q-core + future adapter crates
+→ docs/research/example/simple-q-core, outside the workspace
 → «новая папка поверх монолита» без портов
 → стоимость: перенос по capability + contract tests
 → unit на fake QueuePort; contract suite на Redis adapter

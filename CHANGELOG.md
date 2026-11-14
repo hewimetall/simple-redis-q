@@ -8,7 +8,7 @@ On Linux the supervisor opens one pidfd and each worker waits on it. Supervisor 
 
 CI runs `cargo fmt` and `cargo clippy -D warnings` on the pinned 1.99.1 toolchain, including the wheel link and the Redis queue test.
 
-The docs describe main. `simple-q-core` holds the fork contracts and is not linked into the worker. The parent still loads the `App`.
+The fork contracts are a research example under `docs/research/example`. They are not a workspace member and are not linked into the worker. The parent still loads the `App`.
 
 `dramatiq_delayed_messages_inprogress` stays at zero. A delayed message waits in Redis, and this process does not keep a second in-memory hold. The child-memory byte parser is the one in `Config`.
 
