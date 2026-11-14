@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+Apalis is 1.2.0 and the admin board is 1.1.0. apalis-redis stays 1.1.1, and lease renewal still sends the task ids. Tokio is no longer the `full` feature set: filesystem and stdio are off. The Redis client drops its default command modules and keeps Lua scripts.
+
 A dropped or timed-out heartbeat, renewal, or ack is sent again for up to two minutes. redis-rs reconnects and leaves the retry to the caller; the worker follows `RedisError::retry_method`. Fetch and enqueue are not sent again. A backend error that still ends the worker restarts it in the same process under a new name. The child no longer exits on the first broken pipe. A gap longer than the orphan window can still run the body twice.
 
 On Linux the supervisor opens one pidfd and each worker waits on it. Supervisor exit, including `SIGKILL`, requests the existing drain. The accepted delivery finishes and is acked. The queue monitor is not cancelled. Fetch, heartbeat, and memory policy are unchanged. A kernel without `pidfd_open` cannot start the supervisor.

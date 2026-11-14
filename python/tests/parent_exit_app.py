@@ -10,8 +10,14 @@ from simple_q import Actor, App, Client, Config
 
 async def gate():
     started = os.environ["GATE_STARTED"]
-    with open(started, "w", encoding="utf-8") as handle:
+    # `open(path, "w")` creates an empty file before the pid is written.
+    # The test polls that path, so publish the pid with a rename.
+    temporary = f"{started}.tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
         handle.write(str(os.getpid()))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, started)
     release = os.environ["GATE_RELEASE"]
     while not os.path.exists(release):
         await asyncio.sleep(0.05)

@@ -99,14 +99,9 @@ fn killing_the_supervisor_drains_the_accepted_task() {
         );
     }
 
-    if !wait_until(Duration::from_secs(60), || started.is_file()) {
-        blow(&guard.log, "worker did not start the task");
-    }
-    let worker: u32 = std::fs::read_to_string(&started)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let Some(worker) = wait_pid_file(&started, Duration::from_secs(60)) else {
+        blow(&guard.log, "worker did not publish its pid");
+    };
     // Record the pid before any failure so Drop can stop an orphan. The
     // kernel's /proc/pid/task/pid/children list is not a complete child list.
     guard.worker = Some(worker);
@@ -209,14 +204,18 @@ fn wait_task_id(url: &str, queue: &str, timeout: Duration) -> Option<String> {
     }
 }
 
-fn wait_until(timeout: Duration, mut ready: impl FnMut() -> bool) -> bool {
+fn wait_pid_file(path: &Path, timeout: Duration) -> Option<u32> {
     let deadline = Instant::now() + timeout;
     loop {
-        if ready() {
-            return true;
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(pid) = text.trim().parse::<u32>() {
+                if pid > 0 {
+                    return Some(pid);
+                }
+            }
         }
         if Instant::now() >= deadline {
-            return false;
+            return None;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
