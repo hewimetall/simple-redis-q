@@ -6,6 +6,8 @@ A dropped or timed-out heartbeat, renewal, or ack is sent again for up to two mi
 
 On Linux the supervisor opens one pidfd and each worker waits on it. Supervisor exit, including `SIGKILL`, requests the existing drain. The accepted delivery finishes and is acked. The queue monitor is not cancelled. Fetch, heartbeat, and memory policy are unchanged. A kernel without `pidfd_open` cannot start the supervisor.
 
+`dramatiq_delayed_messages_inprogress` stays at zero. A delayed message waits in Redis, and this process does not keep a second in-memory hold. The child-memory byte parser is the one in `Config`.
+
 The worker passes the job to `App.dispatch` as a dict. The extension's admin reads return that same kind of value. `QueueAdmin` still returns `Snapshot`, `DeadPage`, and `TaskPage`. The Redis payload stays JSON. `Client.acquire_lock` and `MemoryClient.acquire_lock` take `ttl_seconds` positionally or by keyword, and also the keyword `ttl`. `@actor` keeps the handler's parameters. `simple_q.interfaces` is the client, app, and hook contract. `send` stays keyword-only.
 
 ## 1.2.0

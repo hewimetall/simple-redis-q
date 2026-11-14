@@ -11,7 +11,7 @@ The accounting matches the fixed Prometheus middleware, not a second naming sche
 - `queue_name` is canonical. A `.DQ` or `.XQ` suffix is removed before the label is written.
 - `dramatiq_messages_inprogress` and `dramatiq_delayed_messages_inprogress` use `livesum`.
 - A retry increments `dramatiq_message_retries_total` once, when the retry is enqueued with a delay.
-- A delay that lives in Redis does not move `dramatiq_delayed_messages_inprogress`. That gauge is only the message this process is holding.
+- A delayed message waits in Redis, so `dramatiq_delayed_messages_inprogress` stays at zero.
 
 Dramatiq middleware does not plug in. There is no middleware chain to append, no broker middleware, and no `before_process_message` / `after_process_message` hook of that shape. The 1.0 hooks are the ones on `Client` and `App`:
 

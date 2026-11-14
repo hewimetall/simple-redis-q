@@ -239,7 +239,7 @@ impl SlotDigits {
         self.with_cell(slot, |cell| cell.store(0, Ordering::Relaxed));
     }
 
-    pub fn load(&self, slot: u32) -> u32 {
+    fn load(&self, slot: u32) -> u32 {
         self.with_cell(slot, |cell| cell.load(Ordering::Relaxed))
             .unwrap_or(0)
     }

@@ -608,39 +608,29 @@ pub fn load_child_memory_limits(
 }
 
 /// `K`, `M`, and `G` are powers of 1024, with an optional `B`. A bare number
-/// is bytes. Fractions, zero, and anything else are rejected.
+/// is bytes. The accepted spellings are `config::parse_byte_size`. This wrapper
+/// keeps the supervisor's error text.
 pub fn parse_byte_size(raw: &str) -> Result<u64, ChildMemoryConfigError> {
-    let text = raw.trim();
-    if text.is_empty() {
-        return Err(ChildMemoryConfigError::invalid(raw));
+    match simple_q_runtime::config::parse_byte_size(raw) {
+        Ok(value) => Ok(value),
+        Err(_) if byte_quantity_is_zero(raw) => Err(ChildMemoryConfigError::zero(raw)),
+        Err(_) => Err(ChildMemoryConfigError::invalid(raw)),
     }
+}
+
+fn byte_quantity_is_zero(raw: &str) -> bool {
+    let text = raw.trim();
     let split_at = text
         .char_indices()
         .find(|(_, ch)| !ch.is_ascii_digit())
         .map(|(index, _)| index)
         .unwrap_or(text.len());
     let (digits, suffix) = text.split_at(split_at);
-    if digits.is_empty() {
-        return Err(ChildMemoryConfigError::invalid(raw));
-    }
     let suffix = suffix.trim().to_ascii_lowercase();
-    let multiplier = match suffix.as_str() {
-        "" | "b" => 1_u64,
-        "k" | "kb" => 1024,
-        "m" | "mb" => 1024 * 1024,
-        "g" | "gb" => 1024 * 1024 * 1024,
-        _ => return Err(ChildMemoryConfigError::invalid(raw)),
-    };
-    let value: u64 = match digits.parse() {
-        Ok(value) => value,
-        Err(_) => return Err(ChildMemoryConfigError::invalid(raw)),
-    };
-    if value == 0 {
-        return Err(ChildMemoryConfigError::zero(raw));
-    }
-    value
-        .checked_mul(multiplier)
-        .ok_or_else(|| ChildMemoryConfigError::invalid(raw))
+    matches!(
+        suffix.as_str(),
+        "" | "b" | "k" | "kb" | "m" | "mb" | "g" | "gb"
+    ) && digits.parse::<u64>() == Ok(0)
 }
 
 /// What one child's RSS means for that pid alone.
