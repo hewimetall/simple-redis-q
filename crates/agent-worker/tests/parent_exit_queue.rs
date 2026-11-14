@@ -15,12 +15,12 @@ fn killing_the_supervisor_drains_the_accepted_task() {
     assert_eq!(pong, "PONG", "Redis at {url} did not answer PING");
 
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let pythonpath = std::env::join_paths([
-        root.join("python"),
-        root.join("python/tests"),
-        PathBuf::from(std::env::var("PYTHONPATH").unwrap_or_default()),
-    ])
-    .unwrap();
+    let mut paths = vec![root.join("python"), root.join("python/tests")];
+    if let Ok(existing) = std::env::var("PYTHONPATH") {
+        paths.extend(std::env::split_paths(&existing).filter(|path| !path.as_os_str().is_empty()));
+    }
+    let pythonpath = std::env::join_paths(&paths)
+        .unwrap_or_else(|error| panic!("PYTHONPATH cannot be joined from {paths:?}: {error}"));
     let import = Command::new("python3")
         .arg("-c")
         .arg("import simple_q, parent_exit_app")
