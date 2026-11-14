@@ -1,0 +1,7 @@
+{
+  "include": ["python/simple_q", "python/tests/typecheck/usage.py"],
+  "exclude": ["**/__pycache__"],
+  "extraPaths": ["python"],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "standard"
+}

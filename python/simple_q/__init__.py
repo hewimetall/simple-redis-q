@@ -4,6 +4,8 @@ Importing this package does not open Redis. ``Client`` opens a connection on
 the first send. ``@actor`` only records a declaration.
 """
 
+from typing import TYPE_CHECKING
+
 from simple_q.dispatch import (
     MESSAGE_VERSION,
     Actor,
@@ -15,6 +17,10 @@ from simple_q.dispatch import (
 from simple_q.memory import MemoryClient
 from simple_q.message import current_message, worker_name
 from simple_q.tracing import Tracing
+
+if TYPE_CHECKING:
+    from simple_q._runtime import Client as Client, Config as Config
+    from simple_q.admin import QueueAdmin as QueueAdmin
 
 
 def __getattr__(name: str):

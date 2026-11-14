@@ -254,6 +254,7 @@ dependencies = [
  "opentelemetry_sdk",
  "pyo3",
  "pyo3-async-runtimes",
+ "pythonize",
  "redis",
  "rustix",
  "serde_json",
@@ -1672,6 +1673,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pythonize"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81dc750465ccfd42f746835ba6d9001f9fb780249d7e6acdb4f76244000045b2"
+dependencies = [
+ "pyo3",
+ "serde",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2016,6 +2027,7 @@ dependencies = [
  "apalis-redis",
  "pyo3",
  "pyo3-async-runtimes",
+ "pythonize",
  "redis",
  "serde",
  "serde_json",

@@ -103,7 +103,7 @@ def serve() -> None:
             self.end_headers()
             self.wfile.write(body)
 
-        def log_message(self, fmt, *args):
+        def log_message(self, format: str, *args: object) -> None:
             return
 
     host, port = exposition_address()

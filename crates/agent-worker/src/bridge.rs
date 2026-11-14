@@ -1,7 +1,7 @@
 //! Adapter from the worker to the Python app.
 //!
 //! The worker calls into Python by function name (`tracked`, `shutdown`,
-//! `note_retry`, `note_dead`). The job crosses this boundary as JSON.
+//! `note_retry`, `note_dead`). The job crosses this boundary as a dict.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -185,14 +185,13 @@ async fn execute_tracked(
     let mut message = serde_json::to_value(job).context("message is not JSON")?;
     message["deliveries"] = Value::from(deliveries);
     message["worker_name"] = Value::String(worker_name.to_owned());
-    let message_json = serde_json::to_string(&message).context("message is not JSON")?;
 
     let awaitable: Py<PyAny> = Python::attach(|py| -> PyResult<Py<PyAny>> {
         let app = APP
             .get()
             .context("registry is not loaded")
             .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
-        let parsed = py.import("json")?.call_method1("loads", (message_json,))?;
+        let parsed = pythonize::pythonize(py, &message)?;
         let coroutine = app.bind(py).call_method1("dispatch", (parsed,))?;
         let tracked = py
             .import("simple_q.tracking")?
@@ -304,7 +303,7 @@ pub async fn note_dead(
             .get()
             .context("registry is not loaded")
             .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
-        let payload = json_to_py(py, &kwargs)?;
+        let payload = pythonize::pythonize(py, &kwargs)?;
         let keywords = PyDict::new(py);
         keywords.set_item("error", error)?;
         let coroutine = app.bind(py).call_method(
@@ -353,45 +352,15 @@ fn cancel_named(py: Python<'_>, name: &str) -> PyResult<()> {
     Ok(())
 }
 
-fn json_to_py<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
-    use pyo3::types::{PyBool, PyFloat, PyInt, PyList, PyString};
-
-    match value {
-        Value::Null => Ok(py.None().into_bound(py)),
-        Value::Bool(item) => Ok(PyBool::new(py, *item).to_owned().into_any()),
-        Value::Number(number) => {
-            if let Some(item) = number.as_i64() {
-                Ok(PyInt::new(py, item).into_any())
-            } else if let Some(item) = number.as_u64() {
-                Ok(PyInt::new(py, item).into_any())
-            } else if let Some(item) = number.as_f64() {
-                Ok(PyFloat::new(py, item).into_any())
-            } else {
-                Ok(PyString::new(py, &number.to_string()).into_any())
-            }
-        }
-        Value::String(item) => Ok(PyString::new(py, item).into_any()),
-        Value::Array(items) => {
-            let list = PyList::empty(py);
-            for item in items {
-                list.append(json_to_py(py, item)?)?;
-            }
-            Ok(list.into_any())
-        }
-        Value::Object(items) => {
-            let dict = PyDict::new(py);
-            for (key, item) in items {
-                dict.set_item(key, json_to_py(py, item)?)?;
-            }
-            Ok(dict.into_any())
-        }
-    }
-}
-
 fn py_to_json(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Value> {
     if value.is_none() {
         return Ok(Value::Null);
     }
+    if let Ok(parsed) = pythonize::depythonize::<Value>(value) {
+        return Ok(parsed);
+    }
+    // A handler may return an object that is not JSON. Stringify that object
+    // and keep the rest of the outcome dict, which is what `json.dumps(default=str)` did.
     let json = py.import("json")?;
     let dumps = json.getattr("dumps")?;
     let kwargs = PyDict::new(py);

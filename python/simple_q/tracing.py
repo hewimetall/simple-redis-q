@@ -7,7 +7,13 @@ per-target levels for the OpenTelemetry layer.
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import ReadableSpan
+    from opentelemetry.sdk.trace.export import SpanExportResult
 
 DEFAULT_TARGETS = {
     "agent_worker": "info",
@@ -16,20 +22,28 @@ DEFAULT_TARGETS = {
 }
 
 
+class SpanExporter(Protocol):
+    """The two methods the worker calls. A real OpenTelemetry exporter matches."""
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult: ...
+
+    def shutdown(self) -> None: ...
+
+
 class Tracing:
     def __init__(
         self,
         *,
-        exporter: Any,
-        resource: Any,
+        exporter: SpanExporter,
+        resource: Resource,
         targets: dict[str, str] | None = None,
         max_queue_size: int = 2048,
         max_export_batch_size: int = 512,
         scheduled_delay_ms: int = 5000,
         export_timeout_ms: int = 10000,
-    ):
-        self.exporter = exporter
-        self.resource = resource
+    ) -> None:
+        self.exporter: SpanExporter = exporter
+        self.resource: Resource = resource
         # None uses the product crates. An explicit empty dict stays empty
         # and the child rejects it, because an empty filter would export nothing.
         self.targets = dict(DEFAULT_TARGETS if targets is None else targets)
