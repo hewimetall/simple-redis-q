@@ -131,7 +131,11 @@ struct QueueState {
 }
 
 pub async fn run(queues: Vec<String>, concurrency: usize, shared: Shared) -> Result<()> {
-    let mut monitor = Monitor::new();
+    // A backend error used to end the monitor, and the child exited.
+    // Apalis restarts the worker when this returns true. The factory then
+    // uses a new name, so the old inflight set can be orphaned.
+    let mut monitor = Monitor::new()
+        .should_restart(|worker, error| restart_after_backend_error(worker.restarts(), error));
 
     for queue in queues {
         let backend = redis_api::worker_storage(shared.redis.clone(), &queue, &shared.config)?;
@@ -139,30 +143,49 @@ pub async fn run(queues: Vec<String>, concurrency: usize, shared: Shared) -> Res
             shared: shared.clone(),
         };
         let pool = shared.pool.clone();
-        let worker_name = worker_name(&queue);
-        shared.note_worker(&queue, &worker_name);
+        let initial_name = worker_name(&queue);
+        let generation_stop = Arc::new(Mutex::new(Arc::new(AtomicBool::new(false))));
         let shared_for_event = shared.clone();
         let queue_for_event = queue.clone();
 
-        monitor = monitor.register(move |_| {
+        monitor = monitor.register(move |restarts| {
+            let name = if restarts == 0 {
+                initial_name.clone()
+            } else {
+                worker_name(&queue_for_event)
+            };
+            let stop_this = {
+                let mut current = generation_stop.lock().expect("generation");
+                current.store(true, Ordering::Relaxed);
+                let next = Arc::new(AtomicBool::new(false));
+                *current = next.clone();
+                next
+            };
             let pool = pool.clone();
             let shared_for_event = shared_for_event.clone();
             let queue_for_event = queue_for_event.clone();
-            let announced = worker_name.clone();
-            WorkerBuilder::new(worker_name.clone())
+            WorkerBuilder::new(name)
                 .backend(backend.clone())
                 .data(state.clone())
                 .concurrency(concurrency)
                 .on_event(move |worker, event| {
                     if matches!(event, Event::Start) {
                         pool.remember(worker);
+                        let announced = worker.name().to_owned();
+                        shared_for_event.note_worker(&queue_for_event, &announced);
                         let shared = shared_for_event.clone();
                         let queue_name = queue_for_event.clone();
-                        let name = announced.clone();
                         let stop = shared_for_event.stop_meta.subscribe();
+                        let stop_generation = stop_this.clone();
                         let handle = tokio::spawn(async move {
-                            if let Err(error) =
-                                announce_worker(shared, queue_name, name, stop).await
+                            if let Err(error) = announce_worker(
+                                shared,
+                                queue_name,
+                                announced,
+                                stop,
+                                stop_generation,
+                            )
+                            .await
                             {
                                 tracing::warn!(%error, "failed to write worker metadata");
                             }
@@ -185,11 +208,23 @@ pub async fn run(queues: Vec<String>, concurrency: usize, shared: Shared) -> Res
     Ok(())
 }
 
+/// A backend error restarts the worker until this many restarts have already run.
+///
+/// `Monitor::should_restart` sees the count before it increments. Eight leaves
+/// room for a lost ack reply, which is a script error and is not replayed, and
+/// still ends a Redis that never comes back.
+const BACKEND_RESTARTS: usize = 8;
+
+fn restart_after_backend_error(restarts: usize, error: &WorkerError) -> bool {
+    restarts < BACKEND_RESTARTS && matches!(error, WorkerError::BackendError(_))
+}
+
 async fn announce_worker(
     shared: Shared,
     queue: String,
     name: String,
     mut stop: watch::Receiver<bool>,
+    stop_generation: Arc<AtomicBool>,
 ) -> Result<()> {
     let ppid = std::os::unix::process::parent_id();
     let slot = std::env::var("SIMPLE_Q_SLOT")
@@ -212,7 +247,7 @@ async fn announce_worker(
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                if *stop.borrow() {
+                if *stop.borrow() || stop_generation.load(Ordering::Relaxed) {
                     return Ok(());
                 }
                 let done = shared.completed.load(Ordering::Relaxed);
@@ -582,7 +617,10 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
+    use apalis::prelude::WorkerError;
+
     use super::join_tracked;
+    use super::restart_after_backend_error;
 
     #[tokio::test]
     async fn shutdown_waits_for_an_idempotency_release() {
@@ -595,5 +633,15 @@ mod tests {
         join_tracked(&handles).await;
         assert!(released.load(Ordering::SeqCst));
         assert!(handles.lock().expect("releases").is_empty());
+    }
+
+    #[test]
+    fn a_backend_error_restarts_and_a_panic_does_not() {
+        let backend = WorkerError::BackendError(Box::new(std::io::Error::other("broken pipe")));
+        assert!(restart_after_backend_error(0, &backend));
+        assert!(restart_after_backend_error(7, &backend));
+        assert!(!restart_after_backend_error(8, &backend));
+        let panic = WorkerError::PanicError("handler".to_owned());
+        assert!(!restart_after_backend_error(0, &panic));
     }
 }

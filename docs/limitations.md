@@ -12,6 +12,10 @@ The worker does not enable Apalis `catch_panic`. A panic takes down the child, a
 
 `catch_panic` is off because Apalis retries `Failed` on its own. A handler failure that should stay dead is returned as an abort, which the worker records as killed, and Python enqueues the retry itself when `max_retries` allows one. A panic converted into `Failed` would be scheduled again by the backend, past the actor's `max_retries`.
 
+## A long Redis gap
+
+A gap inside two minutes is sent again on the same worker, so the running handler is not cancelled. Fetch is the exception: a lost fetch reply ends that worker name, and another name in the same process picks the task up after the orphan window. A gap longer than `heartbeat_secs * missed_heartbeats` (60 seconds at the defaults) can still run the body twice. The score stays where it was while Redis accepts nothing, and another worker's heartbeat requeues the inflight set.
+
 ## Queue names
 
 A queue name is one lowercase ASCII word of letters and digits. `default` is the example. An empty name, an uppercase letter, a hyphen, or an underscore is rejected at enqueue and again when a worker parses the message.

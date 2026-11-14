@@ -59,6 +59,8 @@ A dead delivery (`poison`, `invalid`, a Python `dead` outcome, or an exception f
 
 Idle fetches use Apalis `poll_with_interval` at `SIMPLE_Q_POLL_INTERVAL_MS` (default 500). The heartbeat below is only liveness, lease renewal, and orphan requeue.
 
+A heartbeat, renewal, or ack whose connection drops or times out is sent again for up to two minutes. `ConnectionManager` reconnects and returns the failed command; it does not run it a second time. The worker sends it again when `RedisError::retry_method` says so. Fetch and enqueue are not sent again. A lost fetch reply has already moved the task into that worker's inflight set, and the next fetch does not return it. That error ends the Apalis worker. `Monitor::should_restart` builds another worker in the same process, with a new name, and the old inflight set waits for the orphan window. A gap longer than `heartbeat_secs * missed_heartbeats` can still let another worker run the body, because the score cannot move while Redis accepts nothing.
+
 `Client.worker_alive` uses the connection opened by a previous send. A client that has never connected returns `False` and does not call Redis. Otherwise the runtime parses `agent-worker.{queue}.{host}.{pid}.{suffix}`, reads `ZSCORE {queue}:workers`, and compares the score with Redis `TIME` against `heartbeat_secs * missed_heartbeats`.
 
 ### In-memory drain

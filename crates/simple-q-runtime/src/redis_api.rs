@@ -10,6 +10,8 @@ use apalis::prelude::{BackendExt, IntervalStrategy, PollWith, TaskBuilder, TaskS
 use apalis_redis::{Config as QueueConfig, RedisStorage, connect as connect_redis, queries};
 pub use redis::aio::ConnectionManager;
 
+pub use crate::redis_retry::RetryingConnection;
+
 use crate::config::Config;
 use crate::job::Job;
 use crate::names::{WORKER_NAME_PREFIX, validate_queue};
@@ -42,12 +44,16 @@ pub fn queue_config(queue: &str, settings: &Config) -> Result<QueueConfig> {
 /// The worker backend. Heartbeat, ack, and orphan recovery stay on `queue_config`.
 /// `poll_with_interval` only wakes an empty fetch. It does not publish, subscribe,
 /// or replace the Redis transport.
+///
+/// The connection replays a dropped heartbeat, renewal, or ack.
+/// `connect` itself stays a plain `ConnectionManager`: enqueue and the delivery
+/// counter are not replayed.
 pub fn worker_storage(
     conn: ConnectionManager,
     queue: &str,
     settings: &Config,
-) -> Result<PollWith<RedisStorage<Job, ConnectionManager>, IntervalStrategy>> {
-    Ok(RedisStorage::new(conn)
+) -> Result<PollWith<RedisStorage<Job, RetryingConnection>, IntervalStrategy>> {
+    Ok(RedisStorage::new(RetryingConnection::new(conn))
         .with_config(queue_config(queue, settings)?)
         .poll_with_interval(settings.poll_interval()))
 }
