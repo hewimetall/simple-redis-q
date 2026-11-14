@@ -1,6 +1,6 @@
 # Limitations
 
-These pages describe simple-q 1.2.
+These pages describe simple-q on main. The packages are 1.2.0. Changes after that tag are under Unreleased in the changelog.
 
 ## No synchronous send
 
@@ -26,7 +26,7 @@ The child is not forced out when it is not scheduled, when the Rust lifecycle is
 
 A queue name is one lowercase ASCII word of letters and digits. `default` is the example. An empty name, an uppercase letter, a hyphen, or an underscore is rejected at enqueue and again when a worker parses the message.
 
-## Also true in 1.0
+## Also true
 
 Wheels are Linux x86_64 and aarch64 for CPython 3.12, 3.13, 3.14, and 3.15, each with the GIL. Free-threaded builds are not published. The worker wheel is `manylinux_2_28` (glibc 2.28 or newer) and links `libpython3.X.so.1.0` for that minor. The installed `agent-worker` command is a launcher in front of `agent-worker.bin`, because a uv-managed CPython does not put that library on the default linker path. The launcher reads `version` from `pyvenv.cfg`.
 

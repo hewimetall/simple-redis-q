@@ -1,7 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/simple-q-runtime", "crates/agent-worker", "crates/simple-q-core"]
-exclude = ["docs/research/spikes/watchexec-6.0.0", "docs/research/spikes/oxana-2.5.0"]
+members = ["crates/simple-q-runtime", "crates/agent-worker"]
+exclude = [
+    "docs/research/spikes/watchexec-6.0.0",
+    "docs/research/spikes/oxana-2.5.0",
+    "docs/research/example/simple-q-core",
+]
 
 [workspace.package]
 version = "1.2.0"

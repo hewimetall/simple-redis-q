@@ -1,6 +1,6 @@
 # API
 
-These pages describe simple-q 1.2. The signatures below are the supported surface. `Config.from_env()` reads `SIMPLE_Q_*` only. An invalid value raises. There is no silent default.
+These pages describe simple-q on main. The packages are 1.2.0. Changes after that tag are under Unreleased in the changelog. The signatures below are the supported surface. `Config.from_env()` reads `SIMPLE_Q_*` only. An invalid value raises. There is no silent default.
 
 ## `@actor`
 
@@ -114,7 +114,23 @@ class Client:
 
     async def close(self) -> None:
         """Close the Redis connection. Later sends fail."""
+
+    async def acquire_lock(self, key: str, ttl_seconds: int) -> str | None:
+        """Claim ``lock:{key}`` for ``ttl_seconds`` seconds.
+
+        The same duration may be passed as the keyword ``ttl``.
+        The same number under both names is accepted. Two different
+        numbers raise ``TypeError``. Omitting both raises ``TypeError``.
+        Zero is rejected. The Redis client raises ``RuntimeError`` with
+        ``lock_ttl must be greater than zero``. The return value is an
+        owner id, or ``None`` when the key is already held.
+        """
+
+    async def release_lock(self, key: str, owner: str) -> bool:
+        """Delete ``lock:{key}`` when the stored value is still ``owner``."""
 ```
+
+`simple_q.interfaces.Client` is the protocol. This class and `MemoryClient` satisfy it and do not inherit it. `App` satisfies `simple_q.interfaces.WorkerApp`. `send` is keyword-only.
 
 There is no synchronous send. `send` and `send_with_options` are async.
 
@@ -307,13 +323,16 @@ The return value is a frozen `TaskPage`:
 - `TaskPage`: `tasks`, `cursor`
 - `QueuedTask`: `task_id`, `message_id`, `actor_name`, `kwargs`, `retries`, `max_retries`, `time_limit_ms`, `run_at`
 
-A future `Config(metrics_prefix=...)` is not implemented. `dramatiq_*` metric names and labels stay as they are through 1.0. See [Settings](settings.md).
+A future `Config(metrics_prefix=...)` is not implemented. `dramatiq_*` metric names and labels stay as they are until 2.0. `dramatiq_delayed_messages_inprogress` stays at zero: a delayed message waits in Redis. See [Settings](settings.md).
 
 ## `MemoryClient`
 
 ```python
 class MemoryClient:
     """In-process stand-in for ``Client``. Sending does not open Redis.
+
+    ``acquire_lock`` and ``release_lock`` use the same arguments as
+    ``Client`` and do not open Redis.
 
     ``send`` and ``send_with_options`` queue in this process.
     ``worker_alive`` is ``False`` until ``set_worker_alive(name)``.

@@ -1,0 +1,9 @@
+[package]
+name = "simple-q-core"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+description = "Research example of fork contracts. Not a workspace member and not linked into the worker."
+
+[dependencies]

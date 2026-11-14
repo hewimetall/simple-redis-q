@@ -1,5 +1,7 @@
 # Testing strategy — AAA, levels, and Stage gates
 
+The workflow that runs on main is `.github/workflows/ci.yml`: a Python matrix, Redis integration, a worker wheel, and Rust `cargo fmt --check` plus `cargo clippy -D warnings`. Product tests still skip when Redis is down. The rule below is the target for the fork: a required integration job fails when Redis is absent.
+
 Basis: [Microsoft unit testing AAA](https://learn.microsoft.com/en-us/dotnet/core/testing/unit-testing-best-practices); project brief §§7–12, 15.
 
 ## AAA (mandatory)
@@ -87,7 +89,7 @@ Record command + exit status in stage reports (brief §15.7).
 | Redis 7.0.15 `PING` | ok |
 | `v1.2.0` `admin` + `poll_interval` | 20 passed |
 | `v1.2.0` orphan / worker_info / queue_admin | 8 passed |
-| `simple-q-core` unit (AAA) | 9 passed, 1 ignored |
+| Research example, outside the workspace | 12 passed, 1 ignored |
 | Stage C gate `--ignored` | **RED** (`PARENT_NO_CPYTHON_IMPLEMENTED == false`) |
 | watchexec 6.0.0 spike | ran ok |
 | oxana 2.5.0 opaque Worker | compile ok |

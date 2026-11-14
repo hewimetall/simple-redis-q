@@ -10,6 +10,8 @@ On Linux the supervisor opens one pidfd and each worker waits on it. Supervisor 
 
 CI runs `cargo fmt` and `cargo clippy -D warnings` on the pinned 1.99.1 toolchain, including the wheel link and the Redis queue test.
 
+The fork contracts are a research example under `docs/research/example`. They are not a workspace member and are not linked into the worker. The parent still loads the `App`.
+
 `dramatiq_delayed_messages_inprogress` stays at zero. A delayed message waits in Redis, and this process does not keep a second in-memory hold. The child-memory byte parser is the one in `Config`.
 
 The worker passes the job to `App.dispatch` as a dict. The extension's admin reads return that same kind of value. `QueueAdmin` still returns `Snapshot`, `DeadPage`, and `TaskPage`. The Redis payload stays JSON. `Client.acquire_lock` and `MemoryClient.acquire_lock` take `ttl_seconds` positionally or by keyword, and also the keyword `ttl`. `@actor` keeps the handler's parameters. `simple_q.interfaces` is the client, app, and hook contract. `send` stays keyword-only.

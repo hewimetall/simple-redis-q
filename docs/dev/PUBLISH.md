@@ -7,6 +7,8 @@ Releases are cut from `main` by pushing a tag `vX.Y.Z`. The tag workflow builds 
 | `simple-q-runtime` | `import simple_q` | maturin extension wheel, manylinux, one per CPython 3.12, 3.13, 3.14, and 3.15 (GIL) |
 | `simple-q-worker` | `agent-worker` | maturin binary wheel inside `manylinux_2_28`, launcher in front of the ELF |
 
+The research example under `docs/research/example` is not a workspace member, not a wheel, and not in the tag checklist.
+
 The name `simple-q` is already used by another project. Do not publish under it.
 
 ## Version

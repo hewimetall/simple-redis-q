@@ -6,7 +6,7 @@
 **Research date (UTC):** 2026-11-13  
 **Branch:** `cursor/arch-fork-research-ad8c`
 
-This document records the pinned baseline for the architectural fork. Results from `1.0.0rc7` or the bench stand in `hewimetall/resurche_for_baground_tasks` are cited only as prior context and are **not** claimed as `v1.2.0` evidence.
+This document records the pinned baseline for the architectural fork. Main has moved past `v1.2.0`. The process that runs is [architecture.md](../architecture.md). Results from `1.0.0rc7` or the bench stand in `hewimetall/resurche_for_baground_tasks` are cited only as prior context and are **not** claimed as `v1.2.0` evidence.
 
 ## 1. Pinned revisions
 

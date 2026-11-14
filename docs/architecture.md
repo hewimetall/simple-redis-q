@@ -1,12 +1,14 @@
 # Architecture
 
-These pages describe simple-q 1.2.
+These pages describe simple-q on main. The packages are 1.2.0. Changes after that tag are under Unreleased in the changelog.
 
 The containers inside simple-q are **Client**, **App**, **Config**, the **worker supervisor**, and **Redis**. Client sends. App runs the handler and the dead-letter hook. `Config.from_env` reads only `SIMPLE_Q_*`. The worker uses the Redis URL stored on the `App`'s `Client`. `agent-worker enqueue` and `agent-worker admin` read `REDIS_URL` themselves. `agent-worker info` uses the same client URL as `worker`. `SIMPLE_Q_APP` and `SIMPLE_Q_APP_FACTORY` are read by `worker` and `info`, not by `Config.from_env`. The factory variable enables a call only for `1`, `true`, `yes`, or `on`. In a virtualenv the `agent-worker` command is a launcher that execs `agent-worker.bin` after the dynamic linker can see `libpython3.X.so.1.0` for the minor in `pyvenv.cfg`. `HOSTNAME`, `BOARD_*`, `QUEUE`, `RUST_LOG`, and `DRAMATIQ_PROM_*` are read by the worker name, the board, the log filter, and the metrics process. The worker supervisor forks children, watches memory, and publishes its own Redis record. It does not take messages and it does not heartbeat as a queue worker. Redis holds the queue and that supervisor record.
 
-`simple_q.interfaces` is the structural contract. The Redis `Client` and `MemoryClient` both satisfy `Client` without inheriting it: `send`, `send_with_options`, `on_send`, `worker_alive`, `close`, `acquire_lock`, and `release_lock`. `acquire_lock` takes `ttl_seconds` by position or by name, and also the keyword `ttl`. `App` satisfies `WorkerApp`. The child calls `client`, `tracing`, `startup`, `shutdown`, `dispatch`, and `note_dead`. `dispatch` receives the job as a dict and returns a dict. Hooks are callback protocols. An object may `install(client, app)`. There is no required middleware base class. `@actor` returns `Actor` with the handler's parameters. `send` passes those arguments by keyword. `CurrentMessage` stays the per-task context object.
+`simple_q.interfaces` is the structural contract. The Redis `Client` and `MemoryClient` both satisfy `Client` without inheriting it: `send`, `send_with_options`, `on_send`, `worker_alive`, `close`, `acquire_lock`, and `release_lock`. `acquire_lock` takes `ttl_seconds` by position or by name, and also the keyword `ttl`. The same number may be passed under both names. Two different numbers raise `TypeError`. `App` satisfies `WorkerApp`. The child calls `client`, `tracing`, `startup`, `shutdown`, `dispatch`, and `note_dead`. `dispatch` receives the job as a dict and returns a dict. Hooks are callback protocols. An object may `install(client, app)`. There is no required middleware base class. `@actor` returns `Actor` with the handler's parameters. `send` passes those arguments by keyword. `CurrentMessage` stays the per-task context object.
 
-This is the context diagram for that model.
+The workspace members are `simple-q-runtime` and `agent-worker`. A research example of a later fork sits at [docs/research/example](research/example/README.md). It is excluded from the workspace. Nothing in the worker or the extension depends on it, and `cargo test --workspace` does not build it. The parent still calls `runtime::initialize` and `bridge::read_client`. It loads the `App` and takes the Redis URL from that client. The supervisor is still `supervisor.rs`. The queue is still Apalis 1.1.1 inside the worker.
+
+This is the context diagram for that process.
 
 ```mermaid
 C4Context

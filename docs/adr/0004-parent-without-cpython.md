@@ -2,7 +2,7 @@
 
 - **Status:** Accepted (binding for Stage C)
 - **Date:** 2026-11-13
-- **Code sketch:** `crates/simple-q-core::parent`
+- **Code sketch:** `docs/research/example/simple-q-core`, module `parent`. The example is not a workspace member.
 
 ## Context
 

@@ -1,6 +1,6 @@
 # Settings
 
-These pages describe simple-q 1.2.
+These pages describe simple-q on main. The packages are 1.2.0. Changes after that tag are under Unreleased in the changelog.
 
 `Config.from_env()` reads `SIMPLE_Q_*` only. An invalid value raises. There is no silent default: a value that is empty, not a number, zero where the setting must be positive, or a ratio outside `(0, 1)` raises. An omitted variable uses the default in this table. The Redis URL is not one of these settings. The application passes it to `Client`. `agent-worker enqueue` and `agent-worker admin` read `REDIS_URL` themselves.
 

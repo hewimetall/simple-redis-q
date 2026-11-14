@@ -1,5 +1,5 @@
 site_name: simple-q
-site_description: simple-q 1.0, a queue runtime for Python async tasks
+site_description: simple-q 1.2, a queue runtime for Python async tasks
 repo_url: https://github.com/hewimetall/simple-redis-q
 repo_name: hewimetall/simple-redis-q
 docs_dir: docs
@@ -40,19 +40,20 @@ nav:
   - Redis keys: redis-keys.md
   - Limitations: limitations.md
   - Architecture: architecture.md
-  - Architectural fork:
-      - Research index: research/README.md
+  - Research example:
+      - Index: research/README.md
+      - Crate: research/example/README.md
+      - Plan: architecture/plan.md
+      - Contracts: architecture/contracts.md
+      - Diagrams: architecture/diagrams.md
       - Baseline: research/baseline.md
       - Capability matrix: research/capability-matrix.md
       - Candidates: research/candidates.md
       - Spike results: research/spikes/RESULTS.md
-      - Plan: architecture/plan.md
-      - Contracts: architecture/contracts.md
-      - Diagrams: architecture/diagrams.md
-      - Testing strategy: testing/strategy.md
+      - Testing notes: testing/strategy.md
       - ADR 0001 Ports: adr/0001-ports-and-adapters.md
       - ADR 0002 Queue backend: adr/0002-queue-backend-keep-apalis-pending-oxana-spike.md
       - ADR 0003 Supervisor: adr/0003-process-mechanism-watchexec-supervisor.md
       - ADR 0004 Parent no CPython: adr/0004-parent-without-cpython.md
       - ADR 0005 License: adr/0005-license-undeclared.md
-      - ADR 0006 Wheel delivery: adr/0006-wheel-delivery.md
+      - ADR 0006 Wheels: adr/0006-wheel-delivery.md

@@ -1,6 +1,6 @@
 # Migration from Dramatiq
 
-These pages describe simple-q 1.2.
+These pages describe simple-q on main. The packages are 1.2.0. Changes after that tag are under Unreleased in the changelog.
 
 Metric names stay. The middleware API does not.
 
