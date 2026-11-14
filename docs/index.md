@@ -1,6 +1,6 @@
 # Quick start
 
-These pages describe simple-q 1.2.
+These pages describe simple-q on main. The packages are 1.2.0. Changes after that tag are under Unreleased in the changelog.
 
 simple-q runs Python async tasks on Redis. `simple-q-runtime` is the importable package (`import simple_q`). `simple-q-worker` installs the `agent-worker` supervisor. Importing `simple_q` does not open Redis. `Client` does.
 

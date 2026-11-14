@@ -1,44 +1,39 @@
 # Architecture plan — Ports & Adapters fork
 
 **Stage:** B (architecture) — contracts and diagrams **before** mass code move.  
-**Baseline:** `v1.2.0` (`9164eea…`).  
+**Baseline:** `v1.2.0` (`9164eea…`). Main has moved past that tag. The process that runs is [architecture.md](../architecture.md).  
 **Patterns:** Hexagonal / Ports & Adapters ([Cockburn](https://alistair.cockburn.us/hexagonal-architecture)); Tokio discover→notify→wait ([shutdown](https://tokio.rs/tokio/topics/shutdown)); AAA tests.
 
-This plan does **not** rewrite `worker.rs` wholesale. Stage C is a vertical slice with tests first (Agent TDD).
+This plan does **not** rewrite `worker.rs` wholesale. Stage C has not started. `PARENT_NO_CPYTHON_IMPLEMENTED` is `false`.
 
 ---
 
 ## 1. Target crate layout
 
-Initial structure (ADR may adjust):
+What main has, and what this plan still wants:
 
 ```text
-crates/
-  core/           # types, policy, state machines, ports (no Redis/PyO3/OS types)
-  runtime/        # orchestration, attempt lifecycle, drain barrier
-  supervisor/     # process adapter (watchexec*) + policy (slots, memory, crash-loop)
-  backend/        # Apalis (default) QueuePort adapter; Oxana only if spike wins
-  python-bridge/  # PyO3 child-only; BridgeOutcome mapping
-  cli/            # composition root, commands, wheel bin entry
+Landed, and running:
+  crates/simple-q-runtime/   # Redis, locks, admin, extension
+  crates/agent-worker/       # supervisor.rs and the Python child
 
-python/           # public API, DI, hooks (unchanged surface as much as possible)
-python/tests/unit/
+Landed, not linked:
+  crates/simple-q-core/      # Attempt, drain, parent bootstrap, port types
+                             # publish = false; no Redis, PyO3, or OS types
 
-tests/
-  contract/
-  integration/
-  process/
-  e2e/
-  support/
+Target, not created:
+  crates/runtime/            # orchestration, attempt lifecycle, drain barrier
+  crates/supervisor/         # process adapter + local policy
+  crates/backend/            # Apalis QueuePort; Oxana only if a later spike wins
+  crates/python-bridge/      # PyO3 child-only; BridgeOutcome mapping
+  crates/cli/                # composition root
 
-benchmarks/
-  pickup/ throughput/ longrun/
-
-docs/
-  architecture/ adr/ research/ testing/
+python/                      # public API, unchanged surface
+tests/ contract/ integration/ process/ e2e/   # not split yet
+benchmarks/                  # not added
 ```
 
-**Composition root:** `crates/cli` wires adapters. Core never constructs Redis clients or `pyo3::Python`.
+**Composition root:** the target `crates/cli` wires adapters. `simple-q-core` never constructs Redis clients or `pyo3::Python`. The binary that ships still wires Redis and Python inside `agent-worker`.
 
 ---
 
@@ -115,7 +110,7 @@ Format: `проблема → решение → место → альтерна
 ```text
 ядро смешано с Redis/PyO3/OS
 → порты + адаптеры; composition root в cli
-→ crates/core + crates/*-adapter
+→ crates/simple-q-core + future adapter crates
 → «новая папка поверх монолита» без портов
 → стоимость: перенос по capability + contract tests
 → unit на fake QueuePort; contract suite на Redis adapter

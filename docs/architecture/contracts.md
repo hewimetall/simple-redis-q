@@ -1,7 +1,8 @@
 # Executable contracts — Attempt, QueuePort, drain
 
 **Status:** Stage B (binding).  
-**Code:** `crates/simple-q-core` (types + AAA unit tests).
+**Code:** `crates/simple-q-core` (types + AAA unit tests).  
+`agent-worker` and `simple-q-runtime` do not depend on this crate. `AttemptLifecycle` runs in its unit tests only. The delivery path that ships is still `handle_job` in the worker.
 
 ## 1. Who owns the fetch loop
 

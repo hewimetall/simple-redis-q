@@ -1,6 +1,6 @@
 # Concepts
 
-These pages describe simple-q 1.2.
+These pages describe simple-q on main. The packages are 1.2.0. Changes after that tag are under Unreleased in the changelog.
 
 A send stores one version-1 message. `message_id` stays the same across retries. `retries` counts handler failures. `deliveries` counts how many times a worker has started that attempt. Those two numbers are independent.
 

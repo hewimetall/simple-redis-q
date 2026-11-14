@@ -1,5 +1,7 @@
 # Architecture diagrams (Stage B binding)
 
+These diagrams are the target. The process that ships is [architecture.md](../architecture.md). The parent on main still starts CPython and still reads the Redis URL from `App.client`.
+
 ## Attempt lifecycle (axes)
 
 ```mermaid

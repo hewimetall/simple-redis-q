@@ -1,6 +1,6 @@
 # Redis keys
 
-These pages describe simple-q 1.2.
+These pages describe simple-q on main. The packages are 1.2.0. Changes after that tag are under Unreleased in the changelog.
 
 Queue names in keys are one lowercase ASCII word. The examples use `default`. The unique-key example is `recalc:42`. The lock-key example is `demo:gate`.
 

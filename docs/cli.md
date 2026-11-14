@@ -1,6 +1,6 @@
 # Command line
 
-These pages describe simple-q 1.2. The binary is `agent-worker`, installed by `simple-q-worker`.
+These pages describe simple-q on main. The packages are 1.2.0. Changes after that tag are under Unreleased in the changelog. The binary is `agent-worker`, installed by `simple-q-worker`.
 
 `--app` is required wherever a worker or a one-shot task needs the application. The value is `module:attribute`.
 

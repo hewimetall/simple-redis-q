@@ -1,5 +1,7 @@
 # Testing strategy — AAA, levels, and Stage gates
 
+The workflow that runs on main is `.github/workflows/ci.yml`: a Python matrix, Redis integration, a worker wheel, and Rust `cargo fmt --check` plus `cargo clippy -D warnings`. Product tests still skip when Redis is down. The rule below is the target for the fork: a required integration job fails when Redis is absent.
+
 Basis: [Microsoft unit testing AAA](https://learn.microsoft.com/en-us/dotnet/core/testing/unit-testing-best-practices); project brief §§7–12, 15.
 
 ## AAA (mandatory)
