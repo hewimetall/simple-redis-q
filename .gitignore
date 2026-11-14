@@ -37,6 +37,8 @@ coverage.xml
 
 # Rust: build artifacts
 target/
+# Research examples are not workspace members. A local lock stays out of the product lock.
+docs/research/**/Cargo.lock
 **/*.rs.bk
 *.pdb
 rustc-ice-*.txt
