@@ -187,12 +187,12 @@ impl Config {
         }
         let child_memory_soft = read_bytes("SIMPLE_Q_CHILD_MEMORY_SOFT")?;
         let child_memory_hard = read_bytes("SIMPLE_Q_CHILD_MEMORY_HARD")?;
-        if let (Some(soft), Some(hard)) = (child_memory_soft, child_memory_hard) {
-            if soft >= hard {
-                return Err(ConfigError::new(
-                    "SIMPLE_Q_CHILD_MEMORY_SOFT must be below SIMPLE_Q_CHILD_MEMORY_HARD",
-                ));
-            }
+        if let (Some(soft), Some(hard)) = (child_memory_soft, child_memory_hard)
+            && soft >= hard
+        {
+            return Err(ConfigError::new(
+                "SIMPLE_Q_CHILD_MEMORY_SOFT must be below SIMPLE_Q_CHILD_MEMORY_HARD",
+            ));
         }
         Ok(Self {
             heartbeat_secs,

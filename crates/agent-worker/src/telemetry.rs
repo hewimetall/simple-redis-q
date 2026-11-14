@@ -538,10 +538,10 @@ impl SpanProcessor for PythonBatchProcessor {
             self.shared.wake.notify_one();
         }
         let handle = self.thread.lock().expect("otel thread").take();
-        if let Some(handle) = handle {
-            if !join_for(handle, timeout) {
-                return Err(OTelSdkError::Timeout(timeout));
-            }
+        if let Some(handle) = handle
+            && !join_for(handle, timeout)
+        {
+            return Err(OTelSdkError::Timeout(timeout));
         }
         python_shutdown(&self.exporter)
     }

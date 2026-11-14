@@ -229,10 +229,10 @@ fn prepare(
     headers: Option<&Bound<'_, PyDict>>,
     unique_key: Option<String>,
 ) -> PyResult<Prepared> {
-    if let Some(key) = unique_key.as_deref() {
-        if key.is_empty() {
-            return Err(PyValueError::new_err("unique_key must not be empty"));
-        }
+    if let Some(key) = unique_key.as_deref()
+        && key.is_empty()
+    {
+        return Err(PyValueError::new_err("unique_key must not be empty"));
     }
     let actor_name: String = actor.getattr("name")?.extract()?;
     let queue: String = actor.getattr("queue")?.extract()?;

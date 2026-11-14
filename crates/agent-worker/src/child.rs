@@ -161,6 +161,7 @@ pub fn run_child(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn lifecycle(
     shared: Shared,
     mut terminate: tokio::signal::unix::Signal,

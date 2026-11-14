@@ -321,6 +321,7 @@ pub fn next_idempotency_wait(current: Duration, floor: Duration, ceiling: Durati
 /// elapses. A Redis error is retried the same way. `Ok(true)` means the key
 /// was deleted. `Ok(false)` means the task was still not terminal when the
 /// wait ended.
+#[allow(clippy::too_many_arguments)]
 pub async fn release_idempotency_when_terminal(
     conn: &mut ConnectionManager,
     queue: &str,

@@ -102,10 +102,10 @@ async fn discover_queues(
             .await
             .with_context(|| format!("failed to read supervisor {member}"))?;
         let stored_host = field(&fields, 0).or_else(|| field(&fields, 1));
-        if let Some(host) = host_filter {
-            if !member_is_host(&member, host, stored_host) {
-                continue;
-            }
+        if let Some(host) = host_filter
+            && !member_is_host(&member, host, stored_host)
+        {
+            continue;
         }
         if let Some(raw) = field(&fields, 3) {
             names.extend(parse_queue_field(raw));
@@ -137,10 +137,10 @@ fn parse_queue_field(raw: &str) -> Vec<String> {
     if trimmed.is_empty() {
         return Vec::new();
     }
-    if trimmed.starts_with('[') {
-        if let Ok(names) = serde_json::from_str::<Vec<String>>(trimmed) {
-            return names;
-        }
+    if trimmed.starts_with('[')
+        && let Ok(names) = serde_json::from_str::<Vec<String>>(trimmed)
+    {
+        return names;
     }
     trimmed
         .split(|ch: char| ch == ',' || ch.is_whitespace())
@@ -432,7 +432,7 @@ fn bytes_or_dash(bytes: Option<u64>) -> String {
 fn format_bytes(bytes: u64) -> String {
     const UNITS: [(u64, &str); 3] = [(1024 * 1024 * 1024, "G"), (1024 * 1024, "M"), (1024, "K")];
     for (unit, suffix) in UNITS {
-        if bytes >= unit && bytes % unit == 0 {
+        if bytes >= unit && bytes.is_multiple_of(unit) {
             let whole = bytes / unit;
             if whole < 10_000 {
                 return format!("{whole}{suffix}");
@@ -650,6 +650,7 @@ quota  12      1          4         9873  0";
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn child(
         slot: u32,
         pid: u32,

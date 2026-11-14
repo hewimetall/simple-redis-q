@@ -83,7 +83,7 @@ fn resolve_board(addr: &str, token: Option<&str>, insecure: bool) -> Result<Boar
         .with_context(|| format!("BOARD_ADDR must be ip:port, got {addr}"))?;
     let token = token.map(str::trim).filter(|value| !value.is_empty());
     if addr.ip().is_loopback() && insecure {
-        if let Some(token) = token.as_deref() {
+        if let Some(token) = token {
             validate_token(token)?;
         }
         return Ok(BoardConfig {

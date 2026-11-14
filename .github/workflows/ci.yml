@@ -12,6 +12,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        id: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: rust-lint-py3.12
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      # One x86_64 job. rustfmt on the aarch64 wheel image collides with the
+      # cargo-fmt proxy, and these checks do not depend on the Python minor.
+      # extension-module is the wheel link. parent-exit-redis compiles the
+      # Redis queue test. The default workspace build is what the binary links.
+      - name: Clippy
+        env:
+          PYO3_PYTHON: ${{ steps.setup-python.outputs.python-path }}
+        run: |
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo clippy -p simple-q-runtime --all-targets --locked --features extension-module -- -D warnings
+          cargo clippy -p agent-worker --all-targets --locked --features parent-exit-redis -- -D warnings
+
   test:
     runs-on: ${{ matrix.os }}
     strategy:

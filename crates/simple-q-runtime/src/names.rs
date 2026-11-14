@@ -31,6 +31,7 @@ pub const DEFAULT_MAX_BACKOFF_MS: u64 = 86_400_000 * 7;
 pub const PING_MARGIN_SECS: u64 = 60;
 pub const DEFAULT_DONE_TTL_SECS: u64 = 24 * 60 * 60;
 pub const DEFAULT_UNIQUE_TTL_SECS: u64 = 24 * 60 * 60;
+const _: () = assert!(DEFAULT_UNIQUE_TTL_SECS > 0);
 pub const DEFAULT_DEAD_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 pub const DEFAULT_MAX_DELIVERIES: u32 = 5;
 pub const SWEEP_BATCH: usize = 100;
@@ -117,6 +118,5 @@ mod tests {
         // Zero is not a TTL. The idempotency script treats the string `"0"` as
         // present and `EXPIRE 0` deletes the key immediately.
         assert_eq!(DEFAULT_UNIQUE_TTL_SECS, 86_400);
-        assert!(DEFAULT_UNIQUE_TTL_SECS > 0);
     }
 }

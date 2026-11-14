@@ -210,6 +210,22 @@ async fn delete_if_owner(
     Ok(released == 1)
 }
 
+async fn renew(
+    mut conn: ConnectionManager,
+    redis_key: &str,
+    owner: &str,
+    ttl_ms: u64,
+) -> Result<bool> {
+    let renewed: i32 = Script::new(RENEW)
+        .key(redis_key)
+        .arg(owner)
+        .arg(ttl_ms)
+        .invoke_async(&mut conn)
+        .await
+        .context("failed to renew task lock")?;
+    Ok(renewed == 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,20 +269,4 @@ mod tests {
         drop(held);
         assert!(alive.load(Ordering::SeqCst));
     }
-}
-
-async fn renew(
-    mut conn: ConnectionManager,
-    redis_key: &str,
-    owner: &str,
-    ttl_ms: u64,
-) -> Result<bool> {
-    let renewed: i32 = Script::new(RENEW)
-        .key(redis_key)
-        .arg(owner)
-        .arg(ttl_ms)
-        .invoke_async(&mut conn)
-        .await
-        .context("failed to renew task lock")?;
-    Ok(renewed == 1)
 }

@@ -772,8 +772,7 @@ mod linux {
             }
 
             fn write_go(&self) {
-                let byte = [b'g'];
-                write_all(self.go, &byte).unwrap();
+                write_all(self.go, b"g").unwrap();
             }
         }
 

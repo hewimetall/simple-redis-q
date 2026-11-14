@@ -175,10 +175,7 @@ impl SlotDigits {
             .max(std::mem::size_of::<AtomicU32>());
         let len = bytes.div_ceil(page) * page;
         let fd = unsafe {
-            libc::memfd_create(
-                b"simple-q-slot\0".as_ptr().cast::<libc::c_char>(),
-                MFD_CLOEXEC | MFD_ALLOW_SEALING,
-            )
+            libc::memfd_create(c"simple-q-slot".as_ptr(), MFD_CLOEXEC | MFD_ALLOW_SEALING)
         };
         if fd < 0 {
             anyhow::bail!("memfd_create failed: {}", std::io::Error::last_os_error());

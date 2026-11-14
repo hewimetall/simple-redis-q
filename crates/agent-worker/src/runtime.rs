@@ -33,12 +33,11 @@ pub fn initialize() {
             .import("simple_q._runtime")
             .expect("simple_q._runtime is registered on the inittab");
         let file = module.getattr("__file__").ok();
-        if let Some(file) = file.filter(|value| !value.is_none()) {
-            if let Ok(path) = file.extract::<String>() {
-                if path.ends_with(".so") || path.ends_with(".pyd") {
-                    panic!("simple_q._runtime was loaded from {path}, not the inittab");
-                }
-            }
+        if let Some(file) = file.filter(|value| !value.is_none())
+            && let Ok(path) = file.extract::<String>()
+            && (path.ends_with(".so") || path.ends_with(".pyd"))
+        {
+            panic!("simple_q._runtime was loaded from {path}, not the inittab");
         }
         module
             .setattr("__embedded__", true)
@@ -55,12 +54,12 @@ fn load_embedded(py: Python<'_>) -> Bound<'_, PyAny> {
         let spec = machinery
             .call_method1("ModuleSpec", (name, py.None()))
             .expect("module spec");
-        if let Ok(module) = imp.call_method1("create_builtin", (spec,)) {
-            if !module.is_none() {
-                imp.call_method1("exec_builtin", (&module,))
-                    .expect("execute the inittab module");
-                return module;
-            }
+        if let Ok(module) = imp.call_method1("create_builtin", (spec,))
+            && !module.is_none()
+        {
+            imp.call_method1("exec_builtin", (&module,))
+                .expect("execute the inittab module");
+            return module;
         }
     }
     panic!("simple_q._runtime is registered on the inittab");
@@ -83,10 +82,10 @@ fn init_interpreter() {
         if pyo3::ffi::Py_IsInitialized() != 0 {
             return;
         }
-        if let Some(executable) = venv_executable.as_deref() {
-            if init_from_executable(executable) {
-                return;
-            }
+        if let Some(executable) = venv_executable.as_deref()
+            && init_from_executable(executable)
+        {
+            return;
         }
         pyo3::ffi::Py_InitializeEx(0);
         pyo3::ffi::PyEval_SaveThread();
@@ -135,10 +134,10 @@ fn venv_executable() -> Option<String> {
         let path = PathBuf::from(&argv0);
         if path.is_absolute() {
             candidates.push(path);
-        } else if path.components().nth(1).is_some() {
-            if let Ok(cwd) = std::env::current_dir() {
-                candidates.push(cwd.join(path));
-            }
+        } else if path.components().nth(1).is_some()
+            && let Ok(cwd) = std::env::current_dir()
+        {
+            candidates.push(cwd.join(path));
         }
     }
     if let Ok(path) = std::env::current_exe() {

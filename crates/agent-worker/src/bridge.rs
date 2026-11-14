@@ -292,7 +292,6 @@ pub async fn note_dead(
     let actor_name = job.actor_name.clone();
     let message_id = job.message_id.clone();
     let retries = job.retries;
-    let deliveries = deliveries;
     let kwargs = if job.kwargs.is_object() {
         job.kwargs.clone()
     } else {

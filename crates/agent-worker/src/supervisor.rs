@@ -44,6 +44,7 @@ use simple_q_runtime::names::validate_queue;
 use simple_q_runtime::redis_api::{self, ConnectionManager};
 use simple_q_runtime::slots::{reset_slot_gauges, wipe_db_files};
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     app: String,
     factory: bool,
@@ -218,6 +219,7 @@ pub async fn run(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn supervise_slot(
     index: u32,
     app: String,
@@ -333,6 +335,7 @@ pub fn classify_child_exit(success: bool, code: Option<i32>) -> ChildExit {
     ChildExit::Restart
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_child(
     app: &str,
     factory: bool,
@@ -596,13 +599,13 @@ pub fn load_child_memory_limits(
         Some(raw) => Some(parse_byte_size(raw)?),
         None => configured_hard,
     };
-    if let (Some(left), Some(right)) = (soft, hard) {
-        if left >= right {
-            return Err(ChildMemoryConfigError::soft_not_below(
-                &left.to_string(),
-                &right.to_string(),
-            ));
-        }
+    if let (Some(left), Some(right)) = (soft, hard)
+        && left >= right
+    {
+        return Err(ChildMemoryConfigError::soft_not_below(
+            &left.to_string(),
+            &right.to_string(),
+        ));
     }
     Ok(ChildMemoryLimits { soft, hard })
 }
@@ -676,6 +679,7 @@ pub enum PlannedSignal {
 /// is already in the plan for its own hard limit, no second child is killed.
 /// When the largest is below half, nobody is killed for the ratio and the
 /// largest free not-yet-asked child gets `SIGUSR1`.
+#[allow(clippy::too_many_arguments)]
 pub fn plan_memory_signals(
     children: &[(u32, u64)],
     soft: Option<u64>,
@@ -931,6 +935,7 @@ fn write_child_memory_prom(dir: &std::path::Path, drains: u64, kills: u64) -> st
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_memory_pressure(
     live: &LivePids,
     pressure: &mut Pressure,
@@ -1184,6 +1189,7 @@ async fn retire_supervisor(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_supervisor_heartbeat(
     redis_url: String,
     settings: Config,
