@@ -230,6 +230,7 @@ impl SlotDigits {
         self.fd.as_raw_fd()
     }
 
+    #[cfg(test)]
     pub fn mapped_len(&self) -> usize {
         self.len
     }
@@ -247,10 +248,12 @@ impl SlotDigits {
         self.load(slot) != 0
     }
 
+    #[cfg(test)]
     pub fn fetch_add(&self, slot: u32, n: u32) -> Option<u32> {
         self.with_cell(slot, |cell| cell.fetch_add(n, Ordering::Relaxed))
     }
 
+    #[cfg(test)]
     pub fn fetch_sub(&self, slot: u32, n: u32) -> Option<u32> {
         self.with_cell(slot, |cell| cell.fetch_sub(n, Ordering::Relaxed))
     }

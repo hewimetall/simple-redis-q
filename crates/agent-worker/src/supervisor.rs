@@ -661,32 +661,6 @@ pub fn byte_action(rss: u64, soft: Option<u64>, hard: Option<u64>) -> ByteAction
     }
 }
 
-/// Pids whose own RSS crossed a byte limit. A pid under both limits is left out.
-pub fn byte_limit_targets(
-    children: &[(u32, u64)],
-    soft: Option<u64>,
-    hard: Option<u64>,
-) -> Vec<(u32, ByteAction)> {
-    children
-        .iter()
-        .copied()
-        .filter_map(|(pid, rss)| {
-            let action = byte_action(rss, soft, hard);
-            (action != ByteAction::None).then_some((pid, action))
-        })
-        .collect()
-}
-
-/// One child for the container soft ratio: the largest RSS not already drained.
-/// The next call, after that pid is recorded, picks another child.
-pub fn ratio_drain_target(children: &[(u32, u64)], already: &[u32]) -> Option<u32> {
-    children
-        .iter()
-        .filter(|(pid, _)| !already.contains(pid))
-        .max_by_key(|(_, rss)| *rss)
-        .map(|(pid, _)| *pid)
-}
-
 /// One signal the supervisor will send on this memory tick.
 ///
 /// A soft signal skips a pid whose delivery digit is not zero. A hard signal
@@ -1464,22 +1438,7 @@ mod tests {
     }
 
     #[test]
-    fn byte_and_ratio_decisions_affect_one_pid_not_every_pid() {
-        let children = [(11_u32, 100_u64), (22, 2_000), (33, 9_000)];
-        let over_soft = byte_limit_targets(&children, Some(1_500), Some(20_000));
-        assert_eq!(
-            over_soft,
-            vec![(22, ByteAction::Drain), (33, ByteAction::Drain)]
-        );
-        assert!(!over_soft.iter().any(|(pid, _)| *pid == 11));
-
-        let mixed = byte_limit_targets(&children, Some(1_500), Some(8_000));
-        assert_eq!(mixed, vec![(22, ByteAction::Drain), (33, ByteAction::Kill)]);
-        assert_ne!(
-            mixed.iter().map(|(pid, _)| *pid).collect::<Vec<_>>(),
-            children.iter().map(|(pid, _)| *pid).collect::<Vec<_>>()
-        );
-
+    fn byte_action_is_per_pid() {
         assert_eq!(
             byte_action(8_000, Some(1_500), Some(8_000)),
             ByteAction::Kill
@@ -1495,16 +1454,6 @@ mod tests {
         assert_eq!(byte_action(9_000, None, None), ByteAction::None);
         assert_eq!(byte_action(9_000, Some(1_000), None), ByteAction::Drain);
         assert_eq!(byte_action(9_000, None, Some(8_000)), ByteAction::Kill);
-
-        assert_eq!(ratio_drain_target(&children, &[]), Some(33));
-        assert_eq!(ratio_drain_target(&children, &[33]), Some(22));
-        assert_eq!(ratio_drain_target(&children, &[33, 22]), Some(11));
-        assert_eq!(ratio_drain_target(&children, &[33, 22, 11]), None);
-        let first = ratio_drain_target(&children, &[]).unwrap();
-        assert_ne!(
-            vec![first],
-            children.iter().map(|(pid, _)| *pid).collect::<Vec<_>>()
-        );
     }
 
     #[test]
