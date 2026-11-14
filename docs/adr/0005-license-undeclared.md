@@ -1,0 +1,19 @@
+# ADR 0005 — Source license is undeclared at v1.2.0
+
+- **Status:** Accepted (risk record)
+- **Date:** 2026-11-13
+
+## Context
+
+GitHub reports no license for `hewimetall/simple-redis-q`. The `v1.2.0` tree has no `LICENSE*` file. Included candidates (Apalis, Oxana, watchexec-supervisor, Tokio, PyO3, redis-rs) are MIT and/or Apache-2.0.
+
+## Decision
+
+1. Record the gap as a release blocker for public redistribution of the fork until maintainers add an SPDX license.
+2. Do not invent a license file in this research PR without explicit owner approval.
+3. Dependency licenses are compatible with a future MIT OR Apache-2.0 choice; final choice is the owner's.
+
+## Consequences
+
+- Research and internal architectural work may continue on a branch.
+- Publishing packages/tags remains forbidden per brief and additionally blocked by missing license clarity.
