@@ -46,29 +46,5 @@ fn sanitize(value: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn lock_owners_are_distinct_uuids_not_pids() {
-        let first = lock_owner();
-        let second = lock_owner();
-        assert_ne!(first, second);
-        assert!(Uuid::parse_str(&first).is_ok());
-        assert_ne!(first, process::id().to_string());
-    }
-
-    #[test]
-    fn worker_names_include_host_pid_and_a_random_suffix() {
-        let queue = "default";
-        let first = worker_name(queue);
-        let second = worker_name(queue);
-        assert_ne!(first, second);
-        assert!(first.starts_with(&format!(
-            "{}.{queue}.{}.{}",
-            crate::names::WORKER_NAME_PREFIX,
-            hostname(),
-            process::id()
-        )));
-    }
-}
+#[path = "ids_tests.rs"]
+mod tests;

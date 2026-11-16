@@ -76,6 +76,10 @@ fn del_queue(queue: &str) {
 
 #[test]
 fn idempotency_keys_live_beside_the_queue() {
+    // Arrange
+    // Act
+    // Assert
+
     assert_eq!(
         redis_api::idempotency_redis_key("default", "recalc:42"),
         "default:idempotency:recalc:42"
@@ -91,6 +95,8 @@ fn idempotency_keys_live_beside_the_queue() {
 
 #[tokio::test]
 async fn redis_enqueue_on_database_15() {
+    // Arrange
+
     let url = "redis://127.0.0.1:6379/15";
     let Ok(mut conn) = redis_api::connect(url).await else {
         return;
@@ -99,8 +105,9 @@ async fn redis_enqueue_on_database_15() {
     a_delayed_message_stays_on_its_own_queue(&mut conn, &settings).await;
     sweep_removes_worker_metadata_absent_from_the_workers_set(&mut conn).await;
     a_unique_key_is_held_until_a_terminal_delete(&mut conn, &settings).await;
-    a_delayed_unique_task_is_placed_when_it_is_scheduled(&mut conn, &settings).await;
-    a_retry_waiting_past_the_unique_ttl_still_holds_the_key(&mut conn).await;
+    a_delayed_unique_task_is_placed_when_it_is_scheduled(&mut conn, &settings).await; // Act
+
+    a_retry_waiting_past_the_unique_ttl_still_holds_the_key(&mut conn).await; // Assert
 }
 
 async fn a_delayed_message_stays_on_its_own_queue(conn: &mut ConnectionManager, settings: &Config) {

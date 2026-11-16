@@ -96,6 +96,8 @@ async fn connect() -> Option<ConnectionManager> {
 
 #[tokio::test]
 async fn forget_supervisor_removes_the_hash_and_the_member() {
+    // Arrange
+
     let Some(mut conn) = connect().await else {
         return;
     };
@@ -125,9 +127,13 @@ async fn forget_supervisor_removes_the_hash_and_the_member() {
         restarts: 0,
         children: Vec::new(),
     };
+    // Act
+
     admin::publish_supervisor(&mut conn, &Config::defaults(), &record)
         .await
         .expect("publish");
+    // Assert
+
     assert_eq!(redis(&["EXISTS", &key]), "1");
     admin::forget_supervisor(&mut conn, &host, pid)
         .await
@@ -138,6 +144,8 @@ async fn forget_supervisor_removes_the_hash_and_the_member() {
 
 #[tokio::test]
 async fn a_terminal_write_after_one_second_still_drops_the_key() {
+    // Arrange
+
     let Some(mut conn) = connect().await else {
         return;
     };
@@ -148,7 +156,11 @@ async fn a_terminal_write_after_one_second_still_drops_the_key() {
     let done = format!("{queue}:done");
     let mut cleanup = Cleanup::new();
     cleanup.key(&idem);
+    // Act
+
     cleanup.key(&done);
+    // Assert
+
     assert_eq!(redis(&["SET", &idem, "1", "EX", "120"]), "OK");
     let (_tx, mut stop) = tokio::sync::watch::channel(false);
     let queue_for_task = queue.clone();
@@ -185,6 +197,8 @@ async fn a_terminal_write_after_one_second_still_drops_the_key() {
 
 #[tokio::test]
 async fn shutdown_leaves_an_idempotency_key_that_is_not_terminal() {
+    // Arrange
+
     let Some(mut conn) = connect().await else {
         return;
     };
@@ -192,7 +206,11 @@ async fn shutdown_leaves_an_idempotency_key_that_is_not_terminal() {
     let unique = token("key");
     let idem = redis_api::idempotency_redis_key(&queue, &unique);
     let mut cleanup = Cleanup::new();
+    // Act
+
     cleanup.key(&idem);
+    // Assert
+
     assert_eq!(redis(&["SET", &idem, "1", "EX", "120"]), "OK");
     let (tx, mut stop) = tokio::sync::watch::channel(false);
     let _ = tx.send(true);
@@ -216,6 +234,8 @@ async fn shutdown_leaves_an_idempotency_key_that_is_not_terminal() {
 
 #[tokio::test]
 async fn a_done_or_dead_member_is_terminal() {
+    // Arrange
+
     let Some(mut conn) = connect().await else {
         return;
     };
@@ -225,7 +245,11 @@ async fn a_done_or_dead_member_is_terminal() {
     let dead = format!("{queue}:dead");
     let mut cleanup = Cleanup::new();
     cleanup.key(&done);
+    // Act
+
     cleanup.key(&dead);
+    // Assert
+
     assert!(
         !redis_api::task_is_terminal(&mut conn, &queue, &task_id)
             .await
@@ -248,6 +272,8 @@ async fn a_done_or_dead_member_is_terminal() {
 
 #[tokio::test]
 async fn publish_shows_up_refreshes_ttl_and_expires() {
+    // Arrange
+
     let Some(mut conn) = connect().await else {
         return;
     };
@@ -297,9 +323,13 @@ async fn publish_shows_up_refreshes_ttl_and_expires() {
         &now.to_string(),
         &kept,
     ]);
+    // Act
+
     admin::publish_supervisor(&mut conn, &settings, &record)
         .await
         .expect("publish");
+    // Assert
+
     assert!(!redis(&["ZSCORE", admin::SUPERVISORS_KEY, &member]).is_empty());
     assert_eq!(redis(&["HGET", &key, "host"]), host);
     assert_eq!(redis(&["HGET", &key, "child_soft"]), "");
@@ -334,6 +364,8 @@ async fn publish_shows_up_refreshes_ttl_and_expires() {
 
 #[tokio::test]
 async fn snapshot_tree_has_a_running_child_and_a_held_task() {
+    // Arrange
+
     let Some(mut conn) = connect().await else {
         return;
     };
@@ -378,7 +410,11 @@ async fn snapshot_tree_has_a_running_child_and_a_held_task() {
         .await
         .expect("enqueue")
         .expect("queued");
+    // Act
+
     let task_id = redis(&["HKEYS", &data]);
+    // Assert
+
     assert!(!task_id.is_empty(), "stored id");
     assert_eq!(redis(&["ZCARD", &config.scheduled_jobs_set()]), "1");
     let meta = format!("{}:{task_id}", config.job_meta_hash());
@@ -459,6 +495,8 @@ async fn snapshot_tree_has_a_running_child_and_a_held_task() {
 
 #[tokio::test]
 async fn stale_metadata_is_a_killed_orphan_and_a_missing_hash_is_exited() {
+    // Arrange
+
     let Some(mut conn) = connect().await else {
         return;
     };
@@ -492,6 +530,7 @@ async fn stale_metadata_is_a_killed_orphan_and_a_missing_hash_is_exited() {
         &now.to_string(),
         &gone_name,
     ]);
+    // Act
 
     let snap = admin::snapshot(
         &mut conn,
@@ -501,6 +540,8 @@ async fn stale_metadata_is_a_killed_orphan_and_a_missing_hash_is_exited() {
     )
     .await
     .expect("snapshot");
+    // Assert
+
     assert!(snap.supervisors.is_empty());
     let stale = snap
         .orphans
@@ -521,6 +562,8 @@ async fn stale_metadata_is_a_killed_orphan_and_a_missing_hash_is_exited() {
 
 #[tokio::test]
 async fn queue_counts_follow_active_inflight_done_and_dead() {
+    // Arrange
+
     let Some(mut conn) = connect().await else {
         return;
     };
@@ -546,6 +589,7 @@ async fn queue_counts_follow_active_inflight_done_and_dead() {
         cleanup.key(key);
         let _ = redis(&["DEL", key]);
     }
+    // Act
 
     let before = admin::snapshot(
         &mut conn,
@@ -555,6 +599,8 @@ async fn queue_counts_follow_active_inflight_done_and_dead() {
     )
     .await
     .expect("before");
+    // Assert
+
     assert_eq!(before.queues[0].active, 0);
     assert_eq!(before.queues[0].inflight, 0);
     assert_eq!(before.queues[0].done, 0);
@@ -639,6 +685,8 @@ async fn queue_counts_follow_active_inflight_done_and_dead() {
 
 #[tokio::test]
 async fn started_at_stays_while_locked_at_moves() {
+    // Arrange
+
     let Some(mut conn) = connect().await else {
         return;
     };
@@ -679,7 +727,11 @@ async fn started_at_stays_while_locked_at_moves() {
         .await
         .expect("enqueue")
         .expect("queued");
+    // Act
+
     let task_id = redis(&["HKEYS", &data]);
+    // Assert
+
     assert!(!task_id.is_empty(), "stored id");
     let meta = format!("{}:{task_id}", config.job_meta_hash());
     cleanup.key(&meta);
@@ -789,6 +841,8 @@ async fn started_at_stays_while_locked_at_moves() {
 
 #[tokio::test]
 async fn dead_page_is_newest_first_and_the_cursor_is_exclusive() {
+    // Arrange
+
     let Some(mut conn) = connect().await else {
         return;
     };
@@ -825,7 +879,11 @@ async fn dead_page_is_newest_first_and_the_cursor_is_exclusive() {
     )
     .await
     .expect("record");
+    // Act
+
     let dead_at = redis(&["HGET", &recorded_meta, "dead_at"]);
+    // Assert
+
     assert_eq!(redis(&["HGET", &recorded_meta, "reason"]), "retries");
     assert_eq!(
         redis(&["HGET", &recorded_meta, "error"]),
@@ -976,6 +1034,8 @@ async fn dead_page_is_newest_first_and_the_cursor_is_exclusive() {
 
 #[tokio::test]
 async fn peek_pages_active_and_scheduled_from_the_data_hash() {
+    // Arrange
+
     let Some(mut conn) = connect().await else {
         return;
     };
@@ -1000,11 +1060,15 @@ async fn peek_pages_active_and_scheduled_from_the_data_hash() {
     let waiting = pages::peek_page(&mut conn, &settings, &queue, "active", 2, None)
         .await
         .expect("active");
+    // Act
+
     let ids: Vec<&str> = waiting
         .tasks
         .iter()
         .map(|task| task.task_id.as_str())
         .collect();
+    // Assert
+
     assert_eq!(ids, vec!["act-1", "act-2"]);
     assert!(waiting.tasks.iter().all(|task| task.run_at.is_none()));
     assert_eq!(waiting.tasks[0].message_id, "msg-act-1");
@@ -1077,6 +1141,8 @@ async fn peek_pages_active_and_scheduled_from_the_data_hash() {
 
 #[tokio::test]
 async fn sweep_removes_the_dead_index_member() {
+    // Arrange
+
     let Some(mut conn) = connect().await else {
         return;
     };
@@ -1103,10 +1169,13 @@ async fn sweep_removes_the_dead_index_member() {
     let _ = redis(&["HSET", &fresh_meta, "done_at", &fresh]);
     let _ = redis(&["SADD", &dead, old_id, fresh_id]);
     let _ = redis(&["ZADD", &index, &old, old_id, &fresh, fresh_id]);
+    // Act
 
     let stats = sweep_queue(&mut conn, &queue, now as i64, 10, 10, 10)
         .await
         .expect("sweep");
+    // Assert
+
     assert_eq!(stats.dead, 1);
     assert_eq!(redis(&["ZSCORE", &index, old_id]), "");
     assert_eq!(redis(&["SISMEMBER", &dead, old_id]), "0");
@@ -1118,6 +1187,8 @@ async fn sweep_removes_the_dead_index_member() {
 
 #[tokio::test]
 async fn sweep_removes_a_member_from_a_dead_sorted_set() {
+    // Arrange
+
     let Some(mut conn) = connect().await else {
         return;
     };
@@ -1144,10 +1215,13 @@ async fn sweep_removes_a_member_from_a_dead_sorted_set() {
     let _ = redis(&["HSET", &fresh_meta, "done_at", &fresh]);
     let _ = redis(&["ZADD", &dead, &old, old_id, &fresh, fresh_id]);
     let _ = redis(&["ZADD", &index, &old, old_id, &fresh, fresh_id]);
+    // Act
 
     let stats = sweep_queue(&mut conn, &queue, now as i64, 10, 10, 10)
         .await
         .expect("sweep");
+    // Assert
+
     assert_eq!(stats.dead, 1);
     assert_eq!(redis(&["ZSCORE", &index, old_id]), "");
     assert_eq!(redis(&["ZSCORE", &dead, old_id]), "");
@@ -1159,6 +1233,8 @@ async fn sweep_removes_a_member_from_a_dead_sorted_set() {
 
 #[tokio::test]
 async fn snapshot_includes_tasks_from_every_supervisor_queue() {
+    // Arrange
+
     let Some(mut conn) = connect().await else {
         return;
     };
@@ -1249,6 +1325,7 @@ async fn snapshot_includes_tasks_from_every_supervisor_queue() {
     )
     .await
     .expect("publish");
+    // Act
 
     let snap = admin::snapshot(
         &mut conn,
@@ -1258,6 +1335,8 @@ async fn snapshot_includes_tasks_from_every_supervisor_queue() {
     )
     .await
     .expect("snapshot");
+    // Assert
+
     assert_eq!(snap.queues.len(), 1);
     assert_eq!(snap.queues[0].name, quota);
     assert_eq!(snap.queues[0].inflight, 1);

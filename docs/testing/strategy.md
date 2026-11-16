@@ -73,7 +73,7 @@ This research VM has **no Redis**. Stage A does not claim integration GREEN. Nex
 ```bash
 # unit (no Redis)
 cargo test --workspace
-python -m pytest python/tests/test_runtime_contract.py -q  # until split to python/tests/unit
+python -m pytest python/tests/test_runtime_contract.py python/tests/test_lock_release.py python/tests/test_version_source.py python/tests/test_alter_option.py python/tests/test_middleware_stack.py python/tests/test_worker_launch.py python/tests/test_interfaces.py python/tests/test_typecheck.py python/tests/test_tracking.py python/tests/test_tracing_defaults.py python/tests/test_lazy_exports.py python/tests/test_admin_kwargs.py python/tests/test_dispatch_edges.py python/tests/test_memory_edges.py python/tests/test_exposition_server.py python/tests/test_multiproc_edges.py python/tests/test_slot_identity.py -q --cov=simple_q --cov-fail-under=100
 
 # integration (Redis required)
 redis-cli ping

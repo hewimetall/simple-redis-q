@@ -159,6 +159,8 @@ fn spawn_harness(test: &str, envs: &[(&str, &str)]) -> Child {
 
 #[tokio::test]
 async fn poll_child_holds_one_task() {
+    // Arrange
+
     if std::env::var("SIMPLE_Q_POLL_HOLD").ok().as_deref() != Some("1") {
         return;
     }
@@ -176,12 +178,15 @@ async fn poll_child_holds_one_task() {
                 tokio::time::sleep(Duration::from_secs(3600)).await;
                 Ok::<(), std::io::Error>(())
             }
-        });
-    worker.run().await.expect("holder");
+        }); // Act
+
+    worker.run().await.expect("holder"); // Assert
 }
 
 #[tokio::test]
 async fn poll_child_idles() {
+    // Arrange
+
     if std::env::var("SIMPLE_Q_POLL_IDLE").ok().as_deref() != Some("1") {
         return;
     }
@@ -198,12 +203,15 @@ async fn poll_child_idles() {
                 .backend(storage.clone())
                 .build(|_job: Job| async { Ok::<(), std::io::Error>(()) })
         });
-    }
-    monitor.run().await.expect("idle workers");
+    } // Act
+
+    monitor.run().await.expect("idle workers"); // Assert
 }
 
 #[tokio::test]
 async fn one_task_after_idle_arrives_before_the_heartbeat() {
+    // Arrange
+
     let Some(mut conn) = try_connect().await else {
         return;
     };
@@ -240,7 +248,11 @@ async fn one_task_after_idle_arrives_before_the_heartbeat() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let elapsed = started.elapsed();
+    // Act
+
     println!("POLL_MEASURE pickup_ms={}", elapsed.as_millis());
+    // Assert
+
     assert_eq!(
         seen.lock().expect("seen").as_deref(),
         Some(message_id.as_str())
@@ -255,6 +267,8 @@ async fn one_task_after_idle_arrives_before_the_heartbeat() {
 
 #[tokio::test]
 async fn a_batch_after_idle_is_drained_without_waiting_out_the_heartbeat() {
+    // Arrange
+
     let Some(mut conn) = try_connect().await else {
         return;
     };
@@ -294,10 +308,14 @@ async fn a_batch_after_idle_is_drained_without_waiting_out_the_heartbeat() {
     }
     let elapsed = started.elapsed();
     let count = seen.lock().expect("seen").len();
+    // Act
+
     println!(
         "POLL_MEASURE batch_ms={} count={count}",
         elapsed.as_millis()
     );
+    // Assert
+
     assert_eq!(count, 20, "batch still short after {elapsed:?}");
     assert!(elapsed < deadline, "batch took {elapsed:?}");
     running.abort();
@@ -306,6 +324,8 @@ async fn a_batch_after_idle_is_drained_without_waiting_out_the_heartbeat() {
 
 #[tokio::test]
 async fn sigkill_waits_for_the_orphan_window_then_the_poll() {
+    // Arrange
+
     let Some(mut conn) = try_connect().await else {
         return;
     };
@@ -334,9 +354,13 @@ async fn sigkill_waits_for_the_orphan_window_then_the_poll() {
         .expect("queued");
 
     let start = Instant::now();
+    // Act
+
     while start.elapsed() < Duration::from_secs(5) && !held.exists() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    // Assert
+
     assert!(held.exists(), "holder never took the task");
     assert_eq!(std::fs::read_to_string(&held).expect("held"), message_id);
 
@@ -383,6 +407,8 @@ async fn sigkill_waits_for_the_orphan_window_then_the_poll() {
 
 #[tokio::test]
 async fn idle_polls_are_measured_across_processes_and_queues() {
+    // Arrange
+
     let Some(mut conn) = try_connect().await else {
         return;
     };
@@ -422,9 +448,13 @@ async fn idle_polls_are_measured_across_processes_and_queues() {
     let calls = script_calls(&mut conn).await - before_calls;
     let cpu = redis_cpu(&mut conn).await - before_cpu;
     let per_sec = calls / window.as_secs_f64();
+    // Act
+
     println!(
         "POLL_MEASURE processes=2 queues=4 interval_ms=500 idle_secs=5 script_calls={calls:.0} scripts_per_sec={per_sec:.2} redis_cpu_seconds={cpu:.4}"
     );
+    // Assert
+
     assert!(
         per_sec >= 4.0,
         "idle fetch rate {per_sec:.2}/s is still a heartbeat, not a 500ms poll"
