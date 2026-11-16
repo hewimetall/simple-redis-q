@@ -1,6 +1,6 @@
 # API
 
-These pages describe simple-q on main. The packages are 1.2.0. Changes after that tag are under Unreleased in the changelog. The signatures below are the supported surface. `Config.from_env()` reads `SIMPLE_Q_*` only. An invalid value raises. There is no silent default.
+These pages describe simple-q on main. The packages are 1.3.0. Changes after that tag are under Unreleased in the changelog. The signatures below are the supported surface. `Config.from_env()` reads `SIMPLE_Q_*` only. An invalid value raises. There is no silent default.
 
 ## `@actor`
 

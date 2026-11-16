@@ -1,6 +1,6 @@
 # Limitations
 
-These pages describe simple-q on main. The packages are 1.2.0. Changes after that tag are under Unreleased in the changelog.
+These pages describe simple-q on main. The packages are 1.3.0. Changes after that tag are under Unreleased in the changelog.
 
 ## No synchronous send
 
