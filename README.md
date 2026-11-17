@@ -43,4 +43,4 @@ async def enqueue() -> None:
 
 ## Documentation
 
-These pages describe main, package 1.2.0: [docs/index.md](docs/index.md). The running worker is `agent-worker` and `simple-q-runtime`. A research example of a later fork is under `docs/research/example` and is not part of the build.
+These pages describe main, package 1.3.0: [docs/index.md](docs/index.md). The running worker is `agent-worker` and `simple-q-runtime`. A research example of a later fork is under `docs/research/example` and is not part of the build.
