@@ -1,6 +1,6 @@
 # ADR 0005 — Source license is undeclared at v1.2.0
 
-- **Status:** Accepted (risk record)
+- **Status:** Resolved
 - **Date:** 2026-11-13
 
 ## Context
@@ -18,3 +18,7 @@ GitHub reports no license for `hewimetall/simple-redis-q`. The `v1.2.0` tree has
 - Research and internal architectural work may continue on a branch.
 - The tree on main still publishes `simple-q-runtime` and `simple-q-worker` from a version tag. This record does not change that workflow. The research example is not a workspace member and is not published.
 - A public redistribution of the fork stays blocked until the repository has an SPDX license. This record does not add one.
+
+## Resolution
+
+The workspace and both packages are `MIT OR Apache-2.0`. `LICENSE-MIT` and `LICENSE-APACHE` are in the tree. The license commit is `31150553dba2a76a6a48c757c2d9051479d44def`.

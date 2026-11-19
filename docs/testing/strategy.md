@@ -91,5 +91,7 @@ Record command + exit status in stage reports (brief §15.7).
 | `v1.2.0` orphan / worker_info / queue_admin | 8 passed |
 | Research example, outside the workspace | 12 passed, 1 ignored |
 | Stage C gate `--ignored` | **RED** (`PARENT_NO_CPYTHON_IMPLEMENTED == false`) |
+
+The fork preview sets `PARENT_NO_CPYTHON_IMPLEMENTED` in `simple-q-parent` and runs that gate test. The research example above is unchanged.
 | watchexec 6.0.0 spike | ran ok |
 | oxana 2.5.0 opaque Worker | compile ok |

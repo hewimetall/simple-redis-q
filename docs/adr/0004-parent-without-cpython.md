@@ -30,7 +30,7 @@ Parent **must not** call `bridge::read_client` or `runtime::initialize`.
 ### Code gate
 
 `ParentBootstrap::try_from_legacy_app_client()` returns `AppClientRequiresCPython`.  
-`PARENT_NO_CPYTHON_IMPLEMENTED` flips to `true` only when production parent path is fixed.
+`PARENT_NO_CPYTHON_IMPLEMENTED` is `true` in `simple-q-parent`. The `worker` command without `--child` does not call `runtime::initialize` or `bridge::read_client`. It reads `REDIS_URL` and `SIMPLE_Q_*`, and exits 3 when `REDIS_URL` is missing or invalid. `info`, `execute`, and the child still load the application.
 
 ## Consequences
 

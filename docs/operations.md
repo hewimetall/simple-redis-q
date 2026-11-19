@@ -60,6 +60,23 @@ Each delivery opens a process span named `process {actor_name}`. A `traceparent`
 
 `on_send` on the `Client` is the place to put `traceparent` on the way in. It runs on the caller's task, before Redis.
 
+## Supervisor telemetry
+
+The supervisor does not use the application's `Tracing` exporter. That path needs the interpreter, and the supervisor does not start one. Supervisor traces and Sentry are a separate Rust export. They stay off until an OTLP endpoint or a Sentry DSN is set. The variable table is on the [settings](settings.md) page.
+
+Spans cover supervisor start and stop, child start, child exit, a restart pause, and a drain. A child exit records the code or the signal and a reason: `recycle`, `drain`, `memory_soft`, `memory_ratio`, `hard kill`, or `crash`. Those spans are not linked to task spans. The supervisor does not run tasks.
+
+Sentry records a supervisor panic, a restart pause that has reached its 30 second cap, a child that did not start, a hard kill, and a supervisor Redis publish that fails for longer than the heartbeat window. The DSN and OTLP headers are read from the environment only. They are not command-line flags, and they are not written to the log, to `agent-worker info`, to the supervisor Redis record, or to span attributes. `info` shows `on` or `off`.
+
+```bash
+SIMPLE_Q_SUPERVISOR_OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 \
+SIMPLE_Q_SUPERVISOR_SENTRY_DSN=https://public@sentry.example/1 \
+agent-worker worker --app reports_app:create --factory --queues reports \
+  --otel-service-name simple-q-supervisor
+```
+
+The `SIMPLE_Q_SUPERVISOR_` endpoint wins over `OTEL_EXPORTER_OTLP_ENDPOINT`. The child still inherits `OTEL_EXPORTER_OTLP_ENDPOINT` unchanged, for the application's own SDK. A collector that is down drops spans. The supervisor does not exit because of that.
+
 ## Admin board
 
 ```bash
