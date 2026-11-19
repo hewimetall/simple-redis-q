@@ -170,4 +170,27 @@ mod tests {
         assert_eq!(phases[3], DrainPhase::TrackerClosed);
         assert_eq!(phases[4], DrainPhase::WaitingTrackedWork);
     }
+
+    #[test]
+    fn given_open_or_closed_gate_when_late_claim_is_rejected_then_only_the_closed_gate_rejects() {
+        // Arrange
+        let mut open = AdmissionGate::default();
+        let mut closed = AdmissionGate::default();
+        closed.close();
+
+        // Act
+        let open_decision = open.reject_late_claim();
+        let closed_decision = closed.reject_late_claim();
+
+        // Assert
+        assert!(!open.is_closed());
+        assert!(closed.is_closed());
+        assert_eq!(open_decision, ClaimAdmission::Accept);
+        assert_eq!(closed_decision, ClaimAdmission::Reject);
+        assert!(!closed.inflight_settled());
+        assert!(!closed.ready_for_tracker_close());
+        closed.mark_inflight_settled();
+        assert!(closed.inflight_settled());
+        assert!(closed.ready_for_tracker_close());
+    }
 }

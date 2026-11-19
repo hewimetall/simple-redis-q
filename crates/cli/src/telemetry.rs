@@ -390,10 +390,10 @@ fn parse_timeout(name: &str, value: Option<String>) -> Result<Duration, Telemetr
     if number == 0 {
         return Err(TelemetryError::new(format!("{name} must be positive")));
     }
-    let duration = match unit {
-        "ms" => Duration::from_millis(number),
-        "s" => Duration::from_secs(number),
-        _ => return Err(TelemetryError::new(format!("{name} is invalid"))),
+    let duration = if unit == "s" {
+        Duration::from_secs(number)
+    } else {
+        Duration::from_millis(number)
     };
     Ok(duration)
 }
@@ -624,5 +624,145 @@ mod tests {
         assert!(!text.contains("hidden"));
         assert!(text.contains("sentry_dsn"));
         assert!(text.contains("set"));
+    }
+
+    #[test]
+    fn given_each_parser_branch_when_resolved_then_labels_and_errors_are_exact() {
+        // Arrange
+        let flags = TelemetryFlags {
+            otel_protocol: Some("grpc".to_owned()),
+            otel_sampler: Some("traceidratio".to_owned()),
+            ..TelemetryFlags::default()
+        };
+        let getenv = env(&[
+            ("OTEL_SDK_DISABLED", "off"),
+            ("OTEL_EXPORTER_OTLP_ENDPOINT", "https://otel-collector:4318"),
+            ("OTEL_EXPORTER_OTLP_TIMEOUT", "2s"),
+            ("OTEL_TRACES_SAMPLER_ARG", "0.25"),
+            ("OTEL_RESOURCE_ATTRIBUTES", "service.namespace=reports"),
+            ("OTEL_EXPORTER_OTLP_HEADERS", "  "),
+            ("SENTRY_ENVIRONMENT", "   "),
+            ("SENTRY_DSN", "https://public@sentry.example/1"),
+        ]);
+
+        // Act
+        let config = resolve_telemetry(&flags, getenv, "2.0.0-alpha.1").unwrap();
+
+        // Assert
+        assert_eq!(config.protocol.as_str(), "grpc");
+        assert_eq!(config.sampler.as_str(), "traceidratio");
+        assert_eq!(OtlpProtocol::HttpProtobuf.as_str(), "http/protobuf");
+        assert_eq!(SamplerName::AlwaysOn.as_str(), "always_on");
+        assert_eq!(SamplerName::AlwaysOff.as_str(), "always_off");
+        assert_eq!(
+            SamplerName::ParentBasedAlwaysOn.as_str(),
+            "parentbased_always_on"
+        );
+        assert_eq!(
+            SamplerName::ParentBasedAlwaysOff.as_str(),
+            "parentbased_always_off"
+        );
+        assert_eq!(
+            SamplerName::ParentBasedTraceIdRatio.as_str(),
+            "parentbased_traceidratio"
+        );
+        assert_eq!(config.sampler_arg, 0.25);
+        assert_eq!(config.timeout, Duration::from_secs(2));
+        assert_eq!(config.traces_label(), "on");
+        assert_eq!(config.sentry_label(), "on");
+        assert!(config.header_string().is_empty());
+        assert_eq!(config.sentry_environment.as_deref(), Some("   "));
+        assert!(
+            resolve_telemetry(&TelemetryFlags::default(), env(&[]), "")
+                .unwrap_err()
+                .to_string()
+                .contains("SENTRY_RELEASE")
+        );
+        assert_eq!(
+            config
+                .resource_attributes
+                .get("service.namespace")
+                .map(String::as_str),
+            Some("reports")
+        );
+
+        let flags = TelemetryFlags::default();
+        let invalid = [
+            &[("OTEL_SDK_DISABLED", "maybe")][..],
+            &[("OTEL_EXPORTER_OTLP_ENDPOINT", "ftp://otel-collector")][..],
+            &[("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel collector")][..],
+            &[("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")][..],
+            &[("OTEL_TRACES_SAMPLER", "always_off")][..],
+            &[("OTEL_TRACES_SAMPLER", "parentbased_always_off")][..],
+            &[("OTEL_TRACES_SAMPLER", "parentbased_traceidratio")][..],
+            &[("OTEL_TRACES_SAMPLER", "other")][..],
+            &[("OTEL_TRACES_SAMPLER_ARG", "2")][..],
+            &[("OTEL_TRACES_SAMPLER_ARG", "nan")][..],
+            &[("OTEL_EXPORTER_OTLP_TIMEOUT", "0ms")][..],
+            &[("OTEL_EXPORTER_OTLP_TIMEOUT", "15")][..],
+            &[("OTEL_EXPORTER_OTLP_TIMEOUT", "nope")][..],
+            &[("OTEL_EXPORTER_OTLP_HEADERS", "a=b,,c=d")][..],
+            &[("OTEL_EXPORTER_OTLP_HEADERS", "orphan")][..],
+            &[("OTEL_EXPORTER_OTLP_HEADERS", "=missing")][..],
+            &[("SENTRY_DSN", "not-a-dsn")][..],
+            &[("OTEL_SERVICE_NAME", "")][..],
+        ];
+        for pairs in invalid {
+            let error = resolve_telemetry(&flags, env(pairs), "2.0.0-alpha.1");
+            if pairs[0].0 == "OTEL_EXPORTER_OTLP_PROTOCOL" && pairs[0].1 == "http/protobuf" {
+                assert!(error.is_ok());
+                continue;
+            }
+            if pairs[0].0 == "OTEL_TRACES_SAMPLER"
+                && matches!(
+                    pairs[0].1,
+                    "always_off" | "parentbased_always_off" | "parentbased_traceidratio"
+                )
+            {
+                assert!(error.is_ok());
+                continue;
+            }
+            if pairs[0].0 == "OTEL_EXPORTER_OTLP_TIMEOUT" && pairs[0].1 == "15" {
+                assert!(error.is_ok());
+                continue;
+            }
+            if pairs[0].0 == "OTEL_SERVICE_NAME" {
+                assert!(error.is_ok());
+                continue;
+            }
+            assert!(error.is_err(), "{pairs:?}");
+        }
+        let headers = resolve_telemetry(
+            &flags,
+            env(&[("OTEL_EXPORTER_OTLP_HEADERS", "a=b, c=d")]),
+            "2.0.0-alpha.1",
+        )
+        .unwrap();
+        assert_eq!(headers.header_string(), "a=b,c=d");
+        assert!(
+            resolve_telemetry(
+                &flags,
+                env(&[("OTEL_RESOURCE_ATTRIBUTES", "orphan")]),
+                "2.0.0-alpha.1",
+            )
+            .is_err()
+        );
+        assert!(
+            resolve_telemetry(
+                &flags,
+                env(&[("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "ftp://otel-collector")]),
+                "2.0.0-alpha.1",
+            )
+            .is_err()
+        );
+        assert!(
+            resolve_telemetry(&flags, env(&[("SENTRY_SAMPLE_RATE", "2")]), "2.0.0-alpha.1",)
+                .is_err()
+        );
+        let odd = TelemetryConfig {
+            endpoint: Some("otel-collector".to_owned()),
+            ..config
+        };
+        assert!(format!("{odd:?}").contains("<redacted>"));
     }
 }

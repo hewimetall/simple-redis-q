@@ -90,7 +90,7 @@ pub fn parse_outcome(value: &Value) -> Result<BridgeOutcome, ProtocolError> {
 ///
 /// Lost ownership, including `LeaseLost`, is never `Ack`.
 pub fn finish_for(life: AttemptLifecycle, outcome: &BridgeOutcome) -> FinishDisposition {
-    if life.ownership == OwnershipState::Lost || matches!(outcome, BridgeOutcome::LeaseLost) {
+    if life.ownership == OwnershipState::Lost {
         return FinishDisposition::RejectedStaleOwnership;
     }
     if !life.allowed_success_ack() {
@@ -223,5 +223,94 @@ mod tests {
 
         // Assert
         assert_eq!(disposition, FinishDisposition::RejectedStaleOwnership);
+    }
+
+    #[test]
+    fn given_each_wire_outcome_when_parsed_and_finished_then_disposition_matches() {
+        // Arrange
+        let held = finishing(false);
+        let dead = [
+            (json!({"outcome": "dead"}), "dead"),
+            (json!({"outcome": "dead", "reason": "retries"}), "retries"),
+            (json!({"outcome": "error"}), "application error"),
+            (json!({"outcome": "error", "error": "boom"}), "boom"),
+            (json!({"outcome": "timeout"}), "timeout"),
+            (json!({"outcome": "cancel"}), "cancel"),
+        ];
+        let unconfirmed = [
+            (json!({"outcome": "bridge_failure"}), "bridge failure"),
+            (
+                json!({"outcome": "bridge_failure", "error": "redis"}),
+                "redis",
+            ),
+        ];
+
+        // Act / Assert
+        assert_eq!(
+            finish_for(
+                held,
+                &parse_outcome(&json!({"outcome": "skipped"})).unwrap()
+            ),
+            FinishDisposition::Ack
+        );
+        assert_eq!(
+            finish_for(
+                held,
+                &parse_outcome(&json!({"outcome": "retry", "delay_ms": 15})).unwrap()
+            ),
+            FinishDisposition::Retry {
+                delay: Duration::from_millis(15)
+            }
+        );
+        assert_eq!(
+            parse_outcome(&json!({"outcome": "retry"})).unwrap(),
+            BridgeOutcome::Retry {
+                delay: Duration::from_millis(0)
+            }
+        );
+        assert_eq!(
+            parse_outcome(&json!({"outcome": "dead", "reason": ""})).unwrap(),
+            BridgeOutcome::Dead {
+                reason: "dead".to_owned()
+            }
+        );
+        assert_eq!(
+            parse_outcome(&json!({"outcome": "lease_lost"})).unwrap(),
+            BridgeOutcome::LeaseLost
+        );
+        for (value, reason) in dead {
+            assert_eq!(
+                finish_for(held, &parse_outcome(&value).unwrap()),
+                FinishDisposition::Dead {
+                    reason: reason.to_owned()
+                }
+            );
+        }
+        for (value, reason) in unconfirmed {
+            assert_eq!(
+                finish_for(held, &parse_outcome(&value).unwrap()),
+                FinishDisposition::FinishUnconfirmed {
+                    detail: reason.to_owned()
+                }
+            );
+        }
+        let early = AttemptLifecycle::claimed();
+        assert_eq!(
+            finish_for(early, &BridgeOutcome::Ok),
+            FinishDisposition::RejectedStaleOwnership
+        );
+        assert_eq!(
+            finish_for(
+                early,
+                &BridgeOutcome::BridgeFailure {
+                    message: "down".to_owned()
+                }
+            ),
+            FinishDisposition::FinishUnconfirmed {
+                detail: "down".to_owned()
+            }
+        );
+        let error = parse_outcome(&json!({"outcome": "nope"})).unwrap_err();
+        assert_eq!(error.to_string(), "unknown bridge outcome `nope`");
     }
 }

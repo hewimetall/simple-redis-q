@@ -69,6 +69,17 @@ mod tests {
     }
 
     #[test]
+    fn given_missing_redis_url_when_parent_bootstraps_then_rejected() {
+        // Arrange / Act
+        let absent = ParentBootstrap::from_env_and_cli(None).unwrap_err();
+        let blank = ParentBootstrap::from_env_and_cli(Some(String::new())).unwrap_err();
+
+        // Assert
+        assert_eq!(absent, ParentInitError::MissingRedisUrl);
+        assert_eq!(blank, ParentInitError::MissingRedisUrl);
+    }
+
+    #[test]
     #[allow(clippy::assertions_on_constants)]
     fn given_stage_c_when_parent_path_shipped_then_no_cpython_flag_is_true() {
         // Arrange

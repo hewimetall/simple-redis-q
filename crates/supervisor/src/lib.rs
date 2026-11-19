@@ -1,8 +1,8 @@
 //! Process lifecycle for one supervisor slot.
 //!
-//! Production spawning stays in `agent-worker` on `tokio::process`.
-//! `watchexec-supervisor` is measured from the integration test and is not a
-//! dependency of this library.
+//! Worker slots spawn in `agent-worker` through `watchexec-supervisor`.
+//! This library does not depend on that crate. It keeps the slot lifecycle
+//! policy. The metrics helper stays a direct `tokio::process` spawn.
 
 mod lifecycle;
 

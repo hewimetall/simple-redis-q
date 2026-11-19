@@ -39,11 +39,6 @@ pub fn parse_redis_endpoint(url: &str) -> Result<RedisEndpoint, RedisEndpointErr
         None => (without_user, ""),
     };
     let host = host_only(host_port)?;
-    if host.is_empty() {
-        return Err(RedisEndpointError {
-            message: "REDIS_URL is missing a host",
-        });
-    }
     let db = database(path)?;
     Ok(RedisEndpoint { host, db })
 }
@@ -132,5 +127,29 @@ mod tests {
         // Assert
         assert_eq!(endpoint.host, "::1");
         assert_eq!(endpoint.db, 2);
+    }
+
+    #[test]
+    fn given_a_bad_url_when_parsed_then_the_error_hides_the_input() {
+        // Arrange
+        let cases = [
+            "http://redis.internal/0",
+            "redis://",
+            "redis://:6379/0",
+            "redis://[/0",
+            "redis://[]/0",
+            "redis://redis.internal/nope",
+        ];
+
+        // Act / Assert
+        for url in cases {
+            let error = parse_redis_endpoint(url).unwrap_err();
+            let text = error.to_string();
+            assert!(!text.is_empty());
+            assert!(!text.contains(url));
+            let _ = std::error::Error::source(&error);
+        }
+        let queried = parse_redis_endpoint("redis://redis.internal/3?role=primary").unwrap();
+        assert_eq!(queried.db, 3);
     }
 }

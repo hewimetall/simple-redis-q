@@ -95,15 +95,9 @@ impl AttemptLifecycle {
                 }
             }
             AttemptEvent::RequestCancel => match next.execution {
-                ExecutionState::Running if next.finish == FinishState::NotStarted => {
-                    next.execution = ExecutionState::CancelRequested;
-                    true
-                }
-                // Idempotent while already cancel-requested or ownership-lost running.
-                ExecutionState::CancelRequested if next.finish == FinishState::NotStarted => true,
-                ExecutionState::Running
-                    if next.ownership == OwnershipState::Lost
-                        && next.finish == FinishState::NotStarted =>
+                // Lost ownership uses the same cancel. A second request is a no-op.
+                ExecutionState::Running | ExecutionState::CancelRequested
+                    if next.finish == FinishState::NotStarted =>
                 {
                     next.execution = ExecutionState::CancelRequested;
                     true
@@ -351,5 +345,100 @@ mod tests {
         assert_eq!(terminal.finish, FinishState::RejectedStale);
         assert!(terminal.is_terminal());
         assert!(terminal.transition(AttemptEvent::LoseOwnership).is_err());
+    }
+
+    #[test]
+    fn given_each_legal_event_when_applied_in_order_then_finish_confirms() {
+        // Arrange
+        let life = AttemptLifecycle::claimed();
+
+        // Act
+        let running = life.transition(AttemptEvent::StartHandler).unwrap();
+        let again = running.transition(AttemptEvent::RequestCancel).unwrap();
+        let idempotent = again.transition(AttemptEvent::RequestCancel).unwrap();
+        let finished = running.transition(AttemptEvent::HandlerReturned).unwrap();
+        let inflight = finished.transition(AttemptEvent::BeginFinish).unwrap();
+        let confirmed = inflight.transition(AttemptEvent::FinishConfirmed).unwrap();
+
+        // Assert
+        assert_eq!(idempotent.execution, ExecutionState::CancelRequested);
+        assert!(inflight.allowed_success_ack());
+        assert_eq!(confirmed.finish, FinishState::Confirmed);
+        assert!(confirmed.is_terminal());
+        assert!(confirmed.transition(AttemptEvent::FinishConfirmed).is_err());
+        assert!(
+            life.transition(AttemptEvent::StartHandler)
+                .unwrap()
+                .transition(AttemptEvent::StartHandler)
+                .is_err()
+        );
+        assert!(life.transition(AttemptEvent::RequestCancel).is_err());
+    }
+
+    #[test]
+    fn given_lost_running_when_cancel_requested_then_cancel_is_kept() {
+        // Arrange
+        let lost = AttemptLifecycle::claimed()
+            .transition(AttemptEvent::StartHandler)
+            .unwrap()
+            .transition(AttemptEvent::LoseOwnership)
+            .unwrap();
+
+        // Act
+        let cancel = lost.transition(AttemptEvent::RequestCancel).unwrap();
+        let returned = cancel.transition(AttemptEvent::HandlerReturned).unwrap();
+
+        // Assert
+        assert_eq!(cancel.execution, ExecutionState::CancelRequested);
+        assert!(cancel.ownership_lost());
+        assert_eq!(returned.execution, ExecutionState::HandlerFinished);
+        assert!(returned.ownership_lost());
+    }
+
+    #[test]
+    fn given_illegal_event_when_applied_then_the_lifecycle_is_unchanged() {
+        // Arrange
+        let claimed = AttemptLifecycle::claimed();
+        let running = claimed.transition(AttemptEvent::StartHandler).unwrap();
+        let stopped = running
+            .transition(AttemptEvent::LoseOwnership)
+            .unwrap()
+            .transition(AttemptEvent::ConfirmExecutionStopped)
+            .unwrap()
+            .transition(AttemptEvent::BeginFinish)
+            .unwrap();
+
+        // Act / Assert
+        assert!(
+            claimed
+                .transition(AttemptEvent::ConfirmExecutionStopped)
+                .is_err()
+        );
+        assert!(claimed.transition(AttemptEvent::HandlerReturned).is_err());
+        assert!(
+            claimed
+                .transition(AttemptEvent::FinishRejectedStale)
+                .is_err()
+        );
+        assert!(claimed.transition(AttemptEvent::FinishUnconfirmed).is_err());
+        assert!(
+            running
+                .transition(AttemptEvent::ConfirmExecutionStopped)
+                .is_err()
+        );
+        assert_eq!(
+            stopped
+                .transition(AttemptEvent::FinishUnconfirmed)
+                .unwrap()
+                .finish,
+            FinishState::Unconfirmed
+        );
+        assert_eq!(
+            stopped
+                .transition(AttemptEvent::FinishRejectedStale)
+                .unwrap()
+                .finish,
+            FinishState::RejectedStale
+        );
     }
 }

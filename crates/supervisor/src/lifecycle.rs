@@ -172,7 +172,10 @@ mod tests {
             phase,
             ProcessPhase::Draining | ProcessPhase::Stopping
         ));
-        if phase == ProcessPhase::Draining {
+    }
+
+    fn settle(owner: &SlotOwner) {
+        if owner.phase() == ProcessPhase::Draining {
             assert_eq!(
                 owner.apply(ProcessEvent::Stop).unwrap(),
                 ProcessPhase::Stopping
@@ -181,6 +184,70 @@ mod tests {
         assert_eq!(
             owner.apply(ProcessEvent::Reaped).unwrap(),
             ProcessPhase::Exited
+        );
+    }
+
+    #[test]
+    fn given_either_drain_winner_when_settled_then_the_slot_is_exited() {
+        // Arrange
+        let drained = SlotOwner::starting();
+        drained.apply(ProcessEvent::Ready).unwrap();
+        drained.apply(ProcessEvent::Drain).unwrap();
+        let stopped = SlotOwner::starting();
+        stopped.apply(ProcessEvent::Ready).unwrap();
+        stopped.apply(ProcessEvent::Stop).unwrap();
+
+        // Act / Assert
+        settle(&drained);
+        settle(&stopped);
+    }
+
+    fn apply(events: &[ProcessEvent]) -> Result<ProcessPhase, ProcessTransitionError> {
+        let mut life = SlotLifecycle::starting();
+        for event in events {
+            life = life.transition(*event)?;
+        }
+        Ok(life.phase())
+    }
+
+    #[test]
+    fn given_every_legal_transition_when_applied_then_phase_matches() {
+        // Arrange / Act / Assert
+        assert_eq!(
+            apply(&[ProcessEvent::StartFailed]).unwrap(),
+            ProcessPhase::Failed
+        );
+        assert_eq!(
+            apply(&[ProcessEvent::Ready, ProcessEvent::Crash]).unwrap(),
+            ProcessPhase::Failed
+        );
+        assert_eq!(
+            apply(&[ProcessEvent::Ready, ProcessEvent::Drain, ProcessEvent::Stop]).unwrap(),
+            ProcessPhase::Stopping
+        );
+        assert_eq!(
+            apply(&[
+                ProcessEvent::Ready,
+                ProcessEvent::Drain,
+                ProcessEvent::Crash
+            ])
+            .unwrap(),
+            ProcessPhase::Failed
+        );
+        assert_eq!(
+            apply(&[ProcessEvent::Ready, ProcessEvent::Stop, ProcessEvent::Stop]).unwrap(),
+            ProcessPhase::Stopping
+        );
+        assert_eq!(
+            apply(&[ProcessEvent::StartFailed, ProcessEvent::Reaped]).unwrap(),
+            ProcessPhase::Exited
+        );
+        assert!(apply(&[ProcessEvent::Reaped]).is_err());
+        assert!(apply(&[ProcessEvent::Ready, ProcessEvent::Reaped]).is_err());
+        assert!(
+            SlotLifecycle::starting()
+                .transition(ProcessEvent::Crash)
+                .is_err()
         );
     }
 }

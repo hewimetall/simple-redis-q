@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Process lifecycle. Production spawn stays on tokio::process."
+description = "Slot lifecycle policy. Worker spawn lives in agent-worker."
 
 [dependencies]
 
