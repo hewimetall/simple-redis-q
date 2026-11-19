@@ -117,7 +117,10 @@ def test_info_json_shows_the_running_task_then_max_tasks(tmp_path):
 
             def create():
                 return App(
-                    client=Client(os.environ["REDIS_URL"], config=Config.from_env()),
+                    client=Client(
+                        os.environ.get("SIMPLE_Q_APP_REDIS_URL") or os.environ["REDIS_URL"],
+                        config=Config.from_env(),
+                    ),
                     actors=[hold],
                 )
             """
@@ -128,6 +131,7 @@ def test_info_json_shows_the_running_task_then_max_tasks(tmp_path):
     env.update(
         {
             "REDIS_URL": url,
+            "SIMPLE_Q_APP_REDIS_URL": url,
             "PYTHONPATH": os.pathsep.join([str(tmp_path), _worker_python(tmp_path)]),
             "HOSTNAME": host,
             "SIMPLE_Q_HEARTBEAT_SECS": "1",

@@ -8,7 +8,7 @@ The supervisor reads `REDIS_URL` and `SIMPLE_Q_*` from its own environment. A fl
 
 Supervisor traces and Sentry are off unless configured. Their flags and `SIMPLE_Q_SUPERVISOR_*` variables are separate from the child's Python exporter. With no DSN and no OTLP endpoint, the supervisor does not open a connection and does not start an export thread.
 
-Migration: set `REDIS_URL` and the `SIMPLE_Q_*` values the supervisor should use in that process. Supervisor telemetry stays off until its own variables or flags are set.
+Migration: set `REDIS_URL` and the `SIMPLE_Q_*` values the supervisor should use in that process. The child does not inherit `REDIS_URL`. A factory that needs a URL reads `SIMPLE_Q_APP_REDIS_URL`, or it builds `Client` in the application. Supervisor telemetry stays off until its own variables or flags are set. The published wheels export `http/protobuf`. `grpc` needs the `otlp-grpc` feature and otherwise exits 3.
 
 A child that loses the attempt lease, or cannot confirm finish, exits 4. `agent-worker info` and `QueueAdmin.snapshot` show `killed` / `ownership_lost`. Exit 2 is only the ping-budget watchdog. A Redis error while counting a delivery, or while enqueueing a retry, exits 5. The same snapshot shows `killed` / `redis_error`, and the attempt stays inflight.
 

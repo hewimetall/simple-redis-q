@@ -144,7 +144,10 @@ def test_process_span_is_a_child_and_keeps_its_link(tmp_path):
 
             def create_app():
                 return App(
-                    client=Client(os.environ["REDIS_URL"], config=Config.from_env()),
+                    client=Client(
+                        os.environ.get("SIMPLE_Q_APP_REDIS_URL") or os.environ["REDIS_URL"],
+                        config=Config.from_env(),
+                    ),
                     actors=[traced],
                     tracing=Tracing(
                         exporter=Recorder(os.environ["SPAN_LOG"], RESOURCE),
@@ -184,6 +187,7 @@ def test_process_span_is_a_child_and_keeps_its_link(tmp_path):
     env.update(
         {
             "REDIS_URL": url,
+            "SIMPLE_Q_APP_REDIS_URL": url,
             "PYTHONPATH": os.pathsep.join(
                 part
                 for part in (str(tmp_path), str(worker_py), user_site)

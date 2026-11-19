@@ -121,7 +121,10 @@ def test_factory_worker_alive_from_handler_and_another_process(tmp_path):
                     json.dump({"name": name, "alive": alive, "progressed": saw}, handle)
 
             def create_app():
-                client = Client(os.environ["REDIS_URL"], config=Config.from_env())
+                client = Client(
+                    os.environ.get("SIMPLE_Q_APP_REDIS_URL") or os.environ["REDIS_URL"],
+                    config=Config.from_env(),
+                )
                 HOLDER["client"] = client
                 return App(client=client, actors=[probe])
             """
@@ -132,6 +135,7 @@ def test_factory_worker_alive_from_handler_and_another_process(tmp_path):
     env.update(
         {
             "REDIS_URL": url,
+            "SIMPLE_Q_APP_REDIS_URL": url,
             "PYTHONPATH": os.pathsep.join([str(tmp_path), _worker_python(tmp_path)]),
             "ALIVE_LOG": str(result_path),
             "RUST_LOG": "warn",

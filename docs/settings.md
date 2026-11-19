@@ -1,6 +1,6 @@
 # Settings
 
-These pages describe simple-q on main. The packages are 1.3.0. Changes after that tag are under Unreleased in the changelog.
+These pages describe simple-q 2.0.0a1.
 
 `Config.from_env()` reads `SIMPLE_Q_*` only. An invalid value raises. There is no silent default: a value that is empty, not a number, zero where the setting must be positive, or a ratio outside `(0, 1)` raises. An omitted variable uses the default in this table. The Redis URL is not one of these settings. The application passes it to `Client`. The supervisor, `agent-worker enqueue`, and `agent-worker admin` read `REDIS_URL` themselves. The supervisor exits 3 when `REDIS_URL` is missing or invalid.
 
@@ -69,7 +69,7 @@ Any HTTP path on that address returns the scrape. A missing `simple_q_child_memo
 
 ## Supervisor telemetry
 
-Supervisor traces and Sentry are off unless configured. No endpoint and no DSN means no export thread and no network call. A bad value exits 3 before a child starts. The child does not read this table. It keeps the application's `Tracing` exporter, and it inherits the process environment unchanged.
+Supervisor traces and Sentry are off unless configured. No endpoint and no DSN means no export thread and no network call. A bad value exits 3 before a child starts. The child does not read this table. It keeps the application's `Tracing` exporter. It inherits the process environment except `REDIS_URL`, which the supervisor removes before the child starts.
 
 Priority for a non-secret is the CLI flag, then `SIMPLE_Q_SUPERVISOR_<NAME>`, then the standard variable, then the default. `SENTRY_DSN` and `OTEL_EXPORTER_OTLP_HEADERS` are environment only. Their arguments would be visible in the process list.
 
@@ -80,7 +80,7 @@ Priority for a non-secret is the CLI flag, then `SIMPLE_Q_SUPERVISOR_<NAME>`, th
 | `OTEL_RESOURCE_ATTRIBUTES` | | unset | Comma-separated `key=value` added to the resource. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `--otel-endpoint` | unset | OTLP base URL. `http://` or `https://`. |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | | unset | Traces URL. When set, it replaces the base URL. |
-| `OTEL_EXPORTER_OTLP_PROTOCOL` | `--otel-protocol` | `http/protobuf` | `http/protobuf` or `grpc`. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `--otel-protocol` | `http/protobuf` | `http/protobuf`. `grpc` needs the `otlp-grpc` cargo feature. The published wheels do not include it, and selecting `grpc` exits 3. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | | unset | Comma-separated `key=value`. Not a flag. Not logged. |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | | `10000` | Milliseconds, or a value such as `1s` or `500ms`. Must be greater than zero. |
 | `OTEL_TRACES_SAMPLER` | `--otel-sampler` | `parentbased_always_on` | `always_on`, `always_off`, `traceidratio`, `parentbased_always_on`, `parentbased_always_off`, or `parentbased_traceidratio`. |
@@ -90,7 +90,7 @@ Priority for a non-secret is the CLI flag, then `SIMPLE_Q_SUPERVISOR_<NAME>`, th
 | `SENTRY_RELEASE` | `--sentry-release` | simple-q version | Sentry release. |
 | `SENTRY_SAMPLE_RATE` | `--sentry-sample-rate` | `1.0` | Sample rate from 0 to 1. |
 
-Each name also has a `SIMPLE_Q_SUPERVISOR_` form, for example `SIMPLE_Q_SUPERVISOR_OTEL_EXPORTER_OTLP_ENDPOINT`. That form wins over the standard variable. Children still see the standard variables, because the application SDK reads those.
+Each name also has a `SIMPLE_Q_SUPERVISOR_` form, for example `SIMPLE_Q_SUPERVISOR_OTEL_EXPORTER_OTLP_ENDPOINT`. That form wins over the standard variable. Children still see the standard OTEL and Sentry variables, because the application SDK reads those. They do not see `REDIS_URL`. A factory that needs a Redis URL reads `SIMPLE_Q_APP_REDIS_URL`.
 
 The resource always includes `service.name`, `service.version`, `host.name`, and `process.pid`. Spans are `supervisor.start`, `supervisor.stop`, `child.start`, `child.exit`, `child.restart`, and `drain`. Attributes are the host, the simple-q version, and the pid, slot, queue, reason, exit code, or signal that applies. Export is batched. The queue holds 2048 spans and a batch holds 512. A collector that does not answer drops the batch. The supervisor keeps running. Shutdown flushes with a timeout no longer than the OTLP timeout and no longer than 5 seconds.
 

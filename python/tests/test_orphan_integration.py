@@ -89,6 +89,7 @@ def _worker_env(url: str, extra: dict[str, str]) -> dict[str, str]:
     env.update(
         {
             "REDIS_URL": url,
+            "SIMPLE_Q_APP_REDIS_URL": url,
             "PYTHONPATH": os.pathsep.join(
                 [_worker_python(), str(ROOT / "python" / "tests")]
             ),

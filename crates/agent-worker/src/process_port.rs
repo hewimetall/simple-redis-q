@@ -80,6 +80,9 @@ pub async fn spawn_worker(spec: WorkerSpawn) -> Result<PortChild> {
         for (key, value) in &env {
             command.env(key, value);
         }
+        // The supervisor credential stays in the parent. A factory that needs
+        // a URL reads SIMPLE_Q_APP_REDIS_URL, or builds the client in code.
+        command.env_remove("REDIS_URL");
         if let Some(fd) = slot_fd {
             // SAFETY: the closure runs in the forked child, before exec. It
             // only calls fcntl. The parent descriptor stays cloexec.
@@ -147,5 +150,44 @@ fn unix_signal(signal: watchexec_supervisor::Signal) -> i32 {
         watchexec_supervisor::Signal::Continue => libc::SIGCONT,
         watchexec_supervisor::Signal::Custom(value) => value,
         _ => libc::SIGKILL,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_spawned_child_does_not_inherit_redis_url() {
+        struct Restore(Option<String>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                unsafe {
+                    match self.0.take() {
+                        Some(value) => std::env::set_var("REDIS_URL", value),
+                        None => std::env::remove_var("REDIS_URL"),
+                    }
+                }
+            }
+        }
+        let restore = Restore(std::env::var("REDIS_URL").ok());
+        unsafe {
+            std::env::set_var("REDIS_URL", "redis://:supervisor-secret@127.0.0.1:6379/0");
+        }
+        let mut child = spawn_worker(WorkerSpawn {
+            program: PathBuf::from("/usr/bin/python3"),
+            args: vec![
+                "-c".to_owned(),
+                "import os,sys; sys.exit(0 if 'REDIS_URL' not in os.environ else 2)".to_owned(),
+            ],
+            env: Vec::new(),
+            slot_fd: None,
+            parent_pidfd: None,
+        })
+        .await
+        .unwrap();
+        let status = child.wait().await.unwrap();
+        drop(restore);
+        assert!(status.success(), "{status:?}");
     }
 }

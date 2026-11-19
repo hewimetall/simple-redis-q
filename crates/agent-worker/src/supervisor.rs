@@ -503,6 +503,7 @@ fn spawn_metrics(prom_dir: &std::path::Path) -> Result<Child> {
         .env("prometheus_multiproc_dir", prom_dir)
         .env("DRAMATIQ_PROM_DB", prom_dir)
         .env("dramatiq_prom_db", prom_dir)
+        .env_remove("REDIS_URL")
         .kill_on_drop(true)
         .spawn()
         .context("failed to spawn the metrics process")

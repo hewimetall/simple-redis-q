@@ -1,6 +1,6 @@
 # Concepts
 
-These pages describe simple-q on main. The packages are 1.3.0. Changes after that tag are under Unreleased in the changelog.
+These pages describe simple-q 2.0.0a1.
 
 A send stores one version-1 message. `message_id` stays the same across retries. `retries` counts handler failures. `deliveries` counts how many times a worker has started that attempt. Those two numbers are independent.
 
@@ -22,7 +22,7 @@ A child wakes every `SIMPLE_Q_LIFECYCLE_INTERVAL_MS` milliseconds, default 200, 
 
 The child ignores `SIGTERM`. The supervisor owns process recycling.
 
-The supervisor does not import the application. It reads `REDIS_URL` and `SIMPLE_Q_*`, then installs `SIGTERM` and `SIGINT` before it starts children. As pid 1 the kernel drops `SIGTERM` until a handler exists. On the way out the supervisor deletes `simple_q:supervisor:{host}.{pid}` and removes `{host}.{pid}` from `simple_q:supervisors`. The hash TTL remains the backstop when the process is killed.
+The supervisor does not import the application. It reads `REDIS_URL` and `SIMPLE_Q_*`, removes `REDIS_URL` from the child environment, then installs `SIGTERM` and `SIGINT` before it starts children. As pid 1 the kernel drops `SIGTERM` until a handler exists. On the way out the supervisor deletes `simple_q:supervisor:{host}.{pid}` and removes `{host}.{pid}` from `simple_q:supervisors`. The hash TTL remains the backstop when the process is killed.
 
 ## Poison
 

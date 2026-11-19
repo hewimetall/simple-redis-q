@@ -34,5 +34,6 @@ Parent **must not** call `bridge::read_client` or `runtime::initialize`.
 
 ## Consequences
 
-- Existing deployments that relied on parent reading `App.client` alone need `REDIS_URL` in the supervisor environment (document in migration notes when Stage C lands).
-- Child programmatic config remains valid; no requirement to move all settings to env.
+- Existing deployments that relied on the parent reading `App.client` alone need `REDIS_URL` in the supervisor environment. That note is in [migration](../migration.md).
+- The supervisor removes `REDIS_URL` before it starts a child. A factory that used to read `REDIS_URL` from the child reads `SIMPLE_Q_APP_REDIS_URL`, or it builds `Client` without that variable.
+- Child programmatic config remains valid. There is no requirement to move every setting to the environment.

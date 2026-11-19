@@ -1,6 +1,10 @@
 # Migration from Dramatiq
 
-These pages describe simple-q on main. The packages are 1.3.0. Changes after that tag are under Unreleased in the changelog.
+These pages describe simple-q 2.0.0a1.
+
+## Supervisor Redis URL
+
+The supervisor reads `REDIS_URL` and exits 3 when it is missing or invalid. It removes that variable from each child and from the metrics process. The factory does not see the supervisor credential. Give the application its own URL in `SIMPLE_Q_APP_REDIS_URL`, or construct `Client` in the application. `enqueue`, `admin`, and `info` still read `REDIS_URL` in their own process.
 
 Metric names stay. The middleware API does not.
 

@@ -1,6 +1,6 @@
 # Deploy
 
-These pages describe simple-q on main. The packages are 1.3.0. Changes after that tag are under Unreleased in the changelog.
+These pages describe simple-q 2.0.0a1.
 
 Install `simple-q-runtime` and `simple-q-worker` on CPython 3.12, 3.13, 3.14, or 3.15 with the GIL, Linux x86_64 or aarch64, glibc 2.28 or newer (Ubuntu 22.04, RHEL 9). Free-threaded builds are not supported. The two packages can be different minor versions: the queue message is JSON, and the actor module is imported by the worker's interpreter. The supervisor command is `agent-worker`. In a virtualenv that command is a launcher: it reads `pyvenv.cfg`, adds the base interpreter's `lib` to `LD_LIBRARY_PATH`, and execs `agent-worker.bin`. That is how a uv-managed CPython finds `libpython3.X.so.1.0` for the minor in `version`. The ELF also has RPATH `$ORIGIN/../lib`. The virtualenv, including `pyvenv.cfg` and `bin`, must be writable only by the user that runs the service. The launcher trusts that tree. It forks children. Give the service a finite memory limit so the cgroup ratio backstop has a `memory.max` to read. Per-child RSS limits are optional and apply even when the ratio check is idle.
 
@@ -10,7 +10,7 @@ The worker command in every example is:
 agent-worker worker --app module:create_app --factory --queues default
 ```
 
-`module:app` is the same command without `--factory`, when the attribute is already an `App`. `--app` is required unless `SIMPLE_Q_APP` is set. `SIMPLE_Q_APP_FACTORY` is the same as `--factory` for `1`, `true`, `yes`, or `on`. `false` and `0` do not enable it. The factory passes the Redis URL to `Client`. The worker command does not read `REDIS_URL`. It connects with the URL on the `App`'s `Client`. `enqueue` and `admin` do read `REDIS_URL`. `agent-worker info` uses the client URL and only reads.
+`module:app` is the same command without `--factory`, when the attribute is already an `App`. `--app` is required unless `SIMPLE_Q_APP` is set. `SIMPLE_Q_APP_FACTORY` is the same as `--factory` for `1`, `true`, `yes`, or `on`. `false` and `0` do not enable it. The factory passes the Redis URL to `Client`. The worker command does not read `REDIS_URL` for that connection, and the child process does not inherit `REDIS_URL`. The factory reads `SIMPLE_Q_APP_REDIS_URL`, or it writes the URL into the application. It connects with the URL on the `App`'s `Client`. `enqueue` and `admin` do read `REDIS_URL`. `agent-worker info` uses the client URL and only reads.
 
 ## How OOM differs
 
