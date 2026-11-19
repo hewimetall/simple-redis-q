@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 2.0.0a1 — fork preview
+
+The supervisor reads `REDIS_URL` and `SIMPLE_Q_*` from its own environment. A flag still wins over the matching variable, and an omitted variable keeps its default. The parent process does not initialize CPython and does not load the application. The child still takes Redis and the other execution settings from `App.client`.
+
+Supervisor traces and Sentry are off unless configured. Their flags and `SIMPLE_Q_SUPERVISOR_*` variables are separate from the child's Python exporter. With no DSN and no OTLP endpoint, the supervisor does not open a connection and does not start an export thread.
+
+Migration: set `REDIS_URL` and the `SIMPLE_Q_*` values the supervisor should use in that process. Supervisor telemetry stays off until its own variables or flags are set.
+
 ## 1.3.0
 
 Apalis is 1.2.0 and the admin board is 1.1.0. apalis-redis stays 1.1.1, and lease renewal still sends the task ids. Tokio is no longer the `full` feature set: filesystem and stdio are off. The Redis client drops its default command modules and keeps Lua scripts.
