@@ -10,11 +10,11 @@ from simple_q import MemoryClient, actor
 
 
 def _actor():
-    @actor(name="recalc", queue="default", max_retries=0)
-    async def recalc(n: int = 1) -> int:
+    @actor(name="render_report", queue="default", max_retries=0)
+    async def render_report(n: int = 1) -> int:
         return n
 
-    return recalc
+    return render_report
 
 
 def test_given_an_on_send_hook_returns_none_when_sending_then_later_headers_stay() -> None:

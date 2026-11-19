@@ -52,9 +52,9 @@ fn a_payload_without_unique_key_still_parses_at_version_one() {
     assert_eq!(Job::parse(explicit_null).unwrap().unique_key, None);
 
     let mut held = sample();
-    held["unique_key"] = json!("recalc:proj-42");
+    held["unique_key"] = json!("render_report:proj-42");
     let job = Job::parse(held).unwrap();
-    assert_eq!(job.unique_key.as_deref(), Some("recalc:proj-42"));
+    assert_eq!(job.unique_key.as_deref(), Some("render_report:proj-42"));
     assert_eq!(job.version, MESSAGE_VERSION);
 }
 

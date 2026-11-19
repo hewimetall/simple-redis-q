@@ -58,7 +58,7 @@ def test_backoff_matches_dramatiq_1_18_ranges():
 
 def test_queue_labels_are_canonical():
     assert q_name("default") == "default"
-    assert q_name("quota.DQ") == "quota"
+    assert q_name("reports.DQ") == "reports"
     assert q_name("default.XQ") == "default"
 
 
@@ -113,10 +113,10 @@ def metric_value(metric: str, queue: str, actor: str) -> float:
 def test_dispatch_does_not_count_a_retry_before_enqueue():
     setup(multiprocess=False)
     app, _seen = _discover()
-    before = metric_value("retries", "quota", "discover")
+    before = metric_value("retries", "reports", "discover")
     message = build_message(
         actor_name="discover",
-        queue="quota",
+        queue="reports",
         kwargs={"value": "boom"},
         headers={},
         max_retries=2,
@@ -126,15 +126,15 @@ def test_dispatch_does_not_count_a_retry_before_enqueue():
     )
     result = asyncio.run(app.dispatch(message))
     assert result["outcome"] == "retry"
-    assert metric_value("retries", "quota", "discover") == before
+    assert metric_value("retries", "reports", "discover") == before
 
 
 def test_retry_is_counted_once_on_the_canonical_queue():
     setup(multiprocess=False)
-    note_retry("quota.DQ", "discover")
-    assert metric_value("retries", "quota", "discover") >= 1
-    assert metric_value("delayed", "quota", "discover") == 0
-    assert metric_value("retries", "quota.DQ", "discover") == metric_value("retries", "quota", "discover")
+    note_retry("reports.DQ", "discover")
+    assert metric_value("retries", "reports", "discover") >= 1
+    assert metric_value("delayed", "reports", "discover") == 0
+    assert metric_value("retries", "reports.DQ", "discover") == metric_value("retries", "reports", "discover")
 
 
 def test_processing_does_not_move_the_delayed_gauge():
@@ -153,15 +153,15 @@ def test_skip_counts_as_processed_without_an_error_and_reject_is_separate():
     finish_attempt("skip-1", "default", "gated", error=False, rejected=False)
     assert metric_value("total", "default", "gated") == total + 1
     assert metric_value("errors", "default", "gated") == errors
-    rejects = metric_value("rejects", "quota", "discover")
-    reject("quota", "discover")
-    assert metric_value("rejects", "quota", "discover") == rejects + 1
+    rejects = metric_value("rejects", "reports", "discover")
+    reject("reports", "discover")
+    assert metric_value("rejects", "reports", "discover") == rejects + 1
 
 
 def test_message_version_and_headers_are_separate_from_kwargs():
     message = build_message(
         actor_name="discover",
-        queue="quota",
+        queue="reports",
         kwargs={"value": 1},
         headers={"trace": "abc"},
         max_retries=3,
@@ -176,7 +176,7 @@ def test_queue_name_is_one_lowercase_word():
     with pytest.raises(ValueError, match="default"):
         build_message(
             actor_name="discover",
-            queue="Quota",
+            queue="Reports",
             kwargs={},
             headers={},
             max_retries=0,
@@ -201,8 +201,8 @@ def test_importing_an_actor_module_does_not_construct_an_app_or_open_redis():
     spec.loader.exec_module(module)
     assert "simple_q._runtime" not in sys.modules
     assert not hasattr(module, "App")
-    assert module.recalc.name == "recalc"
-    assert module.recalc.queue == "default"
+    assert module.render_report.name == "render_report"
+    assert module.render_report.queue == "default"
 
 
 def test_a_repeated_actor_name_fails_at_construction():
@@ -217,7 +217,7 @@ def _discover():
 
     @actor(
         name="discover",
-        queue="quota",
+        queue="reports",
         max_retries=2,
         time_limit=50,
         min_backoff=15_000,
@@ -239,7 +239,7 @@ def test_retry_then_success_keeps_one_message_id_and_reports_retries():
     app, seen = _discover()
     message = build_message(
         actor_name="discover",
-        queue="quota",
+        queue="reports",
         kwargs={"value": "boom"},
         headers={"trace": "t"},
         max_retries=2,
@@ -274,7 +274,7 @@ def test_last_exception_calls_on_dead_once():
     app.on_dead(_letter(calls))
     message = build_message(
         actor_name="discover",
-        queue="quota",
+        queue="reports",
         kwargs={"value": "boom"},
         headers={},
         max_retries=0,
@@ -326,7 +326,7 @@ def test_poison_hook_receives_none():
     app.on_dead(_letter(calls))
     message = build_message(
         actor_name="discover",
-        queue="quota",
+        queue="reports",
         kwargs={"value": "ok"},
         headers={},
         max_retries=0,
@@ -352,7 +352,7 @@ def test_unknown_actor_and_invalid_hooks_receive_none():
     app.on_dead(_letter(calls))
     unknown = build_message(
         actor_name="missing",
-        queue="quota",
+        queue="reports",
         kwargs={"value": 1},
         headers={},
         max_retries=0,
@@ -375,10 +375,10 @@ def test_poison_delivery_calls_on_dead_and_rejects():
     app, seen = _discover()
     calls = []
     app.on_dead(_letter(calls))
-    before = metric_value("rejects", "quota", "discover")
+    before = metric_value("rejects", "reports", "discover")
     message = build_message(
         actor_name="discover",
-        queue="quota",
+        queue="reports",
         kwargs={"value": "ok"},
         headers={},
         max_retries=0,
@@ -392,7 +392,7 @@ def test_poison_delivery_calls_on_dead_and_rejects():
     assert calls[0].message_id == "poison-1"
     assert calls[0].error is None
     assert seen == []
-    assert metric_value("rejects", "quota", "discover") == before + 1
+    assert metric_value("rejects", "reports", "discover") == before + 1
 
 
 def test_lock_skip_counts_as_a_processed_message_without_an_error():
@@ -516,7 +516,7 @@ def test_unknown_actor_calls_on_dead_once():
     app.on_dead(_letter(calls))
     message = build_message(
         actor_name="missing",
-        queue="quota",
+        queue="reports",
         kwargs={"value": 1},
         headers={},
         max_retries=0,
@@ -556,7 +556,7 @@ def test_each_dead_reason_notifies_the_hook_once_per_event():
 
     retry_message = build_message(
         actor_name="discover",
-        queue="quota",
+        queue="reports",
         kwargs={"value": "boom"},
         headers={},
         max_retries=0,
@@ -564,7 +564,7 @@ def test_each_dead_reason_notifies_the_hook_once_per_event():
     )
     timeout_message = build_message(
         actor_name="discover",
-        queue="quota",
+        queue="reports",
         kwargs={"value": "slow"},
         headers={},
         max_retries=0,
@@ -573,7 +573,7 @@ def test_each_dead_reason_notifies_the_hook_once_per_event():
     )
     poison_message = build_message(
         actor_name="discover",
-        queue="quota",
+        queue="reports",
         kwargs={"value": "ok"},
         headers={},
         max_retries=0,
@@ -583,7 +583,7 @@ def test_each_dead_reason_notifies_the_hook_once_per_event():
     poison_message["deliveries"] = 2
     unknown_message = build_message(
         actor_name="missing",
-        queue="quota",
+        queue="reports",
         kwargs={},
         headers={},
         max_retries=0,
@@ -642,29 +642,29 @@ def test_memory_unique_key_blocks_a_second_send_until_drain():
     client = MemoryClient()
     seen = []
 
-    @actor(name="recalc", queue="default", max_retries=0)
-    async def recalc(project: str):
+    @actor(name="render_report", queue="default", max_retries=0)
+    async def render_report(project: str):
         seen.append(project)
         return project
 
-    app = App(client=client, actors=[recalc])
+    app = App(client=client, actors=[render_report])
     first = asyncio.run(
-        client.send_with_options(recalc, kwargs={"project": "42"}, unique_key="recalc:42")
+        client.send_with_options(render_report, kwargs={"project": "42"}, unique_key="render_report:42")
     )
     second = asyncio.run(
-        client.send_with_options(recalc, kwargs={"project": "42"}, unique_key="recalc:42")
+        client.send_with_options(render_report, kwargs={"project": "42"}, unique_key="render_report:42")
     )
     assert isinstance(first, str)
     assert second is None
     assert client.depth("default") == 1
-    plain = asyncio.run(client.send(recalc, project="42"))
+    plain = asyncio.run(client.send(render_report, project="42"))
     assert isinstance(plain, str)
     assert client.depth("default") == 2
     asyncio.run(client.drain(app))
     assert seen == ["42", "42"]
     assert client.depth("default") == 0
     third = asyncio.run(
-        client.send_with_options(recalc, kwargs={"project": "42"}, unique_key="recalc:42")
+        client.send_with_options(render_report, kwargs={"project": "42"}, unique_key="render_report:42")
     )
     assert isinstance(third, str)
     assert client.depth("default") == 1
@@ -836,29 +836,29 @@ def test_memory_drain_requeues_retry_and_runs_hooks():
     hooks = []
     blocked = []
 
-    @actor(name="recalc", queue="default", max_retries=1)
-    async def recalc():
+    @actor(name="render_report", queue="default", max_retries=1)
+    async def render_report():
         seen.append(current_message().retries)
         if current_message().retries == 0:
             blocked.append(
-                await client.send_with_options(recalc, unique_key="recalc:42")
+                await client.send_with_options(render_report, unique_key="render_report:42")
             )
             raise RuntimeError("again")
         return "ok"
 
     app = App(
         client=client,
-        actors=[recalc],
+        actors=[render_report],
         on_start=[lambda: hooks.append("start")],
         on_stop=[lambda: hooks.append("stop")],
     )
-    asyncio.run(client.send_with_options(recalc, unique_key="recalc:42"))
+    asyncio.run(client.send_with_options(render_report, unique_key="render_report:42"))
     asyncio.run(client.drain(app))
     assert seen == [0, 1]
     assert hooks == ["start", "stop"]
     assert blocked == [None]
     assert client.depth("default") == 0
-    again = asyncio.run(client.send_with_options(recalc, unique_key="recalc:42"))
+    again = asyncio.run(client.send_with_options(render_report, unique_key="render_report:42"))
     assert isinstance(again, str)
 
 
@@ -972,15 +972,15 @@ def test_two_clients_write_to_their_own_databases():
         _redis("DEL", f"{queue}:data", f"{queue}:pending", f"{queue}:scheduled", db=db)
 
     @actor(queue=queue, max_retries=0)
-    async def recalc(project_id: str) -> None:
+    async def render_report(report_id: str) -> None:
         return None
 
     async def send_both():
         left = Client(left_url, config=Config())
         right = Client(right_url, config=Config())
         try:
-            await left.send(recalc, project_id="15")
-            await right.send(recalc, project_id="13")
+            await left.send(render_report, report_id="15")
+            await right.send(render_report, report_id="13")
         finally:
             await left.close()
             await right.close()
@@ -988,10 +988,10 @@ def test_two_clients_write_to_their_own_databases():
     asyncio.run(send_both())
     left_payload = _redis("HVALS", f"{queue}:data", db=15)
     right_payload = _redis("HVALS", f"{queue}:data", db=13)
-    assert '"project_id":"15"' in left_payload
-    assert '"project_id":"13"' not in left_payload
-    assert '"project_id":"13"' in right_payload
-    assert '"project_id":"15"' not in right_payload
+    assert '"report_id":"15"' in left_payload
+    assert '"report_id":"13"' not in left_payload
+    assert '"report_id":"13"' in right_payload
+    assert '"report_id":"15"' not in right_payload
     for db in (15, 13):
         _redis("DEL", f"{queue}:data", f"{queue}:pending", f"{queue}:scheduled", db=db)
 
@@ -1008,10 +1008,10 @@ def test_worker_alive_never_connected_or_bad_name_is_false_and_quiet(caplog):
         assert await client.worker_alive("agent-worker.default.host.1.abcd") is False
 
         @actor(queue="walive", max_retries=0)
-        async def marker(project_id: str) -> None:
+        async def marker(report_id: str) -> None:
             return None
 
-        await client.send(marker, project_id="x")
+        await client.send(marker, report_id="x")
         assert await client.worker_alive("not-a-worker") is False
         await client.close()
         return True
@@ -1057,10 +1057,10 @@ def test_worker_alive_reads_the_heartbeat_and_lets_the_loop_run():
             client = Client(url, config=Config())
 
             @actor(queue=queue, max_retries=0)
-            async def marker(project_id: str) -> None:
+            async def marker(report_id: str) -> None:
                 return None
 
-            await client.send(marker, project_id="live")
+            await client.send(marker, report_id="live")
             progressed = {"ok": False}
 
             async def other():

@@ -17,22 +17,22 @@ from simple_q import App, Client, Config, actor
 
 
 @actor(queue="default", max_retries=2, lock_key="demo:gate")
-async def recalc(project_id: int) -> None:
+async def render_report(report_id: int) -> None:
     ...
 
 
 def create_app() -> App:
     config = Config.from_env()
-    return App(client=Client("redis://redis:6379/0", config=config), actors=[recalc])
+    return App(client=Client("redis://redis:6379/0", config=config), actors=[render_report])
 
 
 async def enqueue() -> None:
     config = Config.from_env()
     client = Client("redis://redis:6379/0", config=config)
     await client.send_with_options(
-        recalc,
-        kwargs={"project_id": 42},
-        unique_key="recalc:42",
+        render_report,
+        kwargs={"report_id": 42},
+        unique_key="render_report:42",
     )
     await client.close()
 ```

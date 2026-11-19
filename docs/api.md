@@ -96,7 +96,7 @@ class Client:
         ``delay`` is milliseconds. A missing or zero delay runs as soon
         as a worker can take the message. ``unique_key`` is claimed only
         on the first send (``retries == 0``). The example is
-        ``recalc:42``. An empty string raises ``ValueError``. A second
+        ``render_report:42``. An empty string raises ``ValueError``. A second
         send of a key that is still held returns ``None`` and does not
         enqueue. A retry of the same message does not claim the key
         again. ``headers`` is ``dict[str, str]`` and is passed through
@@ -254,8 +254,8 @@ The Redis URL is an argument of `Client`. `import simple_q` does not read `REDIS
 from simple_q import QueueAdmin
 
 admin = QueueAdmin(client)
-snap = await admin.snapshot(["default", "quota"])
-snap = await admin.snapshot(["quota"], host="worker-quota-6f8b9c7d4-x2k9p")
+snap = await admin.snapshot(["default", "reports"])
+snap = await admin.snapshot(["reports"], host="worker-reports-6f8b9c7d4-x2k9p")
 ```
 
 `snapshot` is async, runs on the caller's loop, and uses that `Client`'s Redis connection. It reads counters, heartbeats, and inflight tasks. It does not walk the waiting, done, or dead lists. `host` limits supervisors, their children, and orphans. Queue counters stay limited to the queues in the argument. A process still lists held tasks for every queue stored on its supervisor record, including a queue the caller did not pass. Those extra queues are not added to `Snapshot.queues`.

@@ -13,13 +13,13 @@ from simple_q import App, Client, Config, Tracing, actor
 
 
 @actor(queue="default")
-async def recalc(project_id: int) -> None:
+async def render_report(report_id: int) -> None:
     ...
 
 
 def create_app() -> App:
     config = Config.from_env()
-    app = App(client=Client("redis://redis:6379/0", config=config), actors=[recalc])
+    app = App(client=Client("redis://redis:6379/0", config=config), actors=[render_report])
     app.tracing = Tracing(
         exporter=exporter,  # export(spans) and shutdown()
         resource=Resource.create({"service.name": "agent-worker"}),

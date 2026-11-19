@@ -197,10 +197,10 @@ def test_factory_worker_alive_from_handler_and_another_process(tmp_path):
                     client = Client(os.environ["REDIS_URL"], config=Config.from_env())
 
                     @actor(queue="otherq", max_retries=0)
-                    async def marker(project_id: str) -> None:
+                    async def marker(report_id: str) -> None:
                         return None
 
-                    await client.send(marker, project_id="other")
+                    await client.send(marker, report_id="other")
                     progressed = {{"ok": False}}
 
                     async def other():

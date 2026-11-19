@@ -73,7 +73,7 @@ fn sample(queue: &str, message_id: &str, retries: u32) -> Job {
     Job {
         version: MESSAGE_VERSION,
         message_id: message_id.to_owned(),
-        actor_name: "recalc".to_owned(),
+        actor_name: "render_report".to_owned(),
         queue: queue.to_owned(),
         kwargs: serde_json::json!({"project": "42"}),
         headers: Default::default(),
@@ -485,7 +485,7 @@ async fn snapshot_tree_has_a_running_child_and_a_held_task() {
     assert_eq!(child.tasks.len(), 1);
     let task = &child.tasks[0];
     assert_eq!(task.task_id, task_id);
-    assert_eq!(task.actor_name, "recalc");
+    assert_eq!(task.actor_name, "render_report");
     assert_eq!(task.kwargs, serde_json::json!({"project": "42"}));
     assert_eq!(task.retries, 1);
     assert_eq!(task.deliveries, 4);
@@ -931,7 +931,7 @@ async fn dead_page_is_newest_first_and_the_cursor_is_exclusive() {
         (
             "task-d",
             "40",
-            "recalc",
+            "render_report",
             "retries",
             "RuntimeError: boom",
             "1",
@@ -939,13 +939,13 @@ async fn dead_page_is_newest_first_and_the_cursor_is_exclusive() {
         (
             "task-c",
             "30",
-            "recalc",
+            "render_report",
             "timeout",
             "TimeoutError: slow",
             "2",
         ),
-        ("task-b", "30", "recalc", "poison", "", "4"),
-        ("task-a", "20", "recalc", "invalid", "", "0"),
+        ("task-b", "30", "render_report", "poison", "", "4"),
+        ("task-a", "20", "render_report", "invalid", "", "0"),
     ];
     for (task_id, score, actor, reason, error, deliveries) in rows {
         let meta = format!("{}:{task_id}", page_config.job_meta_hash());
@@ -1072,7 +1072,7 @@ async fn peek_pages_active_and_scheduled_from_the_data_hash() {
     assert_eq!(ids, vec!["act-1", "act-2"]);
     assert!(waiting.tasks.iter().all(|task| task.run_at.is_none()));
     assert_eq!(waiting.tasks[0].message_id, "msg-act-1");
-    assert_eq!(waiting.tasks[0].actor_name, "recalc");
+    assert_eq!(waiting.tasks[0].actor_name, "render_report");
     let cursor = waiting.cursor.clone().expect("active cursor");
     let rest = pages::peek_page(&mut conn, &settings, &queue, "active", 2, Some(&cursor))
         .await
@@ -1239,13 +1239,13 @@ async fn snapshot_includes_tasks_from_every_supervisor_queue() {
         return;
     };
     let settings = Config::defaults();
-    let quota = token("q");
+    let reports = token("q");
     let default_queue = token("d");
     let other = token("o");
     let host = token("tree");
     let sup_pid = 3u32;
     let child_pid = 7u32;
-    let quota_worker = format!("agent-worker.{quota}.{host}.{child_pid}.abcd1234");
+    let reports_worker = format!("agent-worker.{reports}.{host}.{child_pid}.abcd1234");
     let default_worker = format!("agent-worker.{default_queue}.{host}.{child_pid}.abcd1234");
     let other_worker = format!("agent-worker.{other}.{host}.{child_pid}.abcd1234");
     let member = admin::supervisor_member(&host, sup_pid);
@@ -1256,7 +1256,7 @@ async fn snapshot_includes_tasks_from_every_supervisor_queue() {
     let _ = redis(&["DEL", &sup_key]);
 
     for (queue, worker_name, task_id) in [
-        (&quota, &quota_worker, "quota-task"),
+        (&reports, &reports_worker, "reports-task"),
         (&default_queue, &default_worker, "default-task"),
         (&other, &other_worker, "other-task"),
     ] {
@@ -1308,7 +1308,7 @@ async fn snapshot_includes_tasks_from_every_supervisor_queue() {
             pid: sup_pid,
             started_at: now,
             version: "1.0.0-rc4".to_owned(),
-            queues: vec![quota.clone(), default_queue.clone()],
+            queues: vec![reports.clone(), default_queue.clone()],
             processes: 1,
             concurrency: 1,
             max_tasks: 500,
@@ -1330,7 +1330,7 @@ async fn snapshot_includes_tasks_from_every_supervisor_queue() {
     let snap = admin::snapshot(
         &mut conn,
         &settings,
-        std::slice::from_ref(&quota),
+        std::slice::from_ref(&reports),
         Some(&host),
     )
     .await
@@ -1338,7 +1338,7 @@ async fn snapshot_includes_tasks_from_every_supervisor_queue() {
     // Assert
 
     assert_eq!(snap.queues.len(), 1);
-    assert_eq!(snap.queues[0].name, quota);
+    assert_eq!(snap.queues[0].name, reports);
     assert_eq!(snap.queues[0].inflight, 1);
     let child = &snap.supervisors[0].children[0];
     let tasks: Vec<&str> = child
@@ -1346,8 +1346,8 @@ async fn snapshot_includes_tasks_from_every_supervisor_queue() {
         .iter()
         .map(|task| task.task_id.as_str())
         .collect();
-    assert_eq!(tasks, vec!["default-task", "quota-task"]);
-    assert!(child.workers.contains(&quota_worker));
+    assert_eq!(tasks, vec!["default-task", "reports-task"]);
+    assert!(child.workers.contains(&reports_worker));
     assert!(child.workers.contains(&default_worker));
     assert!(!child.workers.iter().any(|name| name == &other_worker));
 }

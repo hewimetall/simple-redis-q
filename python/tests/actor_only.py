@@ -7,5 +7,5 @@ from simple_q import actor
 
 
 @actor(queue="default", max_retries=3)
-async def recalc(project_id: str) -> None:
+async def render_report(report_id: str) -> None:
     return None

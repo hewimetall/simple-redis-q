@@ -53,7 +53,7 @@ def test_given_actor_options_when_the_decorator_is_applied_then_the_function_nam
 
 def test_given_invalid_message_fields_when_build_message_runs_then_each_field_is_rejected() -> None:
     # Arrange
-    common = {"actor_name": "recalc", "queue": "default", "max_retries": 0}
+    common = {"actor_name": "render_report", "queue": "default", "max_retries": 0}
 
     # Act
     kwargs_error = pytest.raises(TypeError, match="kwargs")

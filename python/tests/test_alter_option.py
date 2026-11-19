@@ -39,7 +39,7 @@ def test_alter_kwargs_survive_the_json_message_the_worker_hands_to_python():
     client = MemoryClient()
     middleware = example.AlterMiddleware()
     app = example.create_app(client, middleware)
-    asyncio.run(client.send(example.recalc, project_id="42", alter=True))
+    asyncio.run(client.send(example.render_report, report_id="42", alter=True))
     queued = client._queues["default"]
     queued[0] = json.loads(json.dumps(queued[0]))
     assert queued[0]["kwargs"]["alter"] is True
@@ -58,8 +58,8 @@ def test_a_non_string_header_is_rejected():
     with pytest.raises(TypeError):
         asyncio.run(
             client.send_with_options(
-                example.recalc,
-                kwargs={"project_id": "1", "alter": False},
+                example.render_report,
+                kwargs={"report_id": "1", "alter": False},
                 headers={"note": True},
             )
         )

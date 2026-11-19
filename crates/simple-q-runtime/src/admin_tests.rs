@@ -408,7 +408,7 @@ fn a_missing_payload_still_yields_the_task_id() {
     let job = Job {
         version: crate::MESSAGE_VERSION,
         message_id: "m-1".to_owned(),
-        actor_name: "recalc".to_owned(),
+        actor_name: "render_report".to_owned(),
         queue: "holdq".to_owned(),
         kwargs: serde_json::json!({"project": "42"}),
         headers: Default::default(),
@@ -434,7 +434,7 @@ fn a_missing_payload_still_yields_the_task_id() {
     );
     assert_eq!(task.task_id, "ulid-1");
     assert_eq!(task.message_id, "m-1");
-    assert_eq!(task.actor_name, "recalc");
+    assert_eq!(task.actor_name, "render_report");
     assert_eq!(task.kwargs, serde_json::json!({"project": "42"}));
     assert_eq!(task.retries, 1);
     assert_eq!(task.locked_at, Some(1_700_000_000));
@@ -524,7 +524,7 @@ fn the_tree_joins_children_orphans_and_queue_counts() {
                 queue: "holdq".to_owned(),
                 task_id: "a-task".to_owned(),
                 message_id: "m-a".to_owned(),
-                actor_name: "recalc".to_owned(),
+                actor_name: "render_report".to_owned(),
                 kwargs: serde_json::json!({"project": "42"}),
                 retries: 1,
                 max_retries: 2,
@@ -573,7 +573,7 @@ fn the_tree_joins_children_orphans_and_queue_counts() {
     assert_eq!(live.workers, vec![worker_name.to_owned()]);
     assert_eq!(live.tasks.len(), 2);
     assert_eq!(live.tasks[0].task_id, "a-task");
-    assert_eq!(live.tasks[0].actor_name, "recalc");
+    assert_eq!(live.tasks[0].actor_name, "render_report");
     assert_eq!(live.tasks[1].task_id, "b-task");
     assert_eq!(live.tasks[1].actor_name, "");
     let done = &snap.supervisors[0].children[1];
@@ -705,21 +705,21 @@ fn an_uncounted_queue_adds_tasks_without_a_counter_row() {
     // Arrange
 
     let now = 1_000u64;
-    let quota_worker = "agent-worker.quota.info-host.7.abcd1234";
+    let reports_worker = "agent-worker.reports.info-host.7.abcd1234";
     let default_worker = "agent-worker.default.info-host.7.abcd1234";
     let queues = vec![
         QueueDraft {
-            name: "quota".to_owned(),
+            name: "reports".to_owned(),
             active: 2,
             scheduled: 0,
             done: 0,
             dead: 0,
             counted: true,
             workers: vec![worker(
-                quota_worker,
+                reports_worker,
                 now as f64,
                 &[("ppid", "3")],
-                &["quota-task"],
+                &["reports-task"],
             )],
         },
         QueueDraft {
@@ -738,14 +738,14 @@ fn an_uncounted_queue_adds_tasks_without_a_counter_row() {
         },
     ];
     let mut fields = BTreeMap::new();
-    fields.insert("queues".to_owned(), "quota,default".to_owned());
+    fields.insert("queues".to_owned(), "reports,default".to_owned());
     let mut child = running_child(7, 0);
     child.pid = 7;
     fields.insert("child:7".to_owned(), serde_json::to_string(&child).unwrap());
     let held = BTreeMap::from([
         (
-            ("quota".to_owned(), "quota-task".to_owned()),
-            held_task_from_payload("quota", "quota-task", None, None, None, 0),
+            ("reports".to_owned(), "reports-task".to_owned()),
+            held_task_from_payload("reports", "reports-task", None, None, None, 0),
         ),
         (
             ("default".to_owned(), "default-task".to_owned()),
@@ -770,7 +770,7 @@ fn an_uncounted_queue_adds_tasks_without_a_counter_row() {
     // Assert
 
     assert_eq!(snap.queues.len(), 1);
-    assert_eq!(snap.queues[0].name, "quota");
+    assert_eq!(snap.queues[0].name, "reports");
     assert_eq!(snap.queues[0].active, 2);
     assert_eq!(snap.queues[0].inflight, 1);
     let tasks: Vec<&str> = snap.supervisors[0].children[0]
@@ -778,9 +778,9 @@ fn an_uncounted_queue_adds_tasks_without_a_counter_row() {
         .iter()
         .map(|task| task.task_id.as_str())
         .collect();
-    assert_eq!(tasks, vec!["default-task", "quota-task"]);
+    assert_eq!(tasks, vec!["default-task", "reports-task"]);
     assert_eq!(
         snap.supervisors[0].children[0].workers,
-        vec![default_worker.to_owned(), quota_worker.to_owned()]
+        vec![default_worker.to_owned(), reports_worker.to_owned()]
     );
 }

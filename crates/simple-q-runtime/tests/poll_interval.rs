@@ -27,7 +27,7 @@ fn job(queue: &str) -> Job {
     Job {
         version: MESSAGE_VERSION,
         message_id: new_message_id(),
-        actor_name: "recalc".to_owned(),
+        actor_name: "render_report".to_owned(),
         queue: queue.to_owned(),
         kwargs: serde_json::json!({"n": 1}),
         headers: Default::default(),

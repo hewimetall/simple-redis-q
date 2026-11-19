@@ -38,7 +38,7 @@ The supervisor also starts the metrics scrape. The worker command does not read 
 
 ```bash
 agent-worker info
-agent-worker info --queue quota --json
+agent-worker info --queue reports --json
 agent-worker info --all
 ```
 
@@ -49,8 +49,8 @@ By default it prints the supervisor on this host (`HOSTNAME`, the same value as 
 Exit 0. Exit 1 when `--all` is absent and this host has no live supervisor. The message is `no live supervisor on {host}` on stderr.
 
 ```text
-supervisor  worker-quota-6f8b9c7d4-x2k9p  pid 1  up 38m  simple-q 1.3.0
-queues      quota  processes 3/3  concurrency 1  max_tasks 500
+supervisor  worker-reports-6f8b9c7d4-x2k9p  pid 1  up 38m  simple-q 1.3.0
+queues      reports  processes 3/3  concurrency 1  max_tasks 500
 memory      cgroup 2.1G / 4G  child soft 1G / hard 1500M
 counters    recycled 14  soft 2  hard 1  restarts 0
 SLOT  PID  STATE     REASON       RSS    TASKS    HB
@@ -60,10 +60,10 @@ SLOT  PID  STATE     REASON       RSS    TASKS    HB
 0     23   killed    memory_hard  1.51G  98/500   41s   held 1, waiting for requeue
 1     12   exited    max_tasks    -      500/500  52s
 PID  QUEUE  ACTOR                        KWARGS                  TRY  DLV  RUN
-31   quota  recalc                       project_id=3f1c0b2a…    0/1  1    212s/1800s
-23   quota  recalc                       project_id=held         0/1  1    212s/1800s
+31   reports  render_report                report_id=3f1c0b2a…     0/1  1    212s/1800s
+23   reports  render_report                report_id=held          0/1  1    212s/1800s
 QUEUE  ACTIVE  SCHEDULED  INFLIGHT  DONE  DEAD
-quota  12      1          4         9873  0
+reports  12      1          4         9873  0
 ```
 
 `processes 3/3` is live children over the configured count. `soft` and `hard` in the counters line are soft drains and hard kills since this supervisor started. A killed or exited row that still holds a task says it is waiting for requeue. `simple-q 1.3.0` is the package version. A pre-release still prints the Cargo form on `--version` (`1.0.0-rc7`) and the PEP 440 form on this line (`1.0.0rc7`).
@@ -87,15 +87,15 @@ Serves the multiprocess Prometheus scrape. The supervisor starts this itself for
 ## `enqueue`
 
 ```bash
-agent-worker enqueue --queue default --task recalc --payload '{"project_id": "42"}'
+agent-worker enqueue --queue default --task render_report --payload '{"report_id": "42"}'
 ```
 
-Enqueue one JSON object. The command reads `REDIS_URL` and `Config.from_env()`. It does not load an `App`. It fails immediately when Redis is unavailable. `--headers` is a JSON object of strings. `--max-retries` defaults to 0. Backoff defaults are 15000 ms and 7 days. The time limit stored on this path is 30 minutes. This command does not set a lock or a unique key. Application code should use `Client.send_with_options` for `unique_key="recalc:42"`.
+Enqueue one JSON object. The command reads `REDIS_URL` and `Config.from_env()`. It does not load an `App`. It fails immediately when Redis is unavailable. `--headers` is a JSON object of strings. `--max-retries` defaults to 0. Backoff defaults are 15000 ms and 7 days. The time limit stored on this path is 30 minutes. This command does not set a lock or a unique key. Application code should use `Client.send_with_options` for `unique_key="render_report:42"`.
 
 ## `execute`
 
 ```bash
-agent-worker execute --app module:app --task recalc --task-id recalc-1
+agent-worker execute --app module:app --task render_report --task-id render_report-1
 ```
 
 Run one task in-process, without Redis. `--app` is `module:attribute`.
