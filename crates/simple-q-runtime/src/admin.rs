@@ -88,9 +88,15 @@ pub enum ChildReason {
     MaxTasks,
     MemoryHard,
     PingBudget,
+    OwnershipLost,
     Sigkill,
     Crash,
 }
+
+/// Child exit when the attempt lost ownership or finish was not confirmed.
+///
+/// Exit 2 stays the ping-budget watchdog. Exit 3 stays configuration.
+pub const EXIT_OWNERSHIP_LOST: i32 = 4;
 
 impl ChildState {
     pub fn as_str(self) -> &'static str {
@@ -112,6 +118,7 @@ impl ChildReason {
             Self::MaxTasks => "max_tasks",
             Self::MemoryHard => "memory_hard",
             Self::PingBudget => "ping_budget",
+            Self::OwnershipLost => "ownership_lost",
             Self::Sigkill => "sigkill",
             Self::Crash => "crash",
         }
@@ -141,6 +148,7 @@ impl KillCause {
 ///
 /// Both `exit_code` and `term_signal` are `None` until `wait` returns. A
 /// `Kill` stays that cause after wait. Exit code 2 is the ping budget. Exit
+/// code [`EXIT_OWNERSHIP_LOST`] is a lost lease or an unconfirmed finish. Exit
 /// code 0 after `SIGUSR1` keeps that drain cause. Exit code 0 with no drain is
 /// the max-task recycle. `SIGKILL` that the supervisor did not send is
 /// `sigkill`. Every other status is a crash.
@@ -161,6 +169,9 @@ pub fn classify_child(
     }
     if exit_code == Some(2) {
         return (ChildState::Killed, Some(ChildReason::PingBudget));
+    }
+    if exit_code == Some(EXIT_OWNERSHIP_LOST) {
+        return (ChildState::Killed, Some(ChildReason::OwnershipLost));
     }
     if term_signal == Some(SIGKILL) {
         return (ChildState::Killed, Some(ChildReason::Sigkill));

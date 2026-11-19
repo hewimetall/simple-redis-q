@@ -330,6 +330,7 @@ async fn supervise_slot(
         let reason = exit_reason(
             roster.sent(pid),
             classify_child_exit(code.success(), code.code()),
+            exit_code,
         );
         crate::supervisor_telemetry::current().child_exited(
             index,
@@ -393,7 +394,10 @@ pub enum ChildExit {
     Fatal,
 }
 
-fn exit_reason(signal: SentSignal, class: ChildExit) -> &'static str {
+fn exit_reason(signal: SentSignal, class: ChildExit, code: Option<i32>) -> &'static str {
+    if code == Some(simple_q_runtime::admin::EXIT_OWNERSHIP_LOST) {
+        return "ownership_lost";
+    }
     match signal {
         SentSignal::Kill(_) => "hard kill",
         SentSignal::Usr1(DrainCause::Shutdown) => "drain",
@@ -484,6 +488,10 @@ fn prom_dir() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir().join("dramatiq-prometheus"))
 }
 
+/// One long-lived metrics process, not a worker slot.
+///
+/// It has no READY handshake, no drain signal, and no restart budget, so it
+/// stays on `tokio::process`. Worker slots go through `process_port`.
 fn spawn_metrics(prom_dir: &std::path::Path) -> Result<Child> {
     let executable = std::env::current_exe().context("failed to resolve the worker executable")?;
     Command::new(executable)

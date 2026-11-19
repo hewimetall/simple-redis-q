@@ -101,4 +101,4 @@ RestartSec=2
 
 `MemoryMax=` gives the service a finite `memory.max`. Leave `MemoryOOMGroup=` unset. systemd does not group the OOM kill unless that setting is turned on. With the default, a kernel OOM kills one process in the cgroup. The supervisor's hard ratio still `SIGKILL`s the child first when the working set crosses 0.95.
 
-`Restart=on-failure` restarts the supervisor when the supervisor itself exits. Child exit 2 and a child `SIGKILL` are handled inside the supervisor and do not need a unit restart. Exit 3 is a bad memory limit or a bad tracing configuration. The supervisor stops. Fix the configuration before starting the unit again.
+`Restart=on-failure` restarts the supervisor when the supervisor itself exits. Child exit 2, child exit 4, and a child `SIGKILL` are handled inside the supervisor and do not need a unit restart. Exit 2 is the ping budget. Exit 4 is `ownership_lost`. Exit 3 is a bad memory limit, a bad tracing configuration, or a bad supervisor setting. The supervisor stops. Fix the configuration before starting the unit again.

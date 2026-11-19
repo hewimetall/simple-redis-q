@@ -279,7 +279,7 @@ The return value is a frozen `Snapshot`:
 - `recycled` counts every exit 0, including an exit 0 after a drain.
 - `drains` counts `SIGUSR1` for `memory_soft` and `memory_ratio` only. Shutdown does not increment it.
 - `kills` counts only a `SIGKILL` this supervisor sent: the per-child hard limit and the hard cgroup ratio.
-- `restarts` counts that `SIGKILL` immediately. It also counts a later killed `wait` that was not already counted: the ping budget (exit 2), an external `SIGKILL`, and a crash.
+- `restarts` counts that `SIGKILL` immediately. It also counts a later killed `wait` that was not already counted: the ping budget (exit 2), a lost lease or unconfirmed finish (exit 4, `ownership_lost`), an external `SIGKILL`, and a crash.
 - `alive` is heartbeat freshness. It does not follow `ended_at`.
 - `locked_at` is the absolute lease time Apalis writes on `{queue}:meta:{task_id}` and overwrites on every heartbeat renew. `started_at` is Redis `TIME` seconds when this delivery was taken. Renew does not change it. The next delivery overwrites it.
 

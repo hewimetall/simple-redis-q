@@ -111,6 +111,13 @@ fn classify_child_covers_every_exit_path() {
     );
     assert_class(
         SentSignal::None,
+        Some(EXIT_OWNERSHIP_LOST),
+        None,
+        ChildState::Killed,
+        Some(ChildReason::OwnershipLost),
+    );
+    assert_class(
+        SentSignal::None,
         None,
         Some(SIGKILL),
         ChildState::Killed,
@@ -191,6 +198,7 @@ fn counters_follow_recycle_drain_and_kill() {
 
     for (code, term, reason) in [
         (Some(2), None, "ping_budget"),
+        (Some(EXIT_OWNERSHIP_LOST), None, "ownership_lost"),
         (None, Some(SIGKILL), "sigkill"),
         (Some(1), None, "crash"),
         (None, Some(15), "crash"),

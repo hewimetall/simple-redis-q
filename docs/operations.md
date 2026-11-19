@@ -109,6 +109,7 @@ The board is a view of the Redis queue. It does not replace the Prometheus scrap
 | `killed` | `memory_hard` | This supervisor sent `SIGKILL` because the process crossed its hard RSS limit. |
 | `killed` | `memory_ratio` | This supervisor sent `SIGKILL` because the container crossed the hard ratio and that child owned the usage. |
 | `killed` | `ping_budget` | The child exited 2. The Python loop stayed silent past the ping budget. |
+| `killed` | `ownership_lost` | The child exited 4. The attempt lost its lease, or finish was not confirmed. The message stays inflight. |
 | `killed` | `sigkill` | `SIGKILL` arrived and this supervisor did not send it. |
 | `killed` | `crash` | Any other exit code or signal. |
 | `killed` | empty | The metadata hash is still there, the worker heartbeat is stale, and no live supervisor record exists. The supervisor itself is gone, including when `memory.oom.group` kills the whole container. |

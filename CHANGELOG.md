@@ -10,6 +10,8 @@ Supervisor traces and Sentry are off unless configured. Their flags and `SIMPLE_
 
 Migration: set `REDIS_URL` and the `SIMPLE_Q_*` values the supervisor should use in that process. Supervisor telemetry stays off until its own variables or flags are set.
 
+A child that loses the attempt lease, or cannot confirm finish, exits 4. `agent-worker info` and `QueueAdmin.snapshot` show `killed` / `ownership_lost`. Exit 2 stays the ping-budget watchdog.
+
 ## 1.3.0
 
 Apalis is 1.2.0 and the admin board is 1.1.0. apalis-redis stays 1.1.1, and lease renewal still sends the task ids. Tokio is no longer the `full` feature set: filesystem and stdio are off. The Redis client drops its default command modules and keeps Lua scripts.

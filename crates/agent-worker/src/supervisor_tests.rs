@@ -91,7 +91,33 @@ fn exit_code_3_is_fatal_and_other_codes_restart() {
     assert_eq!(classify_child_exit(false, Some(3)), ChildExit::Fatal);
     assert_eq!(classify_child_exit(false, Some(1)), ChildExit::Restart);
     assert_eq!(classify_child_exit(false, Some(2)), ChildExit::Restart);
+    assert_eq!(
+        classify_child_exit(false, Some(simple_q_runtime::admin::EXIT_OWNERSHIP_LOST)),
+        ChildExit::Restart
+    );
     assert_eq!(classify_child_exit(false, None), ChildExit::Restart);
+}
+
+#[test]
+fn exit_code_4_is_ownership_lost_and_exit_code_2_stays_a_crash_span() {
+    // Arrange
+    let ownership = simple_q_runtime::admin::EXIT_OWNERSHIP_LOST;
+
+    // Act
+    let lost = exit_reason(SentSignal::None, ChildExit::Restart, Some(ownership));
+    let ping = exit_reason(SentSignal::None, ChildExit::Restart, Some(2));
+    let recycle = exit_reason(SentSignal::None, ChildExit::Recycle, Some(0));
+    let drain = exit_reason(
+        SentSignal::Usr1(DrainCause::Shutdown),
+        ChildExit::Recycle,
+        Some(0),
+    );
+
+    // Assert
+    assert_eq!(lost, "ownership_lost");
+    assert_eq!(ping, "crash");
+    assert_eq!(recycle, "recycle");
+    assert_eq!(drain, "drain");
 }
 
 #[tokio::test]

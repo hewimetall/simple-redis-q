@@ -511,7 +511,7 @@ async fn handle_job(
                 queue_name = %job.queue,
                 "ownership lost; leaving the attempt inflight"
             );
-            std::process::exit(2);
+            std::process::exit(simple_q_runtime::admin::EXIT_OWNERSHIP_LOST);
         }
         simple_q_backend::FinishDisposition::FinishUnconfirmed { detail } => {
             tracing::error!(
@@ -521,7 +521,7 @@ async fn handle_job(
                 %detail,
                 "finish unconfirmed; leaving the attempt inflight"
             );
-            std::process::exit(2);
+            std::process::exit(simple_q_runtime::admin::EXIT_OWNERSHIP_LOST);
         }
     }
 }
