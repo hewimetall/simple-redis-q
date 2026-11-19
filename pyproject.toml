@@ -1,6 +1,7 @@
 [project]
 name = "simple-q-runtime"
 dynamic = ["version"]
+license = "MIT OR Apache-2.0"
 description = "Queue runtime for Python async tasks, with a Rust extension for Redis enqueue and locks"
 readme = "README.md"
 requires-python = ">=3.12"
