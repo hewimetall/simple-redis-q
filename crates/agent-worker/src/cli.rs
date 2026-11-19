@@ -144,7 +144,7 @@ pub enum Command {
         #[arg(long)]
         otel_endpoint: Option<String>,
 
-        /// `http/protobuf` or `grpc`.
+        /// `http/protobuf`, or `grpc` when the binary is built with `otlp-grpc`.
         #[arg(long)]
         otel_protocol: Option<String>,
 

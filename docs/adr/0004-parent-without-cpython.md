@@ -1,6 +1,6 @@
 # ADR 0004 — Parent without CPython; config compatibility
 
-- **Status:** Accepted (binding for Stage C)
+- **Status:** Implemented in 2.0.0a1 ([b32edd1](https://github.com/hewimetall/simple-redis-q/commit/b32edd152a40d9dc7028cc328d30560b9d03d5c9))
 - **Date:** 2026-11-13
 - **Code sketch:** `docs/research/example/simple-q-core`, module `parent`. The example is not a workspace member.
 

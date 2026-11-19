@@ -382,7 +382,7 @@ async fn handle_job(
                 error = %error,
                 "delivery count failed"
             );
-            std::process::exit(2);
+            std::process::exit(simple_q_runtime::admin::EXIT_REDIS_ERROR);
         }
     };
     if decide(deliveries, job.max_deliveries) == Decision::Poison {
@@ -481,7 +481,7 @@ async fn handle_job(
                     error = %error,
                     "retry enqueue failed; leaving the attempt inflight"
                 );
-                std::process::exit(2);
+                std::process::exit(simple_q_runtime::admin::EXIT_REDIS_ERROR);
             }
             bridge::note_retry(&job.queue, &job.actor_name);
             release_acked(&state.shared.redis, &job).await;

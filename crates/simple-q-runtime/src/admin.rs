@@ -89,6 +89,7 @@ pub enum ChildReason {
     MemoryHard,
     PingBudget,
     OwnershipLost,
+    RedisError,
     Sigkill,
     Crash,
 }
@@ -97,6 +98,11 @@ pub enum ChildReason {
 ///
 /// Exit 2 stays the ping-budget watchdog. Exit 3 stays configuration.
 pub const EXIT_OWNERSHIP_LOST: i32 = 4;
+
+/// Child exit when Redis could not record a delivery or enqueue a retry.
+///
+/// The attempt stays inflight. This is not the ping-budget watchdog.
+pub const EXIT_REDIS_ERROR: i32 = 5;
 
 impl ChildState {
     pub fn as_str(self) -> &'static str {
@@ -119,6 +125,7 @@ impl ChildReason {
             Self::MemoryHard => "memory_hard",
             Self::PingBudget => "ping_budget",
             Self::OwnershipLost => "ownership_lost",
+            Self::RedisError => "redis_error",
             Self::Sigkill => "sigkill",
             Self::Crash => "crash",
         }
@@ -149,7 +156,8 @@ impl KillCause {
 /// Both `exit_code` and `term_signal` are `None` until `wait` returns. A
 /// `Kill` stays that cause after wait. Exit code 2 is the ping budget. Exit
 /// code [`EXIT_OWNERSHIP_LOST`] is a lost lease or an unconfirmed finish. Exit
-/// code 0 after `SIGUSR1` keeps that drain cause. Exit code 0 with no drain is
+/// code [`EXIT_REDIS_ERROR`] is a Redis failure while counting a delivery or
+/// enqueueing a retry. Exit code 0 after `SIGUSR1` keeps that drain cause. Exit code 0 with no drain is
 /// the max-task recycle. `SIGKILL` that the supervisor did not send is
 /// `sigkill`. Every other status is a crash.
 pub fn classify_child(
@@ -172,6 +180,9 @@ pub fn classify_child(
     }
     if exit_code == Some(EXIT_OWNERSHIP_LOST) {
         return (ChildState::Killed, Some(ChildReason::OwnershipLost));
+    }
+    if exit_code == Some(EXIT_REDIS_ERROR) {
+        return (ChildState::Killed, Some(ChildReason::RedisError));
     }
     if term_signal == Some(SIGKILL) {
         return (ChildState::Killed, Some(ChildReason::Sigkill));

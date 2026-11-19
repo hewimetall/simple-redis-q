@@ -1,5 +1,27 @@
 use super::*;
 
+#[cfg(not(feature = "otlp-grpc"))]
+#[test]
+fn given_grpc_on_the_default_build_when_the_exporter_starts_then_http_is_required() {
+    // Arrange
+    let config = config_from(
+        simple_q_parent::TelemetryFlags {
+            otel_endpoint: Some("http://127.0.0.1:9".to_owned()),
+            otel_protocol: Some("grpc".to_owned()),
+            ..simple_q_parent::TelemetryFlags::default()
+        },
+        &[],
+    );
+
+    // Act
+    let error = build_exporter(&config).unwrap_err();
+
+    // Assert
+    let text = error.to_string();
+    assert!(text.contains("http/protobuf"));
+    assert!(text.contains("otlp-grpc"));
+}
+
 #[test]
 fn given_no_settings_when_built_then_there_is_no_exporter() {
     // Arrange

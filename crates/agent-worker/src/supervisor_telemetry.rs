@@ -256,6 +256,7 @@ pub fn build(
     config: &TelemetryConfig,
     batch_delay: Duration,
 ) -> anyhow::Result<SupervisorTelemetry> {
+    install_ring_provider();
     install_subscriber(config)?;
     let (tracer, provider, export_runtime) = if config.traces_enabled {
         // The batch processor polls the exporter on its own thread, with no
@@ -390,8 +391,13 @@ impl SpanExporter for TokioSpanExporter {
     }
 }
 
+fn install_ring_provider() {
+    // reqwest is built without a bundled rustls provider. ring is the process
+    // default for the HTTP exporter and for Sentry.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 fn build_exporter(config: &TelemetryConfig) -> anyhow::Result<opentelemetry_otlp::SpanExporter> {
-    use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig};
     let endpoint = config
         .endpoint
         .clone()
@@ -400,21 +406,48 @@ fn build_exporter(config: &TelemetryConfig) -> anyhow::Result<opentelemetry_otlp
     let headers = config.header_string();
     let protocol = config.protocol;
     with_header_env(&headers, || match protocol {
-        OtlpProtocol::HttpProtobuf => SpanExporter::builder()
-            .with_http()
-            .with_endpoint(endpoint.clone())
-            .with_protocol(Protocol::HttpBinary)
-            .with_timeout(timeout)
-            .build()
-            .map_err(|error| anyhow::anyhow!("OTLP exporter: {error}")),
-        OtlpProtocol::Grpc => SpanExporter::builder()
-            .with_tonic()
-            .with_endpoint(endpoint)
-            .with_protocol(Protocol::Grpc)
-            .with_timeout(timeout)
-            .build()
-            .map_err(|error| anyhow::anyhow!("OTLP exporter: {error}")),
+        OtlpProtocol::HttpProtobuf => http_exporter(endpoint, timeout),
+        OtlpProtocol::Grpc => grpc_exporter(endpoint, timeout),
     })
+}
+
+fn http_exporter(
+    endpoint: String,
+    timeout: Duration,
+) -> anyhow::Result<opentelemetry_otlp::SpanExporter> {
+    use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig};
+    SpanExporter::builder()
+        .with_http()
+        .with_endpoint(endpoint)
+        .with_protocol(Protocol::HttpBinary)
+        .with_timeout(timeout)
+        .build()
+        .map_err(|error| anyhow::anyhow!("OTLP exporter: {error}"))
+}
+
+#[cfg(feature = "otlp-grpc")]
+fn grpc_exporter(
+    endpoint: String,
+    timeout: Duration,
+) -> anyhow::Result<opentelemetry_otlp::SpanExporter> {
+    use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig};
+    SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .with_protocol(Protocol::Grpc)
+        .with_timeout(timeout)
+        .build()
+        .map_err(|error| anyhow::anyhow!("OTLP exporter: {error}"))
+}
+
+#[cfg(not(feature = "otlp-grpc"))]
+fn grpc_exporter(
+    _endpoint: String,
+    _timeout: Duration,
+) -> anyhow::Result<opentelemetry_otlp::SpanExporter> {
+    anyhow::bail!(
+        "this build exports OTLP over http/protobuf; rebuild with --features otlp-grpc for grpc"
+    )
 }
 
 fn install_sentry(config: &TelemetryConfig) -> anyhow::Result<sentry::ClientInitGuard> {

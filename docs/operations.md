@@ -108,10 +108,23 @@ The board is a view of the Redis queue. It does not replace the Prometheus scrap
 | `exited` | the drain reason | Exit 0 after the supervisor's `SIGUSR1`. A soft drain becomes `exited` / `memory_soft`. |
 | `killed` | `memory_hard` | This supervisor sent `SIGKILL` because the process crossed its hard RSS limit. |
 | `killed` | `memory_ratio` | This supervisor sent `SIGKILL` because the container crossed the hard ratio and that child owned the usage. |
-| `killed` | `ping_budget` | The child exited 2. The Python loop stayed silent past the ping budget. |
+| `killed` | `ping_budget` | The child exited 2. The Python loop stayed silent past the ping budget. Exit 2 is not used for a Redis error. |
 | `killed` | `ownership_lost` | The child exited 4. The attempt lost its lease, or finish was not confirmed. The message stays inflight. |
+| `killed` | `redis_error` | The child exited 5. Redis failed while counting the delivery or enqueueing a retry. The attempt stays inflight. |
 | `killed` | `sigkill` | `SIGKILL` arrived and this supervisor did not send it. |
 | `killed` | `crash` | Any other exit code or signal. |
 | `killed` | empty | The metadata hash is still there, the worker heartbeat is stale, and no live supervisor record exists. The supervisor itself is gone, including when `memory.oom.group` kills the whole container. |
 
 `killed` with no reason is not `killed` / `memory_hard`. `memory_hard` means this supervisor recorded the signal it sent. An empty reason means there is no supervisor left to record one. A row that is `killed` and still lists a task is waiting for a live neighbor to requeue it.
+
+## Supervisor binary
+
+The release binary is unstripped. Sizes are `target/release/agent-worker` on x86_64.
+
+| Build | Bytes |
+| --- | --- |
+| 1.3.0 (`b6a05ee`) | 19,352,888 |
+| This fork with `grpc-tonic` and rustls `aws-lc` linked | 30,364,616 |
+| 2.0.0a1 default: OTLP `http/protobuf`, rustls `ring` | 26,912,368 |
+
+The default build is 3,452,248 bytes smaller than the same fork with gRPC and `aws-lc` linked. `aws-lc-rs` and `aws-lc-sys` are not in `Cargo.lock`. The wheels use this default. `otlp-grpc` is off unless the binary is rebuilt with that cargo feature. `Cargo.lock` went from 265 packages at 1.3.0 to 366. The gRPC and `aws-lc` packages that left this fork's lock are `aws-lc-rs`, `aws-lc-sys`, `cmake`, `dunce`, `fs_extra`, `lru-slab`, `quinn`, `quinn-proto`, `quinn-udp`, `rand_pcg`, `rustc-hash`, and `tinyvec`. `tonic` stays in the lock so `--features otlp-grpc` still builds with `--locked`, and it is not linked into the default binary.

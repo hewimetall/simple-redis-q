@@ -95,6 +95,10 @@ fn exit_code_3_is_fatal_and_other_codes_restart() {
         classify_child_exit(false, Some(simple_q_runtime::admin::EXIT_OWNERSHIP_LOST)),
         ChildExit::Restart
     );
+    assert_eq!(
+        classify_child_exit(false, Some(simple_q_runtime::admin::EXIT_REDIS_ERROR)),
+        ChildExit::Restart
+    );
     assert_eq!(classify_child_exit(false, None), ChildExit::Restart);
 }
 
@@ -105,6 +109,11 @@ fn exit_code_4_is_ownership_lost_and_exit_code_2_stays_a_crash_span() {
 
     // Act
     let lost = exit_reason(SentSignal::None, ChildExit::Restart, Some(ownership));
+    let redis = exit_reason(
+        SentSignal::None,
+        ChildExit::Restart,
+        Some(simple_q_runtime::admin::EXIT_REDIS_ERROR),
+    );
     let ping = exit_reason(SentSignal::None, ChildExit::Restart, Some(2));
     let recycle = exit_reason(SentSignal::None, ChildExit::Recycle, Some(0));
     let drain = exit_reason(
@@ -115,6 +124,7 @@ fn exit_code_4_is_ownership_lost_and_exit_code_2_stays_a_crash_span() {
 
     // Assert
     assert_eq!(lost, "ownership_lost");
+    assert_eq!(redis, "redis_error");
     assert_eq!(ping, "crash");
     assert_eq!(recycle, "recycle");
     assert_eq!(drain, "drain");

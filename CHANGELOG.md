@@ -10,7 +10,9 @@ Supervisor traces and Sentry are off unless configured. Their flags and `SIMPLE_
 
 Migration: set `REDIS_URL` and the `SIMPLE_Q_*` values the supervisor should use in that process. Supervisor telemetry stays off until its own variables or flags are set.
 
-A child that loses the attempt lease, or cannot confirm finish, exits 4. `agent-worker info` and `QueueAdmin.snapshot` show `killed` / `ownership_lost`. Exit 2 stays the ping-budget watchdog.
+A child that loses the attempt lease, or cannot confirm finish, exits 4. `agent-worker info` and `QueueAdmin.snapshot` show `killed` / `ownership_lost`. Exit 2 is only the ping-budget watchdog. A Redis error while counting a delivery, or while enqueueing a retry, exits 5. The same snapshot shows `killed` / `redis_error`, and the attempt stays inflight.
+
+The published wheels export supervisor traces as OTLP `http/protobuf`. gRPC is the cargo feature `otlp-grpc`, off by default. TLS uses rustls with the `ring` provider. `sentry`'s `test` transport is a dev-dependency and is not linked into the release binary.
 
 ## 1.3.0
 

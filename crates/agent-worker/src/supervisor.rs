@@ -398,6 +398,9 @@ fn exit_reason(signal: SentSignal, class: ChildExit, code: Option<i32>) -> &'sta
     if code == Some(simple_q_runtime::admin::EXIT_OWNERSHIP_LOST) {
         return "ownership_lost";
     }
+    if code == Some(simple_q_runtime::admin::EXIT_REDIS_ERROR) {
+        return "redis_error";
+    }
     match signal {
         SentSignal::Kill(_) => "hard kill",
         SentSignal::Usr1(DrainCause::Shutdown) => "drain",
