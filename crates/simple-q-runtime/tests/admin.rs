@@ -125,6 +125,10 @@ async fn forget_supervisor_removes_the_hash_and_the_member() {
         drains: 0,
         kills: 0,
         restarts: 0,
+        redis_host: String::new(),
+        redis_db: 0,
+        traces: "off".to_owned(),
+        sentry: "off".to_owned(),
         children: Vec::new(),
     };
     // Act
@@ -312,6 +316,10 @@ async fn publish_shows_up_refreshes_ttl_and_expires() {
         drains: 0,
         kills: 0,
         restarts: 0,
+        redis_host: String::new(),
+        redis_db: 0,
+        traces: "off".to_owned(),
+        sentry: "off".to_owned(),
         children: vec![child],
     };
     let now = redis_now();
@@ -458,6 +466,10 @@ async fn snapshot_tree_has_a_running_child_and_a_held_task() {
             drains: 0,
             kills: 0,
             restarts: 0,
+            redis_host: String::new(),
+            redis_db: 0,
+            traces: "off".to_owned(),
+            sentry: "off".to_owned(),
             children: vec![child],
         },
     )
@@ -778,6 +790,10 @@ async fn started_at_stays_while_locked_at_moves() {
             drains: 0,
             kills: 0,
             restarts: 0,
+            redis_host: String::new(),
+            redis_db: 0,
+            traces: "off".to_owned(),
+            sentry: "off".to_owned(),
             children: vec![child],
         },
     )
@@ -1320,6 +1336,10 @@ async fn snapshot_includes_tasks_from_every_supervisor_queue() {
             drains: 0,
             kills: 0,
             restarts: 0,
+            redis_host: String::new(),
+            redis_db: 0,
+            traces: "off".to_owned(),
+            sentry: "off".to_owned(),
             children: vec![child],
         },
     )

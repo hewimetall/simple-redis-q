@@ -76,6 +76,10 @@ fn one_supervisor_block_lists_children_tasks_and_queue_depth() {
             drains: 2,
             kills: 1,
             restarts: 0,
+            redis_host: "redis".to_owned(),
+            redis_db: 0,
+            traces: "off".to_owned(),
+            sentry: "off".to_owned(),
             children: vec![
                 child(
                     0,
@@ -149,6 +153,8 @@ supervisor  worker-reports-6f8b9c7d4-x2k9p  pid 1  up 38m  simple-q 1.1.0
 queues      reports  processes 3/3  concurrency 1  max_tasks 500
 memory      cgroup 2.1G / 4G  child soft 1G / hard 1500M
 counters    recycled 14  soft 2  hard 1  restarts 0
+telemetry   traces off  sentry off
+redis       host redis  db 0
 SLOT  PID  STATE     REASON       RSS    TASKS    HB
 0     31   running                812M   412/500  4s
 1     57   draining  max_tasks    640M   500/500  9s
@@ -163,6 +169,15 @@ reports  12      1          4         9873  0";
     // Assert
 
     assert_eq!(text, expected);
+    let encoded = serde_json::to_string(&snapshot).expect("snapshot json");
+    assert!(encoded.contains("\"traces\":\"off\"") || encoded.contains("\"traces\": \"off\""));
+    assert!(encoded.contains("\"sentry\":\"off\"") || encoded.contains("\"sentry\": \"off\""));
+    assert!(!encoded.contains("sentry.example"));
+    assert!(
+        !encoded
+            .to_ascii_lowercase()
+            .contains(&format!("{}=", "authorization"))
+    );
 }
 
 #[test]

@@ -21,7 +21,16 @@ pub async fn run(
     queue: Vec<String>,
     json: bool,
 ) -> Result<()> {
-    let (url, settings) = crate::bridge::read_client(&app, factory)?;
+    let (app_url, app_settings) = crate::bridge::read_client(&app, factory)?;
+    let (url, settings) = match std::env::var("REDIS_URL") {
+        Ok(value) if !value.is_empty() => {
+            let settings = simple_q_runtime::config::Config::from_env()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            (value, settings)
+        }
+        _ => (app_url.clone(), app_settings),
+    };
+    let app_endpoint = simple_q_parent::parse_redis_endpoint(&app_url).ok();
     let mut conn = redis_api::connect(&url).await?;
     let host = simple_q_runtime::ids::hostname();
     let requested = !queue.is_empty();
@@ -35,6 +44,7 @@ pub async fn run(
     let snapshot = admin::snapshot(&mut conn, &settings, &queues, host_filter)
         .await
         .context("failed to read the supervisor snapshot")?;
+    warn_redis_mismatch(&snapshot, app_endpoint.as_ref());
     let missing = !all && !snapshot.supervisors.iter().any(|item| item.host == host);
     if missing {
         eprintln!("no live supervisor on {host}");
@@ -45,6 +55,23 @@ pub async fn run(
     }
     emit(&snapshot, json, all)?;
     Ok(())
+}
+
+fn warn_redis_mismatch(snapshot: &Snapshot, app: Option<&simple_q_parent::RedisEndpoint>) {
+    let Some(app) = app else {
+        return;
+    };
+    for supervisor in &snapshot.supervisors {
+        if supervisor.redis_host.is_empty() {
+            continue;
+        }
+        if supervisor.redis_host != app.host || supervisor.redis_db != app.db {
+            eprintln!(
+                "warning: application Redis host {} db {} differs from supervisor host {} db {}",
+                app.host, app.db, supervisor.redis_host, supervisor.redis_db
+            );
+        }
+    }
 }
 
 fn has_rows(snapshot: &Snapshot, requested_queues: bool, all: bool) -> bool {
@@ -218,6 +245,20 @@ fn render_supervisor(supervisor: &SupervisorInfo, taken_at: u64) -> String {
             supervisor.drains,
             supervisor.kills,
             supervisor.restarts,
+        ),
+        format!(
+            "{:<10}  traces {}  sentry {}",
+            "telemetry", supervisor.traces, supervisor.sentry,
+        ),
+        format!(
+            "{:<10}  host {}  db {}",
+            "redis",
+            if supervisor.redis_host.is_empty() {
+                "-".to_owned()
+            } else {
+                supervisor.redis_host.clone()
+            },
+            supervisor.redis_db,
         ),
         render_slots(&supervisor.children, taken_at),
     ];

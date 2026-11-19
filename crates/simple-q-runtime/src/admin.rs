@@ -351,6 +351,14 @@ pub struct SupervisorRecord {
     pub drains: u64,
     pub kills: u64,
     pub restarts: u64,
+    /// Redis host the supervisor is using. Empty on a record from an older process.
+    pub redis_host: String,
+    /// Redis database index the supervisor is using.
+    pub redis_db: u32,
+    /// `on` or `off`. Supervisor traces, never a header or an endpoint secret.
+    pub traces: String,
+    /// `on` or `off`. Supervisor Sentry, never a DSN.
+    pub sentry: String,
     pub children: Vec<ChildRecord>,
 }
 
@@ -425,6 +433,10 @@ pub async fn publish_supervisor(
         ("drains".to_owned(), record.drains.to_string()),
         ("kills".to_owned(), record.kills.to_string()),
         ("restarts".to_owned(), record.restarts.to_string()),
+        ("redis_host".to_owned(), record.redis_host.clone()),
+        ("redis_db".to_owned(), record.redis_db.to_string()),
+        ("traces".to_owned(), record.traces.clone()),
+        ("sentry".to_owned(), record.sentry.clone()),
     ];
     for (pid, child) in &by_pid {
         let json = serde_json::to_string(child).context("failed to encode a child record")?;
@@ -600,6 +612,10 @@ pub struct SupervisorInfo {
     pub drains: u64,
     pub kills: u64,
     pub restarts: u64,
+    pub redis_host: String,
+    pub redis_db: u32,
+    pub traces: String,
+    pub sentry: String,
     pub children: Vec<ProcessInfo>,
 }
 
@@ -1484,6 +1500,13 @@ fn sort_processes(processes: &mut [ProcessInfo]) {
     });
 }
 
+fn on_off(value: Option<&str>) -> String {
+    match value.map(str::trim) {
+        Some("on") => "on".to_owned(),
+        _ => "off".to_owned(),
+    }
+}
+
 fn supervisor_info(sup: &LoadedSup, children: Vec<ProcessInfo>) -> SupervisorInfo {
     let fields = &sup.fields;
     SupervisorInfo {
@@ -1507,6 +1530,12 @@ fn supervisor_info(sup: &LoadedSup, children: Vec<ProcessInfo>) -> SupervisorInf
         drains: map_u64(fields, "drains").unwrap_or(0),
         kills: map_u64(fields, "kills").unwrap_or(0),
         restarts: map_u64(fields, "restarts").unwrap_or(0),
+        redis_host: fields.get("redis_host").cloned().unwrap_or_default(),
+        redis_db: map_u64(fields, "redis_db")
+            .unwrap_or(0)
+            .min(u64::from(u32::MAX)) as u32,
+        traces: on_off(fields.get("traces").map(String::as_str)),
+        sentry: on_off(fields.get("sentry").map(String::as_str)),
         children,
     }
 }

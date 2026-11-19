@@ -1,6 +1,43 @@
 use super::*;
 
 #[tokio::test]
+async fn a_closed_redis_port_is_an_outage() {
+    // Arrange
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let url = format!("redis://:hidden@127.0.0.1:{port}/0");
+
+    // Act
+    let result = connect_for_heartbeat(&url, Duration::from_millis(200)).await;
+
+    // Assert
+    match result {
+        HeartbeatConnect::Failed(error) => {
+            assert!(!error.contains("hidden"));
+            assert!(!error.contains("redis://"));
+        }
+        HeartbeatConnect::Ready(_) => panic!("a closed port connected"),
+    }
+}
+
+#[test]
+fn a_publish_outage_is_reported_once_after_the_window() {
+    // Arrange
+    let mut since = Some(tokio::time::Instant::now() - Duration::from_secs(5));
+    let mut alerted = false;
+
+    // Act
+    note_publish_failure(&mut since, &mut alerted, Duration::from_secs(1), "reports");
+    let first = since;
+    note_publish_failure(&mut since, &mut alerted, Duration::from_secs(1), "reports");
+
+    // Assert
+    assert!(alerted);
+    assert_eq!(since, first);
+}
+
+#[tokio::test]
 async fn a_sigterm_before_the_loop_is_still_waiting() {
     // Arrange
 

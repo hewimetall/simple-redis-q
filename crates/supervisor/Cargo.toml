@@ -1,0 +1,15 @@
+[package]
+name = "simple-q-process"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Process lifecycle. Production spawn stays on tokio::process."
+
+[dependencies]
+
+[dev-dependencies]
+libc = "0.2.191"
+tokio = { version = "1.54.1", features = ["macros", "rt", "process", "io-util", "time"] }
+watchexec-supervisor = "=6.0.0"

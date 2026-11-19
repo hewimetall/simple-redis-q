@@ -7,7 +7,11 @@ fn given_two_executions_when_one_is_removed_then_snapshot_and_lines_keep_the_oth
     let other = format!("{id}-b");
     let before = len();
     insert(id.clone(), "render_report".to_owned(), "default".to_owned());
-    insert(other.clone(), "render_report".to_owned(), "reports".to_owned());
+    insert(
+        other.clone(),
+        "render_report".to_owned(),
+        "reports".to_owned(),
+    );
 
     // Act
     remove(&id);

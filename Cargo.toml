@@ -1,6 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["crates/simple-q-runtime", "crates/agent-worker"]
+members = [
+    "crates/simple-q-runtime",
+    "crates/agent-worker",
+    "crates/runtime",
+    "crates/supervisor",
+    "crates/backend",
+    "crates/python-bridge",
+    "crates/cli",
+]
 exclude = [
     "docs/research/spikes/watchexec-6.0.0",
     "docs/research/spikes/oxana-2.5.0",

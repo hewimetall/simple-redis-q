@@ -70,6 +70,15 @@ pub fn run_child(
     }
     runtime.block_on(async move {
         let (conn, config) = bridge::connect_client().await?;
+        if let Ok(url) = bridge::client_redis_url()
+            && let Ok(endpoint) = simple_q_parent::parse_redis_endpoint(&url)
+        {
+            tracing::info!(
+                redis_host = %endpoint.host,
+                redis_db = endpoint.db,
+                "child redis endpoint"
+            );
+        }
         bridge::call_hook("startup").await?;
 
         let shared = Shared {
