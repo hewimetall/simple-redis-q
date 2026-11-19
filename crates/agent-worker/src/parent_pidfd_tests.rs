@@ -81,6 +81,53 @@
 }
 
         #[test]
+        fn the_spawned_child_does_not_inherit_redis_url() {
+            // A tokio child holds a pidfd. That descriptor has the same
+            // /proc symlink text as every other pidfd, so this runs under
+            // the same lock as the copy count.
+            let _exclusive = exclusive();
+            struct Restore(Option<String>);
+            impl Drop for Restore {
+                fn drop(&mut self) {
+                    unsafe {
+                        match self.0.take() {
+                            Some(value) => std::env::set_var("REDIS_URL", value),
+                            None => std::env::remove_var("REDIS_URL"),
+                        }
+                    }
+                }
+            }
+            let restore = Restore(std::env::var("REDIS_URL").ok());
+            unsafe {
+                std::env::set_var(
+                    "REDIS_URL",
+                    "redis://:supervisor-secret@127.0.0.1:6379/0",
+                );
+            }
+            let status = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let mut child = crate::process_port::spawn_worker(crate::process_port::WorkerSpawn {
+                        program: std::path::PathBuf::from("/usr/bin/python3"),
+                        args: vec![
+                            "-c".to_owned(),
+                            "import os,sys; sys.exit(0 if 'REDIS_URL' not in os.environ else 2)".to_owned(),
+                        ],
+                        env: Vec::new(),
+                        slot_fd: None,
+                        parent_pidfd: None,
+                    })
+                    .await
+                    .unwrap();
+                    child.wait().await.unwrap()
+                });
+            drop(restore);
+            assert!(status.success(), "{status:?}");
+        }
+
+        #[test]
         fn an_exec_from_the_child_does_not_inherit_the_pidfd() {
             // Arrange
 

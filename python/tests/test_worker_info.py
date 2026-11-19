@@ -225,15 +225,23 @@ def test_info_json_shows_the_running_task_then_max_tasks(tmp_path):
             os.environ["SIMPLE_Q_MEMORY_SOFT_RATIO"] = "0.99"
             os.environ["SIMPLE_Q_MEMORY_HARD_RATIO"] = "0.999"
 
-            async def grab():
+            async def agree():
                 client = Client(url, Config.from_env())
                 admin = QueueAdmin(client)
-                found = await admin.snapshot([queue], host=host)
-                await client.close()
-                return found
+                try:
+                    deadline = time.time() + 5
+                    while True:
+                        fresh = info_json()
+                        found = await admin.snapshot([queue], host=host)
+                        if _stable(asdict(found)) == _stable(fresh):
+                            return
+                        if time.time() >= deadline:
+                            assert _stable(asdict(found)) == _stable(fresh)
+                        await asyncio.sleep(0.05)
+                finally:
+                    await client.close()
 
-            compared = asyncio.run(grab())
-            assert _stable(asdict(compared)) == _stable(snap)
+            asyncio.run(agree())
 
         replaced = False
         deadline = time.time() + 40
