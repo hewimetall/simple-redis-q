@@ -70,7 +70,10 @@ def remember(letter):
 
 def create_app() -> App:
     return App(
-        client=Client(os.environ["REDIS_URL"], config=Config.from_env()),
+        client=Client(
+            os.environ.get("SIMPLE_Q_APP_REDIS_URL") or os.environ["REDIS_URL"],
+            config=Config.from_env(),
+        ),
         actors=[hold, gil, die],
         on_dead=[remember],
     )

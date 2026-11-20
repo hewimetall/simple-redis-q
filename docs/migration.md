@@ -1,6 +1,10 @@
 # Migration from Dramatiq
 
-These pages describe simple-q on main. The packages are 1.3.0. Changes after that tag are under Unreleased in the changelog.
+These pages describe simple-q 2.0.0a1.
+
+## Supervisor Redis URL
+
+The supervisor reads `REDIS_URL` and exits 3 when it is missing or invalid. It removes that variable from each child and from the metrics process. The factory does not see the supervisor credential. Give the application its own URL in `SIMPLE_Q_APP_REDIS_URL`, or construct `Client` in the application. `enqueue`, `admin`, and `info` still read `REDIS_URL` in their own process.
 
 Metric names stay. The middleware API does not.
 
@@ -53,7 +57,7 @@ A pack of middleware is a list. Each class registers only the hooks it uses:
 
 ```python
 def create_app(client) -> App:
-    app = App(client=client, actors=[recalc])
+    app = App(client=client, actors=[render_report])
     for middleware in (Trace(), Alter(), Audit()):
         middleware.install(client, app)
     return app
@@ -69,7 +73,7 @@ Installed as `a`, then `b`, then `c`, then `d`, the stack runs like this:
 
 Each `on_send` sees the headers returned by the previous one. The same header key keeps the last write. The first `around_dispatch` hook is the outer hook. `current_message()` is already bound when it starts. An outer hook that returns without calling `call_next` leaves `b`, `c`, `d`, and the handler uncalled. A `delay_ms` an inner hook writes on a `retry` outcome is what every outer hook sees, and it is what `dispatch` returns. `on_dead` runs after the handler and before any `around_dispatch` hook leaves. One `on_start`, `on_stop`, or `on_dead` that raises is logged, and the later hooks in that list still run.
 
-`await client.send(recalc, project_id="42", alter=True)` stores `alter` in `kwargs` as JSON. The handler must accept `alter`. `headers` is `dict[str, str]`, so a boolean option is stored as `"1"` or `"0"`. `@actor(alter=True)` raises `TypeError`. A flag that is the same for every send of one actor lives in the module the worker imports, and `on_send` copies it onto the message when the delivery should see it.
+`await client.send(render_report, report_id="42", alter=True)` stores `alter` in `kwargs` as JSON. The handler must accept `alter`. `headers` is `dict[str, str]`, so a boolean option is stored as `"1"` or `"0"`. `@actor(alter=True)` raises `TypeError`. A flag that is the same for every send of one actor lives in the module the worker imports, and `on_send` copies it onto the message when the delivery should see it.
 
 An exception from `dispatch` kills the attempt and releases the idempotency key. Python does not enqueue a retry for that exception. `python/tests/test_middleware_stack.py` records the four-class order above.
 

@@ -1,6 +1,6 @@
 # ADR 0004 — Parent without CPython; config compatibility
 
-- **Status:** Accepted (binding for Stage C)
+- **Status:** Implemented in 2.0.0a1 ([b32edd1](https://github.com/hewimetall/simple-redis-q/commit/b32edd152a40d9dc7028cc328d30560b9d03d5c9))
 - **Date:** 2026-11-13
 - **Code sketch:** `docs/research/example/simple-q-core`, module `parent`. The example is not a workspace member.
 
@@ -30,9 +30,10 @@ Parent **must not** call `bridge::read_client` or `runtime::initialize`.
 ### Code gate
 
 `ParentBootstrap::try_from_legacy_app_client()` returns `AppClientRequiresCPython`.  
-`PARENT_NO_CPYTHON_IMPLEMENTED` flips to `true` only when production parent path is fixed.
+`PARENT_NO_CPYTHON_IMPLEMENTED` is `true` in `simple-q-parent`. The `worker` command without `--child` does not call `runtime::initialize` or `bridge::read_client`. It reads `REDIS_URL` and `SIMPLE_Q_*`, and exits 3 when `REDIS_URL` is missing or invalid. `info`, `execute`, and the child still load the application.
 
 ## Consequences
 
-- Existing deployments that relied on parent reading `App.client` alone need `REDIS_URL` in the supervisor environment (document in migration notes when Stage C lands).
-- Child programmatic config remains valid; no requirement to move all settings to env.
+- Existing deployments that relied on the parent reading `App.client` alone need `REDIS_URL` in the supervisor environment. That note is in [migration](../migration.md).
+- The supervisor removes `REDIS_URL` before it starts a child. A factory that used to read `REDIS_URL` from the child reads `SIMPLE_Q_APP_REDIS_URL`, or it builds `Client` without that variable.
+- Child programmatic config remains valid. There is no requirement to move every setting to the environment.

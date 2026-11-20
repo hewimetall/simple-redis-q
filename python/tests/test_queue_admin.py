@@ -44,7 +44,7 @@ def _job(queue: str, message_id: str) -> str:
         {
             "version": 1,
             "message_id": message_id,
-            "actor_name": "recalc",
+            "actor_name": "render_report",
             "queue": queue,
             "kwargs": {"project": "42"},
             "headers": {},
@@ -118,7 +118,7 @@ def test_dead_pages_newest_first_without_the_apalis_set():
         assert isinstance(first, DeadPage)
         assert [item.task_id for item in first.messages] == ["task-d", "task-c"]
         assert first.messages[0].message_id == "msg-task-d"
-        assert first.messages[0].actor_name == "recalc"
+        assert first.messages[0].actor_name == "render_report"
         assert first.messages[0].kwargs == {"project": "42"}
         assert first.messages[0].reason == "retries"
         assert first.messages[0].error == "RuntimeError: boom"

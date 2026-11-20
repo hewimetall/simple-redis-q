@@ -111,7 +111,7 @@ fn sample(retries: u32, unique_key: Option<&str>) -> Job {
     Job {
         version: crate::MESSAGE_VERSION,
         message_id: "m-1".to_owned(),
-        actor_name: "recalc".to_owned(),
+        actor_name: "render_report".to_owned(),
         queue: "default".to_owned(),
         kwargs: serde_json::json!({"project": "42"}),
         headers: Default::default(),
@@ -139,8 +139,8 @@ fn the_idempotency_key_matches_the_apalis_set_and_a_retry_does_not_claim_it() {
     // Assert
 
     assert_eq!(
-        idempotency_redis_key("default", "recalc:42"),
-        format!("{}:recalc:42", config.idempotency_key_set())
+        idempotency_redis_key("default", "render_report:42"),
+        format!("{}:render_report:42", config.idempotency_key_set())
     );
     assert!(config.idempotency_ttl.is_none());
     let ttl = config
@@ -150,8 +150,8 @@ fn the_idempotency_key_matches_the_apalis_set_and_a_retry_does_not_claim_it() {
         .as_secs();
     assert!(ttl > 0);
 
-    assert!(claims_idempotency(&sample(0, Some("recalc:42"))));
-    assert!(!claims_idempotency(&sample(1, Some("recalc:42"))));
+    assert!(claims_idempotency(&sample(0, Some("render_report:42"))));
+    assert!(!claims_idempotency(&sample(1, Some("render_report:42"))));
     assert!(!claims_idempotency(&sample(0, None)));
     assert!(!claims_idempotency(&sample(0, Some(""))));
 }

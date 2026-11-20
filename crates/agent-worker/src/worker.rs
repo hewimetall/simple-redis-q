@@ -382,7 +382,7 @@ async fn handle_job(
                 error = %error,
                 "delivery count failed"
             );
-            std::process::exit(2);
+            std::process::exit(simple_q_runtime::admin::EXIT_REDIS_ERROR);
         }
     };
     if decide(deliveries, job.max_deliveries) == Decision::Poison {
@@ -442,19 +442,34 @@ async fn handle_job(
             return Err(Box::new(AbortError::new(error)));
         }
     };
-    match value.get("outcome").and_then(|item| item.as_str()) {
-        Some("retry") => {
-            let delay_ms = value
-                .get("delay_ms")
-                .and_then(|item| item.as_u64())
-                .unwrap_or(0);
+    let outcome = match simple_q_python_bridge::parse_outcome(&value) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let text = error.to_string();
+            record_dead(
+                &mut conn,
+                &state,
+                &job,
+                &task_id,
+                "protocol",
+                Some(&text),
+                deliveries,
+            )
+            .await;
+            release_unique_key_after_ack(&state.shared, &job, &task_id);
+            return Err(Box::new(AbortError::new(anyhow::anyhow!(text))));
+        }
+    };
+    let lost = matches!(outcome, simple_q_python_bridge::BridgeOutcome::LeaseLost);
+    match simple_q_python_bridge::finish_for(held_finish(lost), &outcome) {
+        simple_q_backend::FinishDisposition::Retry { delay } => {
             let mut next = job.clone();
             next.retries = next.retries.saturating_add(1);
             if let Err(error) = redis_api::enqueue_job(
                 &mut state.shared.redis.clone(),
                 &state.shared.config,
                 next,
-                Some(std::time::Duration::from_millis(delay_ms)),
+                Some(delay),
             )
             .await
             {
@@ -466,34 +481,65 @@ async fn handle_job(
                     error = %error,
                     "retry enqueue failed; leaving the attempt inflight"
                 );
-                std::process::exit(2);
+                std::process::exit(simple_q_runtime::admin::EXIT_REDIS_ERROR);
             }
             bridge::note_retry(&job.queue, &job.actor_name);
             release_acked(&state.shared.redis, &job).await;
             Ok(value)
         }
-        Some("dead") => {
-            let reason = value
-                .get("reason")
-                .and_then(|item| item.as_str())
-                .unwrap_or("dead");
+        simple_q_backend::FinishDisposition::Dead { reason } => {
             let error_text = value
                 .get("error")
                 .and_then(|item| item.as_str())
                 .filter(|text| !text.is_empty());
             record_dead(
-                &mut conn, &state, &job, &task_id, reason, error_text, deliveries,
+                &mut conn, &state, &job, &task_id, &reason, error_text, deliveries,
             )
             .await;
             release_unique_key_after_ack(&state.shared, &job, &task_id);
             Err(Box::new(AbortError::new(anyhow::anyhow!("dead: {reason}"))))
         }
-        _ => {
+        simple_q_backend::FinishDisposition::Ack => {
             release_acked(&state.shared.redis, &job).await;
             release_unique_key_after_ack(&state.shared, &job, &task_id);
             Ok(value)
         }
+        simple_q_backend::FinishDisposition::RejectedStaleOwnership => {
+            tracing::error!(
+                message_id = %job.message_id,
+                actor_name = %job.actor_name,
+                queue_name = %job.queue,
+                "ownership lost; leaving the attempt inflight"
+            );
+            std::process::exit(simple_q_runtime::admin::EXIT_OWNERSHIP_LOST);
+        }
+        simple_q_backend::FinishDisposition::FinishUnconfirmed { detail } => {
+            tracing::error!(
+                message_id = %job.message_id,
+                actor_name = %job.actor_name,
+                queue_name = %job.queue,
+                %detail,
+                "finish unconfirmed; leaving the attempt inflight"
+            );
+            std::process::exit(simple_q_runtime::admin::EXIT_OWNERSHIP_LOST);
+        }
     }
+}
+
+fn held_finish(lost: bool) -> simple_q_orchestration::AttemptLifecycle {
+    use simple_q_orchestration::{AttemptEvent, AttemptLifecycle};
+    let mut life = AttemptLifecycle::claimed()
+        .transition(AttemptEvent::StartHandler)
+        .expect("claimed attempt can start")
+        .transition(AttemptEvent::HandlerReturned)
+        .expect("running attempt can return");
+    if lost {
+        life = life
+            .transition(AttemptEvent::LoseOwnership)
+            .expect("running attempt can lose ownership");
+    }
+    life.transition(AttemptEvent::BeginFinish)
+        .expect("returned attempt can finish")
 }
 
 async fn record_dead(

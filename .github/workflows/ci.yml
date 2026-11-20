@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - "cursor/**"
+      - "fork/**"
   pull_request:
 
 concurrency:
@@ -48,6 +49,7 @@ jobs:
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo clippy -p simple-q-runtime --all-targets --locked --features extension-module -- -D warnings
           cargo clippy -p agent-worker --all-targets --locked --features parent-exit-redis -- -D warnings
+          cargo clippy -p agent-worker --all-targets --locked --features otlp-grpc -- -D warnings
 
   test:
     runs-on: ${{ matrix.os }}
@@ -163,6 +165,48 @@ jobs:
           PYO3_PYTHON: ${{ steps.setup-python.outputs.python-path }}
           REDIS_URL: redis://127.0.0.1:6379/15
           PYTHONPATH: python:python/tests
+
+  manylinux-wheels:
+    if: github.event_name == 'pull_request'
+    name: Build manylinux wheels
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - runner: ubuntu-24.04
+            target: x86_64
+            docker: linux/amd64
+          - runner: ubuntu-24.04-arm
+            target: aarch64
+            docker: linux/arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.platform.target }}
+          args: --release --out dist -i /opt/python/cp312-cp312/bin/python -i /opt/python/cp313-cp313/bin/python -i /opt/python/cp314-cp314/bin/python -i /opt/python/cp315-cp315/bin/python
+          manylinux: auto
+
+      - name: Build the worker wheel
+        run: bash scripts/build-worker-wheel.sh ${{ matrix.platform.docker }}
+
+      - name: Install both wheels and print the version
+        run: |
+          python3 -m venv /tmp/clean-wheel
+          /tmp/clean-wheel/bin/pip install --upgrade pip
+          runtime=$(ls -1 dist/simple_q_runtime-*-cp312-cp312-*.whl | tail -n 1)
+          worker=$(ls -1 dist/simple_q_worker-*-cp312-cp312-*.whl | tail -n 1)
+          /tmp/clean-wheel/bin/pip install "$runtime" "$worker"
+          /tmp/clean-wheel/bin/agent-worker --version
 
   worker-wheel:
     runs-on: ubuntu-latest

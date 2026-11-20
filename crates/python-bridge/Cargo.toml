@@ -1,0 +1,13 @@
+[package]
+name = "simple-q-python-bridge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Closed bridge outcomes. The PyO3 call stays in the child."
+
+[dependencies]
+serde_json = "1.0.154"
+simple-q-backend = { path = "../backend" }
+simple-q-orchestration = { path = "../runtime" }

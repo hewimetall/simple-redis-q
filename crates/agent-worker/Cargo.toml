@@ -3,6 +3,7 @@ name = "agent-worker"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish = false
 
 [[bin]]
@@ -12,6 +13,12 @@ path = "src/main.rs"
 [features]
 # The queue test needs Redis. `cargo test --workspace` does not enable this.
 parent-exit-redis = []
+# OTLP gRPC. The default build, including wheels, exports `http/protobuf` only.
+otlp-grpc = [
+    "opentelemetry-otlp/grpc-tonic",
+    "opentelemetry-otlp/tls-ring",
+    "opentelemetry-otlp/tls-webpki-roots",
+]
 
 [dependencies]
 actix-web = "4.19.0"
@@ -29,9 +36,20 @@ pythonize = "0.30"
 redis = { version = "1.8.1", default-features = false, features = ["tokio-comp", "connection-manager"] }
 rustix = { version = "1.0", default-features = false, features = ["std", "process"] }
 serde_json = "1.0.154"
+simple-q-backend = { path = "../backend" }
+simple-q-orchestration = { path = "../runtime" }
+simple-q-parent = { path = "../cli" }
+simple-q-python-bridge = { path = "../python-bridge" }
 simple-q-runtime = { path = "../simple-q-runtime" }
+opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["trace", "http-proto", "reqwest-client"] }
+# `rustls` here has no provider. `ring` is installed at startup. `reqwest`'s
+# `rustls` feature would pull aws-lc-rs instead.
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "http2", "rustls-no-provider"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+sentry = { version = "0.49.6", default-features = false, features = ["panic", "tracing", "reqwest", "rustls-no-provider"] }
 # Filesystem and stdio from Tokio's `full` set are unused here.
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "net", "process", "signal", "sync", "time"] }
+watchexec-supervisor = "=6.0.0"
 tracing = "0.1.44"
 tracing-opentelemetry = "0.34.0"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
@@ -40,3 +58,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 name = "parent_exit_queue"
 path = "tests/parent_exit_queue.rs"
 required-features = ["parent-exit-redis"]
+
+[dev-dependencies]
+# The `test` transport must not be linked into the release binary.
+sentry = { version = "0.49.6", default-features = false, features = ["test"] }

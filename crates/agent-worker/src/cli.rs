@@ -135,6 +135,40 @@ pub enum Command {
         /// Internal. The supervisor starts the embedded interpreter only in this mode.
         #[arg(long, hide = true)]
         child: bool,
+
+        /// OTLP endpoint for supervisor traces.
+        ///
+        /// Wins over `SIMPLE_Q_SUPERVISOR_OTEL_EXPORTER_OTLP_ENDPOINT` and
+        /// `OTEL_EXPORTER_OTLP_ENDPOINT`. The trace-specific endpoint variable
+        /// still selects the traces URL when it is set.
+        #[arg(long)]
+        otel_endpoint: Option<String>,
+
+        /// `http/protobuf`, or `grpc` when the binary is built with `otlp-grpc`.
+        #[arg(long)]
+        otel_protocol: Option<String>,
+
+        /// `service.name` for supervisor traces. Default `simple-q-supervisor`.
+        #[arg(long)]
+        otel_service_name: Option<String>,
+
+        /// Trace sampler. One of `always_on`, `always_off`, `traceidratio`,
+        /// `parentbased_always_on`, `parentbased_always_off`,
+        /// `parentbased_traceidratio`.
+        #[arg(long)]
+        otel_sampler: Option<String>,
+
+        /// Sentry environment. The DSN is only read from the environment.
+        #[arg(long)]
+        sentry_environment: Option<String>,
+
+        /// Sentry release. Default is the simple-q version.
+        #[arg(long)]
+        sentry_release: Option<String>,
+
+        /// Sentry sample rate from 0 to 1.
+        #[arg(long)]
+        sentry_sample_rate: Option<String>,
     },
 }
 

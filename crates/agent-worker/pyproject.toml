@@ -5,9 +5,10 @@ build-backend = "maturin"
 [project]
 name = "simple-q-worker"
 dynamic = ["version"]
+license = "MIT OR Apache-2.0"
 description = "agent-worker supervisor binary for simple-q-runtime"
 requires-python = ">=3.12"
-dependencies = ["simple-q-runtime==1.3.0"]
+dependencies = ["simple-q-runtime==2.0.0a1"]
 
 [project.urls]
 Homepage = "https://github.com/hewimetall/simple-redis-q"

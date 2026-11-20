@@ -80,6 +80,10 @@ class SupervisorInfo:
     kills: int
     restarts: int
     children: list[ProcessInfo]
+    redis_host: str = ""
+    redis_db: int = 0
+    traces: str = "off"
+    sentry: str = "off"
 
 
 @dataclass(frozen=True)
@@ -253,6 +257,10 @@ def _supervisor(value: dict[str, Any]) -> SupervisorInfo:
         kills=int(value.get("kills") or 0),
         restarts=int(value.get("restarts") or 0),
         children=[_process(child) for child in value.get("children") or []],
+        redis_host=str(value.get("redis_host") or ""),
+        redis_db=int(value.get("redis_db") or 0),
+        traces=str(value.get("traces") or "off"),
+        sentry=str(value.get("sentry") or "off"),
     )
 
 

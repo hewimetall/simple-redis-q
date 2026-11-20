@@ -1,6 +1,6 @@
 # Command line
 
-These pages describe simple-q on main. The packages are 1.3.0. Changes after that tag are under Unreleased in the changelog. The binary is `agent-worker`, installed by `simple-q-worker`.
+These pages describe simple-q 2.0.0a1. The binary is `agent-worker`, installed by `simple-q-worker`.
 
 `--app` is required wherever a worker or a one-shot task needs the application. The value is `module:attribute`.
 
@@ -25,12 +25,19 @@ The process without the internal child flag only supervises. It forks one child 
 | `--max-tasks-per-process` | `500` | Completed tasks after which the child drains and is replaced |
 | `--child-memory-soft` | unset | Soft RSS for one child, such as `512K`, `1500M`, or `1G` |
 | `--child-memory-hard` | unset | Hard RSS for one child |
+| `--otel-endpoint` | unset | OTLP endpoint for supervisor traces |
+| `--otel-protocol` | `http/protobuf` | `http/protobuf`. `grpc` needs the `otlp-grpc` cargo feature. The published wheels do not include it, and selecting `grpc` exits 3. |
+| `--otel-service-name` | `simple-q-supervisor` | `service.name` on supervisor traces |
+| `--otel-sampler` | `parentbased_always_on` | Trace sampler |
+| `--sentry-environment` | unset | Sentry environment. The DSN is not a flag |
+| `--sentry-release` | simple-q version | Sentry release |
+| `--sentry-sample-rate` | `1.0` | Sentry sample rate from 0 to 1 |
 
 `K`, `M`, and `G` are powers of 1024. A bare number is bytes. The flag wins over `SIMPLE_Q_CHILD_MEMORY_SOFT` or `SIMPLE_Q_CHILD_MEMORY_HARD`. An invalid limit exits 3 before a child starts.
 
 `--child` is internal. The supervisor starts the embedded interpreter only in that mode.
 
-The supervisor also starts the metrics scrape. The worker command does not read `REDIS_URL`. It connects with the URL on the `App`'s `Client`. `enqueue` and `admin` do read `REDIS_URL`. `info` uses the same client URL as `worker` and does not write a heartbeat.
+The supervisor also starts the metrics scrape. The supervisor reads `REDIS_URL` and `SIMPLE_Q_*` from its own environment. A missing or invalid `REDIS_URL` exits 3 before a child starts. The supervisor removes `REDIS_URL` from each child and from the metrics process. The factory builds `Client` from `SIMPLE_Q_APP_REDIS_URL`, or from a URL written in the application. The child logs that host and database, without the password. `enqueue` and `admin` also read `REDIS_URL`. `info` uses `REDIS_URL` when it is set, and otherwise the client URL. It does not write a heartbeat. When the application host or database differs from the supervisor record, `info` prints a warning on stderr. The warning has no password and no full URL. An empty host on an older record is not a warning.
 
 `--app` may be omitted when `SIMPLE_Q_APP` is set. `SIMPLE_Q_APP_FACTORY` is the same as `--factory` when its value is `1`, `true`, `yes`, or `on`. `false`, `0`, `no`, `off`, and an empty value leave the flag off.
 
@@ -38,21 +45,23 @@ The supervisor also starts the metrics scrape. The worker command does not read 
 
 ```bash
 agent-worker info
-agent-worker info --queue quota --json
+agent-worker info --queue reports --json
 agent-worker info --all
 ```
 
-Read-only. The command loads the application only to take the Redis URL and `Config` from its `Client`. It does not register a worker and it does not heartbeat.
+Read-only. The command loads the application to compare its client with the supervisor record. It does not register a worker and it does not heartbeat. The connection is `REDIS_URL` when that variable is set, and the client URL otherwise.
 
 By default it prints the supervisor on this host (`HOSTNAME`, the same value as the worker name), that supervisor's processes and the tasks they hold, and the counters for that supervisor's queues. `--all` prints every supervisor and the orphan processes. `--queue` may be repeated and limits the queue counters. A process still lists held tasks for every queue on its supervisor record, including a queue that was not passed. `--json` prints the same object `QueueAdmin.snapshot` returns.
 
 Exit 0. Exit 1 when `--all` is absent and this host has no live supervisor. The message is `no live supervisor on {host}` on stderr.
 
 ```text
-supervisor  worker-quota-6f8b9c7d4-x2k9p  pid 1  up 38m  simple-q 1.3.0
-queues      quota  processes 3/3  concurrency 1  max_tasks 500
+supervisor  worker-reports-6f8b9c7d4-x2k9p  pid 1  up 38m  simple-q 2.0.0a1
+queues      reports  processes 3/3  concurrency 1  max_tasks 500
 memory      cgroup 2.1G / 4G  child soft 1G / hard 1500M
 counters    recycled 14  soft 2  hard 1  restarts 0
+telemetry   traces off  sentry off
+redis       host redis  db 0
 SLOT  PID  STATE     REASON       RSS    TASKS    HB
 0     31   running                812M   412/500  4s
 1     57   draining  max_tasks    640M   500/500  9s
@@ -60,13 +69,13 @@ SLOT  PID  STATE     REASON       RSS    TASKS    HB
 0     23   killed    memory_hard  1.51G  98/500   41s   held 1, waiting for requeue
 1     12   exited    max_tasks    -      500/500  52s
 PID  QUEUE  ACTOR                        KWARGS                  TRY  DLV  RUN
-31   quota  recalc                       project_id=3f1c0b2a…    0/1  1    212s/1800s
-23   quota  recalc                       project_id=held         0/1  1    212s/1800s
+31   reports  render_report                report_id=3f1c0b2a…     0/1  1    212s/1800s
+23   reports  render_report                report_id=held          0/1  1    212s/1800s
 QUEUE  ACTIVE  SCHEDULED  INFLIGHT  DONE  DEAD
-quota  12      1          4         9873  0
+reports  12      1          4         9873  0
 ```
 
-`processes 3/3` is live children over the configured count. `soft` and `hard` in the counters line are soft drains and hard kills since this supervisor started. A killed or exited row that still holds a task says it is waiting for requeue. `simple-q 1.3.0` is the package version. A pre-release still prints the Cargo form on `--version` (`1.0.0-rc7`) and the PEP 440 form on this line (`1.0.0rc7`).
+`processes 3/3` is live children over the configured count. `soft` and `hard` in the counters line are soft drains and hard kills since this supervisor started. A killed or exited row that still holds a task says it is waiting for requeue. `telemetry` is `on` or `off` for supervisor traces and Sentry. It does not print a DSN, an endpoint, or a header. `redis` is the host and database the supervisor is using. `simple-q 2.0.0a1` is the package version. A pre-release still prints the Cargo form on `--version` (`1.0.0-rc7`) and the PEP 440 form on this line (`1.0.0rc7`).
 
 ## `admin`
 
@@ -87,15 +96,15 @@ Serves the multiprocess Prometheus scrape. The supervisor starts this itself for
 ## `enqueue`
 
 ```bash
-agent-worker enqueue --queue default --task recalc --payload '{"project_id": "42"}'
+agent-worker enqueue --queue default --task render_report --payload '{"report_id": "42"}'
 ```
 
-Enqueue one JSON object. The command reads `REDIS_URL` and `Config.from_env()`. It does not load an `App`. It fails immediately when Redis is unavailable. `--headers` is a JSON object of strings. `--max-retries` defaults to 0. Backoff defaults are 15000 ms and 7 days. The time limit stored on this path is 30 minutes. This command does not set a lock or a unique key. Application code should use `Client.send_with_options` for `unique_key="recalc:42"`.
+Enqueue one JSON object. The command reads `REDIS_URL` and `Config.from_env()`. It does not load an `App`. It fails immediately when Redis is unavailable. `--headers` is a JSON object of strings. `--max-retries` defaults to 0. Backoff defaults are 15000 ms and 7 days. The time limit stored on this path is 30 minutes. This command does not set a lock or a unique key. Application code should use `Client.send_with_options` for `unique_key="render_report:42"`.
 
 ## `execute`
 
 ```bash
-agent-worker execute --app module:app --task recalc --task-id recalc-1
+agent-worker execute --app module:app --task render_report --task-id render_report-1
 ```
 
 Run one task in-process, without Redis. `--app` is `module:attribute`.

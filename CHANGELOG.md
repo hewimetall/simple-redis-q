@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 2.0.0a1 — fork preview
+
+The supervisor reads `REDIS_URL` and `SIMPLE_Q_*` from its own environment. A flag still wins over the matching variable, and an omitted variable keeps its default. The parent process does not initialize CPython and does not load the application. The child still takes Redis and the other execution settings from `App.client`.
+
+Supervisor traces and Sentry are off unless configured. Their flags and `SIMPLE_Q_SUPERVISOR_*` variables are separate from the child's Python exporter. With no DSN and no OTLP endpoint, the supervisor does not open a connection and does not start an export thread. `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, when set, replaces `OTEL_EXPORTER_OTLP_HEADERS` for those traces.
+
+Migration: set `REDIS_URL` and the `SIMPLE_Q_*` values the supervisor should use in that process. The child does not inherit `REDIS_URL`. A factory that needs a URL reads `SIMPLE_Q_APP_REDIS_URL`, or it builds `Client` in the application. Supervisor telemetry stays off until its own variables or flags are set. The published wheels export `http/protobuf`. `grpc` needs the `otlp-grpc` feature and otherwise exits 3.
+
+A child that loses the attempt lease, or cannot confirm finish, exits 4. `agent-worker info` and `QueueAdmin.snapshot` show `killed` / `ownership_lost`. Exit 2 is only the ping-budget watchdog. A Redis error while counting a delivery, or while enqueueing a retry, exits 5. The same snapshot shows `killed` / `redis_error`, and the attempt stays inflight.
+
+The published wheels export supervisor traces as OTLP `http/protobuf`. gRPC is the cargo feature `otlp-grpc`, off by default. TLS uses rustls with the `ring` provider. `sentry`'s `test` transport is a dev-dependency and is not linked into the release binary.
+
 ## 1.3.0
 
 Apalis is 1.2.0 and the admin board is 1.1.0. apalis-redis stays 1.1.1, and lease renewal still sends the task ids. Tokio is no longer the `full` feature set: filesystem and stdio are off. The Redis client drops its default command modules and keeps Lua scripts.

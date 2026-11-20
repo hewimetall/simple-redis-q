@@ -88,9 +88,21 @@ pub enum ChildReason {
     MaxTasks,
     MemoryHard,
     PingBudget,
+    OwnershipLost,
+    RedisError,
     Sigkill,
     Crash,
 }
+
+/// Child exit when the attempt lost ownership or finish was not confirmed.
+///
+/// Exit 2 stays the ping-budget watchdog. Exit 3 stays configuration.
+pub const EXIT_OWNERSHIP_LOST: i32 = 4;
+
+/// Child exit when Redis could not record a delivery or enqueue a retry.
+///
+/// The attempt stays inflight. This is not the ping-budget watchdog.
+pub const EXIT_REDIS_ERROR: i32 = 5;
 
 impl ChildState {
     pub fn as_str(self) -> &'static str {
@@ -112,6 +124,8 @@ impl ChildReason {
             Self::MaxTasks => "max_tasks",
             Self::MemoryHard => "memory_hard",
             Self::PingBudget => "ping_budget",
+            Self::OwnershipLost => "ownership_lost",
+            Self::RedisError => "redis_error",
             Self::Sigkill => "sigkill",
             Self::Crash => "crash",
         }
@@ -141,7 +155,9 @@ impl KillCause {
 ///
 /// Both `exit_code` and `term_signal` are `None` until `wait` returns. A
 /// `Kill` stays that cause after wait. Exit code 2 is the ping budget. Exit
-/// code 0 after `SIGUSR1` keeps that drain cause. Exit code 0 with no drain is
+/// code [`EXIT_OWNERSHIP_LOST`] is a lost lease or an unconfirmed finish. Exit
+/// code [`EXIT_REDIS_ERROR`] is a Redis failure while counting a delivery or
+/// enqueueing a retry. Exit code 0 after `SIGUSR1` keeps that drain cause. Exit code 0 with no drain is
 /// the max-task recycle. `SIGKILL` that the supervisor did not send is
 /// `sigkill`. Every other status is a crash.
 pub fn classify_child(
@@ -161,6 +177,12 @@ pub fn classify_child(
     }
     if exit_code == Some(2) {
         return (ChildState::Killed, Some(ChildReason::PingBudget));
+    }
+    if exit_code == Some(EXIT_OWNERSHIP_LOST) {
+        return (ChildState::Killed, Some(ChildReason::OwnershipLost));
+    }
+    if exit_code == Some(EXIT_REDIS_ERROR) {
+        return (ChildState::Killed, Some(ChildReason::RedisError));
     }
     if term_signal == Some(SIGKILL) {
         return (ChildState::Killed, Some(ChildReason::Sigkill));
@@ -351,6 +373,14 @@ pub struct SupervisorRecord {
     pub drains: u64,
     pub kills: u64,
     pub restarts: u64,
+    /// Redis host the supervisor is using. Empty on a record from an older process.
+    pub redis_host: String,
+    /// Redis database index the supervisor is using.
+    pub redis_db: u32,
+    /// `on` or `off`. Supervisor traces, never a header or an endpoint secret.
+    pub traces: String,
+    /// `on` or `off`. Supervisor Sentry, never a DSN.
+    pub sentry: String,
     pub children: Vec<ChildRecord>,
 }
 
@@ -425,6 +455,10 @@ pub async fn publish_supervisor(
         ("drains".to_owned(), record.drains.to_string()),
         ("kills".to_owned(), record.kills.to_string()),
         ("restarts".to_owned(), record.restarts.to_string()),
+        ("redis_host".to_owned(), record.redis_host.clone()),
+        ("redis_db".to_owned(), record.redis_db.to_string()),
+        ("traces".to_owned(), record.traces.clone()),
+        ("sentry".to_owned(), record.sentry.clone()),
     ];
     for (pid, child) in &by_pid {
         let json = serde_json::to_string(child).context("failed to encode a child record")?;
@@ -600,6 +634,10 @@ pub struct SupervisorInfo {
     pub drains: u64,
     pub kills: u64,
     pub restarts: u64,
+    pub redis_host: String,
+    pub redis_db: u32,
+    pub traces: String,
+    pub sentry: String,
     pub children: Vec<ProcessInfo>,
 }
 
@@ -1484,6 +1522,13 @@ fn sort_processes(processes: &mut [ProcessInfo]) {
     });
 }
 
+fn on_off(value: Option<&str>) -> String {
+    match value.map(str::trim) {
+        Some("on") => "on".to_owned(),
+        _ => "off".to_owned(),
+    }
+}
+
 fn supervisor_info(sup: &LoadedSup, children: Vec<ProcessInfo>) -> SupervisorInfo {
     let fields = &sup.fields;
     SupervisorInfo {
@@ -1507,6 +1552,12 @@ fn supervisor_info(sup: &LoadedSup, children: Vec<ProcessInfo>) -> SupervisorInf
         drains: map_u64(fields, "drains").unwrap_or(0),
         kills: map_u64(fields, "kills").unwrap_or(0),
         restarts: map_u64(fields, "restarts").unwrap_or(0),
+        redis_host: fields.get("redis_host").cloned().unwrap_or_default(),
+        redis_db: map_u64(fields, "redis_db")
+            .unwrap_or(0)
+            .min(u64::from(u32::MAX)) as u32,
+        traces: on_off(fields.get("traces").map(String::as_str)),
+        sentry: on_off(fields.get("sentry").map(String::as_str)),
         children,
     }
 }

@@ -64,6 +64,7 @@ fn killing_the_supervisor_drains_the_accepted_task() {
         .arg("--max-tasks-per-process")
         .arg("100")
         .env("REDIS_URL", &url)
+        .env("SIMPLE_Q_APP_REDIS_URL", &url)
         .env("PYTHONPATH", &pythonpath)
         .env("PARENT_EXIT_QUEUE", &queue)
         .env("GATE_STARTED", &started)

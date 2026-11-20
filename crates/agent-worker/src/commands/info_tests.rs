@@ -42,14 +42,14 @@ fn one_supervisor_block_lists_children_tasks_and_queue_depth() {
     let taken_at = started_at + 38 * 60;
     let running = task(
         31,
-        serde_json::json!({"project_id": "3f1c0b2a-9c7e-4d11-8a55-6b0e1f2a3c4d"}),
+        serde_json::json!({"report_id": "3f1c0b2a-9c7e-4d11-8a55-6b0e1f2a3c4d"}),
         taken_at,
     );
-    let held = task(23, serde_json::json!({"project_id": "held"}), taken_at);
+    let held = task(23, serde_json::json!({"report_id": "held"}), taken_at);
     let snapshot = Snapshot {
         taken_at,
         queues: vec![QueueStats {
-            name: "quota".to_owned(),
+            name: "reports".to_owned(),
             active: 12,
             scheduled: 1,
             inflight: 4,
@@ -59,12 +59,12 @@ fn one_supervisor_block_lists_children_tasks_and_queue_depth() {
             workers_alive: 3,
         }],
         supervisors: vec![SupervisorInfo {
-            host: "worker-quota-6f8b9c7d4-x2k9p".to_owned(),
+            host: "worker-reports-6f8b9c7d4-x2k9p".to_owned(),
             pid: 1,
             started_at,
             last_seen: taken_at,
             version: "1.1.0".to_owned(),
-            queues: vec!["quota".to_owned()],
+            queues: vec!["reports".to_owned()],
             processes: 3,
             concurrency: 1,
             max_tasks: 500,
@@ -76,6 +76,10 @@ fn one_supervisor_block_lists_children_tasks_and_queue_depth() {
             drains: 2,
             kills: 1,
             restarts: 0,
+            redis_host: "redis".to_owned(),
+            redis_db: 0,
+            traces: "off".to_owned(),
+            sentry: "off".to_owned(),
             children: vec![
                 child(
                     0,
@@ -145,10 +149,12 @@ fn one_supervisor_block_lists_children_tasks_and_queue_depth() {
     // Act
 
     let expected = "\
-supervisor  worker-quota-6f8b9c7d4-x2k9p  pid 1  up 38m  simple-q 1.1.0
-queues      quota  processes 3/3  concurrency 1  max_tasks 500
+supervisor  worker-reports-6f8b9c7d4-x2k9p  pid 1  up 38m  simple-q 1.1.0
+queues      reports  processes 3/3  concurrency 1  max_tasks 500
 memory      cgroup 2.1G / 4G  child soft 1G / hard 1500M
 counters    recycled 14  soft 2  hard 1  restarts 0
+telemetry   traces off  sentry off
+redis       host redis  db 0
 SLOT  PID  STATE     REASON       RSS    TASKS    HB
 0     31   running                812M   412/500  4s
 1     57   draining  max_tasks    640M   500/500  9s
@@ -156,13 +162,22 @@ SLOT  PID  STATE     REASON       RSS    TASKS    HB
 0     23   killed    memory_hard  1.51G  98/500   41s   held 1, waiting for requeue
 1     12   exited    max_tasks    -      500/500  52s
 PID  QUEUE  ACTOR                        KWARGS                  TRY  DLV  RUN
-31   quota  recalc                       project_id=3f1c0b2a…    0/1  1    212s/1800s
-23   quota  recalc                       project_id=held         0/1  1    212s/1800s
+31   reports  render_report                report_id=3f1c0b2a…     0/1  1    212s/1800s
+23   reports  render_report                report_id=held          0/1  1    212s/1800s
 QUEUE  ACTIVE  SCHEDULED  INFLIGHT  DONE  DEAD
-quota  12      1          4         9873  0";
+reports  12      1          4         9873  0";
     // Assert
 
     assert_eq!(text, expected);
+    let encoded = serde_json::to_string(&snapshot).expect("snapshot json");
+    assert!(encoded.contains("\"traces\":\"off\"") || encoded.contains("\"traces\": \"off\""));
+    assert!(encoded.contains("\"sentry\":\"off\"") || encoded.contains("\"sentry\": \"off\""));
+    assert!(!encoded.contains("sentry.example"));
+    assert!(
+        !encoded
+            .to_ascii_lowercase()
+            .contains(&format!("{}=", "authorization"))
+    );
 }
 
 #[test]
@@ -171,14 +186,14 @@ fn queue_fields_accept_json_and_commas() {
     // Act
     // Assert
 
-    assert_eq!(parse_queue_field("quota"), vec!["quota".to_owned()]);
+    assert_eq!(parse_queue_field("reports"), vec!["reports".to_owned()]);
     assert_eq!(
-        parse_queue_field("quota,default"),
-        vec!["quota".to_owned(), "default".to_owned()]
+        parse_queue_field("reports,default"),
+        vec!["reports".to_owned(), "default".to_owned()]
     );
     assert_eq!(
-        parse_queue_field("[\"quota\",\"default\"]"),
-        vec!["quota".to_owned(), "default".to_owned()]
+        parse_queue_field("[\"reports\",\"default\"]"),
+        vec!["reports".to_owned(), "default".to_owned()]
     );
 }
 
@@ -196,7 +211,7 @@ fn child(
     taken_at: u64,
 ) -> ProcessInfo {
     ProcessInfo {
-        host: "worker-quota-6f8b9c7d4-x2k9p".to_owned(),
+        host: "worker-reports-6f8b9c7d4-x2k9p".to_owned(),
         pid,
         ppid: Some(1),
         slot: Some(slot),
@@ -217,10 +232,10 @@ fn child(
 
 fn task(_pid: u32, kwargs: Value, taken_at: u64) -> HeldTask {
     HeldTask {
-        queue: "quota".to_owned(),
+        queue: "reports".to_owned(),
         task_id: "task-1".to_owned(),
         message_id: "m-1".to_owned(),
-        actor_name: "recalc".to_owned(),
+        actor_name: "render_report".to_owned(),
         kwargs,
         retries: 0,
         max_retries: 1,

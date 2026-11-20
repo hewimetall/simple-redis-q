@@ -1,6 +1,6 @@
 # Architecture diagrams (Stage B binding)
 
-These diagrams are the target. The process that ships is [architecture.md](../architecture.md). The parent on main still starts CPython and still reads the Redis URL from `App.client`.
+These diagrams are the target. The process that ships is [architecture.md](../architecture.md). The supervisor does not start CPython. It reads `REDIS_URL` and does not pass that variable to the child. The child reads the Redis URL from `App.client`.
 
 ## Attempt lifecycle (axes)
 

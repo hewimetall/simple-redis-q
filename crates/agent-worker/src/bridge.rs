@@ -129,6 +129,21 @@ pub async fn connect_client() -> Result<(
     Ok((conn, state.config.clone()))
 }
 
+/// Redis URL on the loaded application. The caller logs host and database only.
+pub fn client_redis_url() -> Result<String> {
+    Python::attach(|py| -> Result<_> {
+        let app = APP.get().context("app is not loaded")?;
+        let client = app
+            .bind(py)
+            .getattr("client")
+            .map_err(|error| anyhow::anyhow!("app.client is not a Client: {error}"))?;
+        let client = client
+            .cast::<simple_q_runtime::python::Client>()
+            .map_err(|error| anyhow::anyhow!("app.client is not a Client: {error}"))?;
+        Ok(client.borrow().state().url.clone())
+    })
+}
+
 pub async fn call_hook(name: &str) -> Result<()> {
     let locals = LOCALS.get().context("Python loop is not running")?;
     let name = name.to_owned();

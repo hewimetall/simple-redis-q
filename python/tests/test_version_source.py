@@ -29,8 +29,9 @@ def pep440(version: str) -> str:
 def test_workspace_package_version_is_the_only_source():
     workspace = tomllib.loads((ROOT / "Cargo.toml").read_text())
     source = workspace["workspace"]["package"]["version"]
-    assert source == "1.3.0"
-    assert pep440(source) == "1.3.0"
+    assert workspace["workspace"]["package"]["license"] == "MIT OR Apache-2.0"
+    assert source == "2.0.0-alpha.1"
+    assert pep440(source) == "2.0.0a1"
 
     for rel in ("crates/simple-q-runtime/Cargo.toml", "crates/agent-worker/Cargo.toml"):
         package = tomllib.loads((ROOT / rel).read_text())["package"]
@@ -40,7 +41,7 @@ def test_workspace_package_version_is_the_only_source():
         project = tomllib.loads((ROOT / rel).read_text())["project"]
         assert "version" not in project
         assert "version" in project["dynamic"]
-        assert "license" not in project
+        assert project["license"] == "MIT OR Apache-2.0"
 
     worker = tomllib.loads((ROOT / "crates/agent-worker/pyproject.toml").read_text())
     assert worker["project"]["dependencies"] == [f"simple-q-runtime=={pep440(source)}"]

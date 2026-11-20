@@ -4,7 +4,7 @@
 **Baseline:** `v1.2.0` (`9164eea…`). Main has moved past that tag. The process that runs is [architecture.md](../architecture.md).  
 **Patterns:** Hexagonal / Ports & Adapters ([Cockburn](https://alistair.cockburn.us/hexagonal-architecture)); Tokio discover→notify→wait ([shutdown](https://tokio.rs/tokio/topics/shutdown)); AAA tests.
 
-This plan does **not** rewrite `worker.rs` wholesale. Stage C has not started. `PARENT_NO_CPYTHON_IMPLEMENTED` is `false`.
+This plan does **not** rewrite `worker.rs` wholesale. The fork preview has the parent path from Stage C and the Stage D tests named below. `PARENT_NO_CPYTHON_IMPLEMENTED` is `true` in `simple-q-parent`.
 
 ---
 
@@ -22,12 +22,12 @@ Research example, excluded from the workspace:
                              # Attempt, drain, parent bootstrap, port types
                              # not linked; cargo test --workspace does not build it
 
-Target, not created:
-  crates/runtime/            # orchestration, attempt lifecycle, drain barrier
-  crates/supervisor/         # process adapter + local policy
-  crates/backend/            # Apalis QueuePort; Oxana only if a later spike wins
-  crates/python-bridge/      # PyO3 child-only; BridgeOutcome mapping
-  crates/cli/                # composition root
+Workspace members on this fork:
+  crates/runtime/            # simple-q-orchestration: attempt lifecycle, drain barrier
+  crates/supervisor/         # simple-q-process: process adapter
+  crates/backend/            # simple-q-backend: queue port types
+  crates/python-bridge/      # simple-q-python-bridge: BridgeOutcome mapping
+  crates/cli/                # simple-q-parent: parent bootstrap and telemetry settings
 
 python/                      # public API, unchanged surface
 tests/ contract/ integration/ process/ e2e/   # not split yet

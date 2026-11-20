@@ -1,6 +1,6 @@
 # Quick start
 
-These pages describe simple-q on main. The packages are 1.3.0. Changes after that tag are under Unreleased in the changelog.
+These pages describe simple-q 2.0.0a1.
 
 simple-q runs Python async tasks on Redis. `simple-q-runtime` is the importable package (`import simple_q`). `simple-q-worker` installs the `agent-worker` supervisor. Importing `simple_q` does not open Redis. `Client` does.
 
@@ -17,22 +17,22 @@ from simple_q import App, Client, Config, actor
 
 
 @actor(queue="default", max_retries=2, lock_key="demo:gate")
-async def recalc(project_id: int) -> None:
+async def render_report(report_id: int) -> None:
     ...
 
 
 def create_app() -> App:
     config = Config.from_env()
-    return App(client=Client("redis://redis:6379/0", config=config), actors=[recalc])
+    return App(client=Client("redis://redis:6379/0", config=config), actors=[render_report])
 
 
 async def enqueue() -> None:
     config = Config.from_env()
     client = Client("redis://redis:6379/0", config=config)
     await client.send_with_options(
-        recalc,
-        kwargs={"project_id": 42},
-        unique_key="recalc:42",
+        render_report,
+        kwargs={"report_id": 42},
+        unique_key="render_report:42",
     )
     await client.close()
 ```

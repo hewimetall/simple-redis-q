@@ -3,6 +3,7 @@ name = "simple-q-runtime"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 description = "Shared queue, lock, and message runtime for producers and workers"
 publish = false
 

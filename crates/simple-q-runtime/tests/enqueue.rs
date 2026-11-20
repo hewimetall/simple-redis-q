@@ -21,7 +21,7 @@ fn job(queue: &str, message_id: &str, retries: u32, unique_key: Option<&str>) ->
     Job {
         version: MESSAGE_VERSION,
         message_id: message_id.to_owned(),
-        actor_name: "recalc".to_owned(),
+        actor_name: "render_report".to_owned(),
         queue: queue.to_owned(),
         kwargs: serde_json::json!({"project": "42"}),
         headers: Default::default(),
@@ -81,11 +81,11 @@ fn idempotency_keys_live_beside_the_queue() {
     // Assert
 
     assert_eq!(
-        redis_api::idempotency_redis_key("default", "recalc:42"),
-        "default:idempotency:recalc:42"
+        redis_api::idempotency_redis_key("default", "render_report:42"),
+        "default:idempotency:render_report:42"
     );
-    let first = job("default", "m-1", 0, Some("recalc:proj-42"));
-    let retry = job("default", "m-1", 1, Some("recalc:proj-42"));
+    let first = job("default", "m-1", 0, Some("render_report:proj-42"));
+    let retry = job("default", "m-1", 1, Some("render_report:proj-42"));
     assert!(redis_api::claims_idempotency(&first));
     assert!(!redis_api::claims_idempotency(&retry));
     assert!(!redis_api::claims_idempotency(&job(
@@ -226,7 +226,7 @@ async fn a_unique_key_is_held_until_a_terminal_delete(
     settings: &Config,
 ) {
     let queue = "uniq";
-    let unique = "recalc:proj-42";
+    let unique = "render_report:proj-42";
     del_queue(queue);
     let idem = redis_api::idempotency_redis_key(queue, unique);
 
@@ -294,7 +294,7 @@ async fn a_delayed_unique_task_is_placed_when_it_is_scheduled(
     settings: &Config,
 ) {
     let queue = "uniqd";
-    let unique = "recalc:proj-42";
+    let unique = "render_report:proj-42";
     del_queue(queue);
     let idem = redis_api::idempotency_redis_key(queue, unique);
     let message_id = new_message_id();
@@ -329,7 +329,7 @@ async fn a_delayed_unique_task_is_placed_when_it_is_scheduled(
 async fn a_retry_waiting_past_the_unique_ttl_still_holds_the_key(conn: &mut ConnectionManager) {
     let settings = Config::defaults().with_unique_ttl(2).expect("ttl");
     let queue = "uniqwait";
-    let unique = "recalc:42";
+    let unique = "render_report:42";
     del_queue(queue);
     let idem = redis_api::idempotency_redis_key(queue, unique);
     let message_id = new_message_id();

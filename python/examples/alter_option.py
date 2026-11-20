@@ -1,6 +1,6 @@
 """Pass a custom option on send, and read it from middleware hooks.
 
-``alter`` is an argument of ``recalc``. ``send`` stores it in ``kwargs``.
+``alter`` is an argument of ``render_report``. ``send`` stores it in ``kwargs``.
 The middleware copies it into the ``alter`` header, because headers are
 strings. ``note`` is a header the handler does not take as an argument.
 ``lane`` is the same for every send of this actor, so it lives in
@@ -21,7 +21,7 @@ from simple_q.message import current_message
 
 # @actor accepts only its own parameters. A flag shared by every send of
 # one actor lives next to the declaration.
-ACTOR_LANE = {"recalc": "batch"}
+ACTOR_LANE = {"render_report": "batch"}
 
 
 class AlterMiddleware:
@@ -54,7 +54,7 @@ class AlterMiddleware:
         kwargs = message.get("kwargs") or {}
         self.seen.append(
             {
-                "project_id": kwargs.get("project_id"),
+                "report_id": kwargs.get("report_id"),
                 "kwargs_alter": kwargs.get("alter"),
                 "header_alter": headers.get("alter"),
                 "lane": headers.get("lane"),
@@ -76,14 +76,14 @@ class AlterMiddleware:
 
 
 @actor(queue="default", max_retries=0)
-async def recalc(project_id: str, alter: bool = False) -> str:
+async def render_report(report_id: str, alter: bool = False) -> str:
     message = current_message()
     if message is None or message.kwargs["alter"] is not alter:
         raise RuntimeError("alter argument did not reach the handler")
     expected = "1" if alter else "0"
     if message.headers.get("alter") != expected:
         raise RuntimeError("alter header does not match the argument")
-    if message.headers.get("lane") != ACTOR_LANE["recalc"]:
+    if message.headers.get("lane") != ACTOR_LANE["render_report"]:
         raise RuntimeError("lane header was not copied from the actor table")
     if alter:
         return "altered"
@@ -92,7 +92,7 @@ async def recalc(project_id: str, alter: bool = False) -> str:
 
 def create_app(client, middleware: AlterMiddleware | None = None) -> App:
     middleware = middleware or AlterMiddleware()
-    app = App(client=client, actors=[recalc])
+    app = App(client=client, actors=[render_report])
     middleware.install(client, app)
     return app
 
@@ -101,10 +101,10 @@ async def run() -> AlterMiddleware:
     client = MemoryClient()
     middleware = AlterMiddleware()
     app = create_app(client, middleware)
-    await client.send(recalc, project_id="42", alter=True)
+    await client.send(render_report, report_id="42", alter=True)
     await client.send_with_options(
-        recalc,
-        kwargs={"project_id": "7", "alter": False},
+        render_report,
+        kwargs={"report_id": "7", "alter": False},
         headers={"note": "from-caller"},
     )
     await client.drain(app)
@@ -113,7 +113,7 @@ async def run() -> AlterMiddleware:
 
 EXPECTED = [
     {
-        "project_id": "42",
+        "report_id": "42",
         "kwargs_alter": True,
         "header_alter": "1",
         "lane": "batch",
@@ -122,7 +122,7 @@ EXPECTED = [
         "result": "altered",
     },
     {
-        "project_id": "7",
+        "report_id": "7",
         "kwargs_alter": False,
         "header_alter": "0",
         "lane": "batch",

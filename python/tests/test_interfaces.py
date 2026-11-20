@@ -97,6 +97,10 @@ def test_admin_pages_keep_tuples_and_nested_lists() -> None:
         }
     )
     assert snapshot.supervisors[0].queues == ["default"]
+    assert snapshot.supervisors[0].redis_host == ""
+    assert snapshot.supervisors[0].redis_db == 0
+    assert snapshot.supervisors[0].traces == "off"
+    assert snapshot.supervisors[0].sentry == "off"
     assert isinstance(snapshot.supervisors[0].children[0].workers, list)
     assert snapshot.supervisors[0].children[0].tasks == []
 

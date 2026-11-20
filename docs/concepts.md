@@ -1,6 +1,6 @@
 # Concepts
 
-These pages describe simple-q on main. The packages are 1.3.0. Changes after that tag are under Unreleased in the changelog.
+These pages describe simple-q 2.0.0a1.
 
 A send stores one version-1 message. `message_id` stays the same across retries. `retries` counts handler failures. `deliveries` counts how many times a worker has started that attempt. Those two numbers are independent.
 
@@ -22,7 +22,7 @@ A child wakes every `SIMPLE_Q_LIFECYCLE_INTERVAL_MS` milliseconds, default 200, 
 
 The child ignores `SIGTERM`. The supervisor owns process recycling.
 
-The supervisor installs `SIGTERM` and `SIGINT` before it imports the application. As pid 1 the kernel drops `SIGTERM` until a handler exists, and that import is the slow part of startup. A signal during the import is still waiting when the loop starts, and no child is forked. On the way out the supervisor deletes `simple_q:supervisor:{host}.{pid}` and removes `{host}.{pid}` from `simple_q:supervisors`. The hash TTL remains the backstop when the process is killed.
+The supervisor does not import the application. It reads `REDIS_URL` and `SIMPLE_Q_*`, removes `REDIS_URL` from the child environment, then installs `SIGTERM` and `SIGINT` before it starts children. As pid 1 the kernel drops `SIGTERM` until a handler exists. On the way out the supervisor deletes `simple_q:supervisor:{host}.{pid}` and removes `{host}.{pid}` from `simple_q:supervisors`. The hash TTL remains the backstop when the process is killed.
 
 ## Poison
 
@@ -38,7 +38,7 @@ Orphan redelivery and a process crash share this counter. The requeue script doe
 
 `--max-tasks-per-process` defaults to 500. Each finished delivery counts, including a poison delivery that never entered the handler. When the count reaches the limit, the child stops taking new work and drains the handlers already running. It then exits. The supervisor starts a replacement child in that slot.
 
-Exit 0 is a normal recycle. Exit 1 and exit 2 restart the child. A child that disappears without a status, including `SIGKILL`, restarts. Exit 3 is configuration: a bad memory limit or a bad tracing setup. The supervisor stops instead of looping on it.
+Exit 0 is a normal recycle. Exit 1, exit 2, exit 4, and exit 5 restart the child. Exit 2 is only the ping-budget watchdog: the Python loop stayed silent for the whole budget. A lost lease and a finish that Redis did not confirm exit 4. The supervisor records that child as `killed` / `ownership_lost` and restarts it. The inflight message stays for another worker. A Redis error while counting the delivery, or while enqueueing a retry, exits 5. The supervisor records `killed` / `redis_error` and restarts the child. The attempt stays inflight. A child that disappears without a status, including `SIGKILL`, restarts. Exit 3 is configuration: a bad memory limit, a bad tracing setup, or a bad supervisor setting. The supervisor stops instead of looping on it.
 
 Restarting a child does not change poison. A delivery that already passed `max_deliveries` is buried on the next start, before the handler.
 

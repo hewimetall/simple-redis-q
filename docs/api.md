@@ -1,6 +1,6 @@
 # API
 
-These pages describe simple-q on main. The packages are 1.3.0. Changes after that tag are under Unreleased in the changelog. The signatures below are the supported surface. `Config.from_env()` reads `SIMPLE_Q_*` only. An invalid value raises. There is no silent default.
+These pages describe simple-q 2.0.0a1. The signatures below are the supported surface. `Config.from_env()` reads `SIMPLE_Q_*` only. An invalid value raises. There is no silent default.
 
 ## `@actor`
 
@@ -96,7 +96,7 @@ class Client:
         ``delay`` is milliseconds. A missing or zero delay runs as soon
         as a worker can take the message. ``unique_key`` is claimed only
         on the first send (``retries == 0``). The example is
-        ``recalc:42``. An empty string raises ``ValueError``. A second
+        ``render_report:42``. An empty string raises ``ValueError``. A second
         send of a key that is still held returns ``None`` and does not
         enqueue. A retry of the same message does not claim the key
         again. ``headers`` is ``dict[str, str]`` and is passed through
@@ -254,8 +254,8 @@ The Redis URL is an argument of `Client`. `import simple_q` does not read `REDIS
 from simple_q import QueueAdmin
 
 admin = QueueAdmin(client)
-snap = await admin.snapshot(["default", "quota"])
-snap = await admin.snapshot(["quota"], host="worker-quota-6f8b9c7d4-x2k9p")
+snap = await admin.snapshot(["default", "reports"])
+snap = await admin.snapshot(["reports"], host="worker-reports-6f8b9c7d4-x2k9p")
 ```
 
 `snapshot` is async, runs on the caller's loop, and uses that `Client`'s Redis connection. It reads counters, heartbeats, and inflight tasks. It does not walk the waiting, done, or dead lists. `host` limits supervisors, their children, and orphans. Queue counters stay limited to the queues in the argument. A process still lists held tasks for every queue stored on its supervisor record, including a queue the caller did not pass. Those extra queues are not added to `Snapshot.queues`.
@@ -279,7 +279,7 @@ The return value is a frozen `Snapshot`:
 - `recycled` counts every exit 0, including an exit 0 after a drain.
 - `drains` counts `SIGUSR1` for `memory_soft` and `memory_ratio` only. Shutdown does not increment it.
 - `kills` counts only a `SIGKILL` this supervisor sent: the per-child hard limit and the hard cgroup ratio.
-- `restarts` counts that `SIGKILL` immediately. It also counts a later killed `wait` that was not already counted: the ping budget (exit 2), an external `SIGKILL`, and a crash.
+- `restarts` counts that `SIGKILL` immediately. It also counts a later killed `wait` that was not already counted: the ping budget (exit 2, `ping_budget`), a lost lease or unconfirmed finish (exit 4, `ownership_lost`), a Redis error while counting a delivery or enqueueing a retry (exit 5, `redis_error`), an external `SIGKILL`, and a crash.
 - `alive` is heartbeat freshness. It does not follow `ended_at`.
 - `locked_at` is the absolute lease time Apalis writes on `{queue}:meta:{task_id}` and overwrites on every heartbeat renew. `started_at` is Redis `TIME` seconds when this delivery was taken. Renew does not change it. The next delivery overwrites it.
 

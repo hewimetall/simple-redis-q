@@ -56,6 +56,8 @@ pub async fn run(
     memory_soft_ratio: f64,
     memory_hard_ratio: f64,
     redis_url: String,
+    redis_host: String,
+    redis_db: u32,
     settings: Config,
     signals: &mut StopSignals,
 ) -> Result<()> {
@@ -77,8 +79,12 @@ pub async fn run(
     for _ in 0..4 {
         tokio::task::yield_now().await;
     }
+    let queue_label = queues.join(",");
+    let telemetry = crate::supervisor_telemetry::current();
+    telemetry.supervisor_started(std::process::id(), &queue_label);
     if stop_requested(signals).await {
         tracing::info!("stop signal received before workers started");
+        finish_supervisor(&telemetry, std::process::id(), &queue_label).await;
         return Ok(());
     }
 
@@ -111,6 +117,8 @@ pub async fn run(
         max_tasks,
         limits,
         roster.clone(),
+        redis_host,
+        redis_db,
     );
 
     let digits = crate::slot_busy::open(processes)?;
@@ -158,15 +166,18 @@ pub async fn run(
                 &memory_metrics,
                 &roster,
                 digits.as_deref(),
+                &queue_label,
             );
             }
             _ = signals.terminate.recv() => {
                 tracing::info!("SIGTERM received; draining child processes");
+                telemetry.drain(supervisor_pid, &queue_label, "SIGTERM");
                 let _ = shutdown_tx.send(true);
                 break;
             }
             _ = signals.interrupt.recv() => {
                 tracing::info!("SIGINT received; draining child processes");
+                telemetry.drain(supervisor_pid, &queue_label, "SIGINT");
                 let _ = shutdown_tx.send(true);
                 break;
             }
@@ -182,6 +193,7 @@ pub async fn run(
                             supervisor_pid,
                         )
                         .await;
+                        finish_supervisor(&telemetry, supervisor_pid, &queue_label).await;
                         return Ok(());
                     }
                     Some(Ok(Ok(()))) => {}
@@ -192,6 +204,7 @@ pub async fn run(
                         break;
                     }
                     Some(Err(error)) => {
+                        telemetry.supervisor_panic(&queue_label);
                         let _ = shutdown_tx.send(true);
                         fatal = Some(anyhow::anyhow!("supervisor slot panicked: {error}"));
                         break;
@@ -213,10 +226,20 @@ pub async fn run(
         supervisor_pid,
     )
     .await;
+    finish_supervisor(&telemetry, supervisor_pid, &queue_label).await;
     match fatal {
         Some(error) => Err(error),
         None => Ok(()),
     }
+}
+
+async fn finish_supervisor(
+    telemetry: &crate::supervisor_telemetry::SupervisorTelemetry,
+    pid: u32,
+    queue: &str,
+) {
+    telemetry.supervisor_stopped(pid, queue);
+    telemetry.shutdown().await;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -236,6 +259,7 @@ async fn supervise_slot(
     parent_pidfd: Option<std::sync::Arc<crate::parent_pidfd::SupervisorPidfd>>,
 ) -> Result<()> {
     let mut backoff = Duration::from_secs(1);
+    let mut budget_reported = false;
 
     loop {
         if *shutdown.borrow() {
@@ -246,7 +270,7 @@ async fn supervise_slot(
         if let Some(digits) = &digits {
             digits.reset(index);
         }
-        let mut child = spawn_child(
+        let mut child = match spawn_child(
             &app,
             factory,
             &queues,
@@ -255,10 +279,19 @@ async fn supervise_slot(
             index,
             &prom_dir,
             digits.as_ref().map(|digits| digits.raw_fd()),
-            parent_pidfd.as_deref(),
-        )?;
+            parent_pidfd.clone(),
+        )
+        .await
+        {
+            Ok(child) => child,
+            Err(error) => {
+                crate::supervisor_telemetry::current().child_start_failed(index, &queues.join(","));
+                return Err(error);
+            }
+        };
         let pid = child.id().context("child process has no pid")?;
         tracing::info!(index, pid, "worker process started");
+        crate::supervisor_telemetry::current().child_started(index, pid, &queues.join(","));
         roster.start(index, pid);
 
         let status = {
@@ -272,6 +305,14 @@ async fn supervise_slot(
                     if let Ok(status) = child.wait().await {
                         let (code, term) = exit_parts(&status);
                         roster.finish(pid, code, term);
+                        crate::supervisor_telemetry::current().child_exited(
+                            index,
+                            pid,
+                            &queues.join(","),
+                            "drain",
+                            code,
+                            term,
+                        );
                     }
                     return Ok(());
                 }
@@ -286,6 +327,19 @@ async fn supervise_slot(
         if *shutdown.borrow() {
             return Ok(());
         }
+        let reason = exit_reason(
+            roster.sent(pid),
+            classify_child_exit(code.success(), code.code()),
+            exit_code,
+        );
+        crate::supervisor_telemetry::current().child_exited(
+            index,
+            pid,
+            &queues.join(","),
+            reason,
+            exit_code,
+            term_signal,
+        );
         match classify_child_exit(code.success(), code.code()) {
             ChildExit::Recycle => {
                 tracing::info!(index, pid, "worker process recycled");
@@ -301,14 +355,29 @@ async fn supervise_slot(
                 if *shutdown.borrow() {
                     return Ok(());
                 }
+                let pause = backoff;
                 tokio::select! {
                     changed = shutdown.changed() => {
                         changed.context("shutdown watch closed")?;
                         return Ok(());
                     }
-                    _ = tokio::time::sleep(backoff) => {}
+                    _ = tokio::time::sleep(pause) => {}
                 }
-                backoff = (backoff * 2).min(Duration::from_secs(30));
+                backoff = (pause * 2).min(Duration::from_secs(30));
+                if backoff == Duration::from_secs(30) && !budget_reported {
+                    budget_reported = true;
+                    crate::supervisor_telemetry::current().restart_budget(
+                        index,
+                        &queues.join(","),
+                        exit_code,
+                        term_signal,
+                    );
+                }
+                crate::supervisor_telemetry::current().child_restart(
+                    index,
+                    &queues.join(","),
+                    pause,
+                );
             }
         }
     }
@@ -325,6 +394,25 @@ pub enum ChildExit {
     Fatal,
 }
 
+fn exit_reason(signal: SentSignal, class: ChildExit, code: Option<i32>) -> &'static str {
+    if code == Some(simple_q_runtime::admin::EXIT_OWNERSHIP_LOST) {
+        return "ownership_lost";
+    }
+    if code == Some(simple_q_runtime::admin::EXIT_REDIS_ERROR) {
+        return "redis_error";
+    }
+    match signal {
+        SentSignal::Kill(_) => "hard kill",
+        SentSignal::Usr1(DrainCause::Shutdown) => "drain",
+        SentSignal::Usr1(DrainCause::MemorySoft) => "memory_soft",
+        SentSignal::Usr1(DrainCause::MemoryRatio) => "memory_ratio",
+        SentSignal::None => match class {
+            ChildExit::Recycle => "recycle",
+            ChildExit::Restart | ChildExit::Fatal => "crash",
+        },
+    }
+}
+
 pub fn classify_child_exit(success: bool, code: Option<i32>) -> ChildExit {
     if success {
         return ChildExit::Recycle;
@@ -336,7 +424,7 @@ pub fn classify_child_exit(success: bool, code: Option<i32>) -> ChildExit {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn spawn_child(
+async fn spawn_child(
     app: &str,
     factory: bool,
     queues: &[String],
@@ -345,44 +433,55 @@ fn spawn_child(
     slot: u32,
     prom_dir: &std::path::Path,
     slot_fd: Option<i32>,
-    parent_pidfd: Option<&crate::parent_pidfd::SupervisorPidfd>,
-) -> Result<Child> {
+    parent_pidfd: Option<std::sync::Arc<crate::parent_pidfd::SupervisorPidfd>>,
+) -> Result<crate::process_port::PortChild> {
     let executable = std::env::current_exe().context("failed to resolve the worker executable")?;
-    let mut command = Command::new(executable);
-    command.arg("worker").arg("--child").arg("--app").arg(app);
+    let mut args = vec![
+        "worker".to_owned(),
+        "--child".to_owned(),
+        "--app".to_owned(),
+        app.to_owned(),
+    ];
     if factory {
-        command.arg("--factory");
+        args.push("--factory".to_owned());
     }
-    command
-        .arg("--queues")
-        .arg(queues.join(","))
-        .arg("--concurrency")
-        .arg(concurrency.to_string())
-        .arg("--max-tasks-per-process")
-        .arg(max_tasks.to_string())
-        .env("AGENT_WORKER_CHILD", "1")
-        .env("SIMPLE_Q_SLOT", slot.to_string())
-        .env("PROMETHEUS_MULTIPROC_DIR", prom_dir)
-        .env("prometheus_multiproc_dir", prom_dir)
-        .env("DRAMATIQ_PROM_DB", prom_dir)
-        .env("dramatiq_prom_db", prom_dir)
-        .kill_on_drop(true);
+    args.push("--queues".to_owned());
+    args.push(queues.join(","));
+    args.push("--concurrency".to_owned());
+    args.push(concurrency.to_string());
+    args.push("--max-tasks-per-process".to_owned());
+    args.push(max_tasks.to_string());
+    let mut env = vec![
+        ("AGENT_WORKER_CHILD".to_owned(), "1".to_owned()),
+        ("SIMPLE_Q_SLOT".to_owned(), slot.to_string()),
+        (
+            "PROMETHEUS_MULTIPROC_DIR".to_owned(),
+            prom_dir.display().to_string(),
+        ),
+        (
+            "prometheus_multiproc_dir".to_owned(),
+            prom_dir.display().to_string(),
+        ),
+        (
+            "DRAMATIQ_PROM_DB".to_owned(),
+            prom_dir.display().to_string(),
+        ),
+        (
+            "dramatiq_prom_db".to_owned(),
+            prom_dir.display().to_string(),
+        ),
+    ];
     if let Some(fd) = slot_fd {
-        command.env("SIMPLE_Q_SLOT_FD", fd.to_string());
-        // SAFETY: the closure runs in the forked child, before exec. It only
-        // calls fcntl(F_GETFD) and fcntl(F_SETFD). The parent descriptor stays
-        // cloexec, so a spawn on another thread does not inherit it.
-        unsafe {
-            command.pre_exec(move || crate::slot_busy::clear_cloexec(fd));
-        }
+        env.push(("SIMPLE_Q_SLOT_FD".to_owned(), fd.to_string()));
     }
-    #[cfg(target_os = "linux")]
-    if let Some(parent_pidfd) = parent_pidfd {
-        crate::parent_pidfd::inherit(&mut command, parent_pidfd);
-    }
-    #[cfg(not(target_os = "linux"))]
-    let _ = parent_pidfd;
-    command.spawn().context("failed to spawn a worker process")
+    crate::process_port::spawn_worker(crate::process_port::WorkerSpawn {
+        program: executable,
+        args,
+        env,
+        slot_fd,
+        parent_pidfd,
+    })
+    .await
 }
 
 fn prom_dir() -> std::path::PathBuf {
@@ -392,6 +491,10 @@ fn prom_dir() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir().join("dramatiq-prometheus"))
 }
 
+/// One long-lived metrics process, not a worker slot.
+///
+/// It has no READY handshake, no drain signal, and no restart budget, so it
+/// stays on `tokio::process`. Worker slots go through `process_port`.
 fn spawn_metrics(prom_dir: &std::path::Path) -> Result<Child> {
     let executable = std::env::current_exe().context("failed to resolve the worker executable")?;
     Command::new(executable)
@@ -400,6 +503,7 @@ fn spawn_metrics(prom_dir: &std::path::Path) -> Result<Child> {
         .env("prometheus_multiproc_dir", prom_dir)
         .env("DRAMATIQ_PROM_DB", prom_dir)
         .env("dramatiq_prom_db", prom_dir)
+        .env_remove("REDIS_URL")
         .kill_on_drop(true)
         .spawn()
         .context("failed to spawn the metrics process")
@@ -945,6 +1049,7 @@ fn apply_memory_pressure(
     metrics: &ChildMemoryMetrics,
     roster: &Roster,
     digits: Option<&crate::slot_busy::SlotDigits>,
+    queue: &str,
 ) {
     let slots: Vec<(u32, u32)> = live
         .lock()
@@ -1005,6 +1110,16 @@ fn apply_memory_pressure(
                 if signal_child(pid, libc::SIGKILL) {
                     metrics.record_kill();
                     roster.signal(pid, SentSignal::Kill(cause));
+                    let slot = slots
+                        .iter()
+                        .find(|(_, id)| *id == pid)
+                        .map(|(slot, _)| *slot)
+                        .unwrap_or(0);
+                    let reason = match cause {
+                        KillCause::MemoryHard => "hard kill",
+                        KillCause::MemoryRatio => "memory_ratio",
+                    };
+                    crate::supervisor_telemetry::current().hard_kill(slot, pid, queue, reason);
                 }
             }
             PlannedSignal::Drain(pid, cause) => {
@@ -1078,6 +1193,16 @@ impl Roster {
             .children
             .entry(pid)
             .or_insert_with(|| ChildTrack::start(slot));
+    }
+
+    fn sent(&self, pid: u32) -> SentSignal {
+        self.inner
+            .lock()
+            .expect("roster")
+            .children
+            .get(&pid)
+            .map(|child| child.signal)
+            .unwrap_or(SentSignal::None)
     }
 
     fn signal(&self, pid: u32, signal: SentSignal) {
@@ -1202,9 +1327,15 @@ fn spawn_supervisor_heartbeat(
     max_tasks: u64,
     limits: ChildMemoryLimits,
     roster: Roster,
+    redis_host: String,
+    redis_db: u32,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let period = Duration::from_secs(settings.heartbeat_secs.max(1));
+        let window = Duration::from_secs(settings.orphan_window_secs().max(1));
+        let mut failing_since: Option<tokio::time::Instant> = None;
+        let mut alerted = false;
+        let queue_label = queues.join(",");
         let mut tick = tokio::time::interval(period);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut conn: Option<ConnectionManager> = None;
@@ -1220,10 +1351,16 @@ fn spawn_supervisor_heartbeat(
                 return;
             }
             if conn.is_none() {
-                match redis_api::connect(&redis_url).await {
-                    Ok(connected) => conn = Some(connected),
-                    Err(error) => {
-                        tracing::warn!(%error, "supervisor redis connect failed");
+                match connect_for_heartbeat(&redis_url, period).await {
+                    HeartbeatConnect::Ready(connected) => conn = Some(connected),
+                    HeartbeatConnect::Failed(error) => {
+                        tracing::warn!(error = %error, "supervisor redis connect failed");
+                        note_publish_failure(
+                            &mut failing_since,
+                            &mut alerted,
+                            window,
+                            &queue_label,
+                        );
                         continue;
                     }
                 }
@@ -1234,8 +1371,9 @@ fn spawn_supervisor_heartbeat(
             let now = match redis_seconds(connection).await {
                 Ok(now) => now,
                 Err(error) => {
-                    tracing::warn!(%error, "supervisor heartbeat failed");
+                    tracing::warn!(error = %redact_redis(&error.to_string()), "supervisor heartbeat failed");
                     conn = None;
+                    note_publish_failure(&mut failing_since, &mut alerted, window, &queue_label);
                     continue;
                 }
             };
@@ -1264,14 +1402,56 @@ fn spawn_supervisor_heartbeat(
                 drains: counters.drains,
                 kills: counters.kills,
                 restarts: counters.restarts,
+                redis_host: redis_host.clone(),
+                redis_db,
+                traces: crate::supervisor_telemetry::current()
+                    .traces_label()
+                    .to_owned(),
+                sentry: crate::supervisor_telemetry::current()
+                    .sentry_label()
+                    .to_owned(),
                 children,
             };
             if let Err(error) = publish_supervisor(connection, &settings, &record).await {
-                tracing::warn!(%error, "supervisor heartbeat failed");
+                tracing::warn!(error = %redact_redis(&error.to_string()), "supervisor heartbeat failed");
                 conn = None;
+                note_publish_failure(&mut failing_since, &mut alerted, window, &queue_label);
+            } else {
+                failing_since = None;
+                alerted = false;
             }
         }
     })
+}
+
+enum HeartbeatConnect {
+    Ready(ConnectionManager),
+    Failed(String),
+}
+
+async fn connect_for_heartbeat(url: &str, budget: Duration) -> HeartbeatConnect {
+    match tokio::time::timeout(budget, redis_api::connect(url)).await {
+        Ok(Ok(connection)) => HeartbeatConnect::Ready(connection),
+        Ok(Err(error)) => HeartbeatConnect::Failed(redact_redis(&error.to_string())),
+        Err(_) => HeartbeatConnect::Failed("timed out".to_owned()),
+    }
+}
+
+fn note_publish_failure(
+    since: &mut Option<tokio::time::Instant>,
+    alerted: &mut bool,
+    window: Duration,
+    queue: &str,
+) {
+    let start = since.get_or_insert_with(tokio::time::Instant::now);
+    if !*alerted && start.elapsed() >= window {
+        *alerted = true;
+        crate::supervisor_telemetry::current().redis_publish_late(queue);
+    }
+}
+
+fn redact_redis(text: &str) -> String {
+    crate::supervisor_telemetry::redact(text)
 }
 
 async fn redis_seconds(conn: &mut ConnectionManager) -> Result<u64> {

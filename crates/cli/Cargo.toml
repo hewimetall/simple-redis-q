@@ -1,0 +1,10 @@
+[package]
+name = "simple-q-parent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Parent composition: env and CLI config, no CPython."
+
+[dependencies]

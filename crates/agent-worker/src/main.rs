@@ -9,9 +9,11 @@ mod child;
 mod cli;
 mod commands;
 mod parent_pidfd;
+mod process_port;
 mod runtime;
 mod slot_busy;
 mod supervisor;
+mod supervisor_telemetry;
 mod telemetry;
 mod worker;
 
@@ -114,16 +116,67 @@ fn main() -> anyhow::Result<()> {
             max_tasks_per_process,
             child_memory_soft,
             child_memory_hard,
+            otel_endpoint,
+            otel_protocol,
+            otel_service_name,
+            otel_sampler,
+            sentry_environment,
+            sentry_release,
+            sentry_sample_rate,
         } => {
-            init_log();
-            // As pid 1 the kernel drops SIGTERM until a handler exists. The
-            // application import is the slow part of startup, so the handler
-            // is installed first. Tokio keeps the signal until the loop polls.
+            // The parent does not call runtime::initialize or bridge::read_client.
+            // Telemetry is installed before the runtime so the header environment
+            // can be restored before any other thread exists. Children inherit
+            // that restored environment.
+            let telemetry_config = match simple_q_parent::resolve_telemetry(
+                &simple_q_parent::TelemetryFlags {
+                    otel_endpoint,
+                    otel_protocol,
+                    otel_service_name,
+                    otel_sampler,
+                    sentry_environment,
+                    sentry_release,
+                    sentry_sample_rate,
+                },
+                |key| std::env::var(key).ok(),
+                env!("CARGO_PKG_VERSION"),
+            ) {
+                Ok(config) => config,
+                Err(error) => {
+                    eprintln!("supervisor telemetry configuration is invalid: {error}");
+                    std::process::exit(3);
+                }
+            };
+            let url = match simple_q_parent::ParentBootstrap::from_env_and_cli(
+                std::env::var("REDIS_URL").ok(),
+            ) {
+                Ok(boot) => boot.redis_url,
+                Err(_) => {
+                    eprintln!("REDIS_URL is required for the supervisor");
+                    std::process::exit(3);
+                }
+            };
+            let endpoint = match simple_q_parent::parse_redis_endpoint(&url) {
+                Ok(endpoint) => endpoint,
+                Err(error) => {
+                    eprintln!("REDIS_URL is invalid: {error}");
+                    std::process::exit(3);
+                }
+            };
+            let settings = match Config::from_env() {
+                Ok(settings) => settings,
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(3);
+                }
+            };
+            if let Err(error) = supervisor_telemetry::install(&telemetry_config) {
+                eprintln!("supervisor telemetry configuration is invalid: {error}");
+                std::process::exit(3);
+            }
             let runtime = tokio::runtime::Runtime::new()?;
             let mut signals = runtime.block_on(supervisor::arm_stop_signals())?;
-            runtime::initialize();
             let factory = cli::factory_enabled(factory);
-            let (url, settings) = bridge::read_client(&app, factory)?;
             let limits = match supervisor::load_child_memory_limits(
                 settings.child_memory_soft,
                 settings.child_memory_hard,
@@ -132,8 +185,6 @@ fn main() -> anyhow::Result<()> {
             ) {
                 Ok(limits) => limits,
                 Err(error) => {
-                    // A bad byte limit is configuration, same exit as a bad
-                    // tracing config. The log line is the reason.
                     tracing::error!("{error}");
                     std::process::exit(3);
                 }
@@ -149,6 +200,8 @@ fn main() -> anyhow::Result<()> {
                 settings.memory_soft_ratio,
                 settings.memory_hard_ratio,
                 url,
+                endpoint.host,
+                endpoint.db,
                 settings,
                 &mut signals,
             ))
