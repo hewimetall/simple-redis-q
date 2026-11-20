@@ -6,7 +6,7 @@
 
 The supervisor reads `REDIS_URL` and `SIMPLE_Q_*` from its own environment. A flag still wins over the matching variable, and an omitted variable keeps its default. The parent process does not initialize CPython and does not load the application. The child still takes Redis and the other execution settings from `App.client`.
 
-Supervisor traces and Sentry are off unless configured. Their flags and `SIMPLE_Q_SUPERVISOR_*` variables are separate from the child's Python exporter. With no DSN and no OTLP endpoint, the supervisor does not open a connection and does not start an export thread.
+Supervisor traces and Sentry are off unless configured. Their flags and `SIMPLE_Q_SUPERVISOR_*` variables are separate from the child's Python exporter. With no DSN and no OTLP endpoint, the supervisor does not open a connection and does not start an export thread. `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, when set, replaces `OTEL_EXPORTER_OTLP_HEADERS` for those traces.
 
 Migration: set `REDIS_URL` and the `SIMPLE_Q_*` values the supervisor should use in that process. The child does not inherit `REDIS_URL`. A factory that needs a URL reads `SIMPLE_Q_APP_REDIS_URL`, or it builds `Client` in the application. Supervisor telemetry stays off until its own variables or flags are set. The published wheels export `http/protobuf`. `grpc` needs the `otlp-grpc` feature and otherwise exits 3.
 

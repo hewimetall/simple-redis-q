@@ -200,14 +200,25 @@ pub fn resolve_telemetry(
             getenv("OTEL_EXPORTER_OTLP_PROTOCOL"),
         ),
     )?;
-    let headers = parse_headers(
-        "OTEL_EXPORTER_OTLP_HEADERS",
-        pick(
-            &None,
-            getenv("SIMPLE_Q_SUPERVISOR_OTEL_EXPORTER_OTLP_HEADERS"),
-            getenv("OTEL_EXPORTER_OTLP_HEADERS"),
-        ),
-    )?;
+    // Trace headers replace the general set, the same way the traces endpoint
+    // replaces the base URL. An omitted traces variable keeps the general headers.
+    let traces_headers = pick(
+        &None,
+        getenv("SIMPLE_Q_SUPERVISOR_OTEL_EXPORTER_OTLP_TRACES_HEADERS"),
+        getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS"),
+    );
+    let headers = if traces_headers.is_some() {
+        parse_headers("OTEL_EXPORTER_OTLP_TRACES_HEADERS", traces_headers)?
+    } else {
+        parse_headers(
+            "OTEL_EXPORTER_OTLP_HEADERS",
+            pick(
+                &None,
+                getenv("SIMPLE_Q_SUPERVISOR_OTEL_EXPORTER_OTLP_HEADERS"),
+                getenv("OTEL_EXPORTER_OTLP_HEADERS"),
+            ),
+        )?
+    };
     let timeout = parse_timeout(
         "OTEL_EXPORTER_OTLP_TIMEOUT",
         pick(
@@ -739,6 +750,64 @@ mod tests {
         )
         .unwrap();
         assert_eq!(headers.header_string(), "a=b,c=d");
+        let traces = resolve_telemetry(
+            &flags,
+            env(&[
+                ("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "X-Trace=1"),
+                ("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=general-token"),
+            ]),
+            "2.0.0-alpha.1",
+        )
+        .unwrap();
+        assert_eq!(traces.header_string(), "X-Trace=1");
+        let supervisor_traces = resolve_telemetry(
+            &flags,
+            env(&[
+                (
+                    "SIMPLE_Q_SUPERVISOR_OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+                    "Authorization=supervisor-token",
+                ),
+                (
+                    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+                    "Authorization=standard-token",
+                ),
+                ("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=general-token"),
+            ]),
+            "2.0.0-alpha.1",
+        )
+        .unwrap();
+        assert_eq!(
+            supervisor_traces
+                .headers
+                .get("Authorization")
+                .map(String::as_str),
+            Some("supervisor-token")
+        );
+        let only_traces = resolve_telemetry(
+            &flags,
+            env(&[(
+                "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+                "Authorization=trace-token",
+            )]),
+            "2.0.0-alpha.1",
+        )
+        .unwrap();
+        assert_eq!(
+            only_traces.headers.get("Authorization").map(String::as_str),
+            Some("trace-token")
+        );
+        let invalid_traces = resolve_telemetry(
+            &flags,
+            env(&[("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "orphan-secret")]),
+            "2.0.0-alpha.1",
+        )
+        .unwrap_err();
+        assert!(
+            invalid_traces
+                .to_string()
+                .contains("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
+        );
+        assert!(!invalid_traces.to_string().contains("orphan-secret"));
         assert!(
             resolve_telemetry(
                 &flags,

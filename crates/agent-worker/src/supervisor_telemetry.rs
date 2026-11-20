@@ -546,8 +546,12 @@ fn find_secret(text: &str) -> Option<usize> {
     found
 }
 
-/// Set the header variables for the exporter build, then put the process
-/// environment back. Children inherit the restored values.
+/// Publish the resolved header string for the exporter build, then put the
+/// process environment back. Children inherit the restored values.
+///
+/// The string already prefers trace headers over the general headers. The
+/// trace variable is cleared for the build so the SDK does not prefer a raw
+/// value over that string.
 ///
 /// # Safety
 ///

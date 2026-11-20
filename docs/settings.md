@@ -71,7 +71,7 @@ Any HTTP path on that address returns the scrape. A missing `simple_q_child_memo
 
 Supervisor traces and Sentry are off unless configured. No endpoint and no DSN means no export thread and no network call. A bad value exits 3 before a child starts. The child does not read this table. It keeps the application's `Tracing` exporter. It inherits the process environment except `REDIS_URL`, which the supervisor removes before the child starts.
 
-Priority for a non-secret is the CLI flag, then `SIMPLE_Q_SUPERVISOR_<NAME>`, then the standard variable, then the default. `SENTRY_DSN` and `OTEL_EXPORTER_OTLP_HEADERS` are environment only. Their arguments would be visible in the process list.
+Priority for a non-secret is the CLI flag, then `SIMPLE_Q_SUPERVISOR_<NAME>`, then the standard variable, then the default. `SENTRY_DSN`, `OTEL_EXPORTER_OTLP_HEADERS`, and `OTEL_EXPORTER_OTLP_TRACES_HEADERS` are environment only. Their arguments would be visible in the process list.
 
 | Variable | CLI flag | Default | Meaning |
 | --- | --- | --- | --- |
@@ -82,6 +82,7 @@ Priority for a non-secret is the CLI flag, then `SIMPLE_Q_SUPERVISOR_<NAME>`, th
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | | unset | Traces URL. When set, it replaces the base URL. |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `--otel-protocol` | `http/protobuf` | `http/protobuf`. `grpc` needs the `otlp-grpc` cargo feature. The published wheels do not include it, and selecting `grpc` exits 3. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | | unset | Comma-separated `key=value`. Not a flag. Not logged. |
+| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | | unset | Comma-separated `key=value` for traces. When set, it replaces `OTEL_EXPORTER_OTLP_HEADERS`. Not a flag. Not logged. |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | | `10000` | Milliseconds, or a value such as `1s` or `500ms`. Must be greater than zero. |
 | `OTEL_TRACES_SAMPLER` | `--otel-sampler` | `parentbased_always_on` | `always_on`, `always_off`, `traceidratio`, `parentbased_always_on`, `parentbased_always_off`, or `parentbased_traceidratio`. |
 | `OTEL_TRACES_SAMPLER_ARG` | | `1.0` | Sampler argument from 0 to 1. |
